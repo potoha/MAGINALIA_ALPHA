@@ -1,0 +1,14 @@
+{
+  "name": "maginalia-alpha",
+  "private": true,
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspace @maginalia/desktop",
+    "build": "npm run build --workspace @maginalia/desktop",
+    "test": "npm run test --workspace @maginalia/desktop",
+    "smoke": "npm run smoke --workspace @maginalia/desktop",
+    "start": "npm run start --workspace @maginalia/desktop"
+  }
+}

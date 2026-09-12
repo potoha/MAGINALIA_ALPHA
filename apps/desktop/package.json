@@ -1,0 +1,22 @@
+{
+  "name": "@maginalia/desktop",
+  "private": true,
+  "version": "0.0.0",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.main.json --noEmit",
+    "build": "npm run build:main && npm run build:renderer",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "vite build",
+    "test": "vitest run",
+    "smoke": "npm run build && electron dist/main/main.js --smoke",
+    "start": "npm run build && electron dist/main/main.js"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "electron": "44.3.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.0",
+    "vitest": "5.0.0"
+  }
+}
