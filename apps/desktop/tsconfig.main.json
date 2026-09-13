@@ -16,6 +16,7 @@
   "include": [
     "src/main.ts",
     "src/preload.ts",
-    "src/security.ts"
+    "src/security.ts",
+    "src/document-workspace.ts"
   ]
 }

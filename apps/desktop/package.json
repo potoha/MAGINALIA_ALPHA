@@ -16,6 +16,7 @@
     "test": "vitest run --root .",
     "smoke": "npm run build && electron dist/main/main.js --smoke",
     "smoke:writing": "npm run build && node test/writing-smoke.mjs",
+    "smoke:workspace": "npm run build && node test/workspace-smoke.mjs",
     "start": "npm run build && electron dist/main/main.js"
   },
   "devDependencies": {

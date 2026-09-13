@@ -107,6 +107,94 @@ button:disabled {
   background: #f8dddd;
 }
 
+.workspace-navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid #d5cec3;
+  border-radius: 0.75rem;
+  background: #fffdf8;
+}
+
+.workspace-document-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.workspace-label {
+  color: #9b4b36;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+#workspace-document-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manuscript-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.manuscript-button {
+  max-width: min(24rem, 75vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #5f3b2d;
+  background: #f6eee6;
+  border-color: #c69b86;
+}
+
+.manuscript-button.active {
+  color: #fffdf8;
+  background: #9b4b36;
+}
+
+.empty-document-message,
+.workspace-error {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.empty-document-message {
+  color: #5f6c76;
+}
+
+.workspace-error {
+  color: #8d2929;
+}
+
+button:focus-visible {
+  outline: 3px solid #d29c52;
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .editor {
   flex: 1;
   min-height: 0;

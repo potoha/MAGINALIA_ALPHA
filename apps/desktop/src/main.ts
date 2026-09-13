@@ -1,5 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
 import * as path from "node:path";
+import { DocumentWorkspaceService } from "./document-workspace";
+import {
+  createDocumentWorkspaceHandlers,
+  OPEN_DOCUMENT_CHANNEL,
+  OPEN_MANUSCRIPT_CHANNEL
+} from "./document-workspace-ipc";
 import { MarkdownFileService } from "./markdown-file-service";
 import { OPEN_MARKDOWN_CHANNEL, SAVE_MARKDOWN_CHANNEL } from "./preload-api";
 import {
@@ -9,13 +15,31 @@ import {
   type SaveMarkdownResult
 } from "./markdown-ipc";
 import { createSecureWebPreferences } from "./security";
-import { parseWritingSmokeMode } from "./smoke-mode";
+import { parseWritingSmokeMode, parseWorkspaceSmokeMode } from "./smoke-mode";
+import { runWorkspaceSmoke } from "./workspace-smoke";
 import { runWritingSmoke } from "./writing-smoke";
 
 const quickSmokeMode = process.argv.includes("--smoke");
 const writingSmoke = parseWritingSmokeMode(process.argv);
-const smokeMode = quickSmokeMode || writingSmoke.requested;
+const workspaceSmoke = parseWorkspaceSmokeMode(process.argv);
+const smokeMode = quickSmokeMode || writingSmoke.requested || workspaceSmoke.requested;
 const markdownFileService = new MarkdownFileService();
+const documentWorkspaceService = new DocumentWorkspaceService();
+const documentWorkspaceHandlers = createDocumentWorkspaceHandlers({
+  pickDocumentFolder: async () => workspaceSmoke.requested
+    ? {
+      canceled: false,
+      filePaths: workspaceSmoke.rootPath ? [workspaceSmoke.rootPath] : []
+    }
+    : dialog.showOpenDialog({
+      title: "Open Document",
+      properties: ["openDirectory"]
+    }),
+  openDocumentRoot: (owner, rootPath) => documentWorkspaceService.openForOwner(owner, rootPath),
+  resolveManuscriptPath: (owner, documentId, manuscriptId) =>
+    documentWorkspaceService.resolveManuscriptPath(owner, documentId, manuscriptId),
+  openMarkdown: (owner, filePath) => markdownFileService.openForOwner(owner, filePath)
+});
 const INVALID_REQUEST: MarkdownFailure = {
   kind: "error",
   code: "invalid-request",
@@ -23,6 +47,7 @@ const INVALID_REQUEST: MarkdownFailure = {
 };
 let mainWindow: BrowserWindow | null = null;
 let writingSmokeFinished = false;
+let workspaceSmokeFinished = false;
 
 function failWritingSmoke(error: unknown): void {
   if (writingSmokeFinished) return;
@@ -36,6 +61,21 @@ function completeWritingSmoke(): void {
   if (writingSmokeFinished) return;
   writingSmokeFinished = true;
   console.log("MAGINALIA_ELECTRON_WRITING_SMOKE_OK");
+  app.quit();
+}
+
+function failWorkspaceSmoke(error: unknown): void {
+  if (workspaceSmokeFinished) return;
+  workspaceSmokeFinished = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`MAGINALIA_ELECTRON_WORKSPACE_SMOKE_FAILED ${message}`);
+  app.exit(1);
+}
+
+function completeWorkspaceSmoke(): void {
+  if (workspaceSmokeFinished) return;
+  workspaceSmokeFinished = true;
+  console.log("MAGINALIA_ELECTRON_WORKSPACE_SMOKE_OK");
   app.quit();
 }
 
@@ -68,19 +108,24 @@ function handleSaveMarkdown(event: IpcMainInvokeEvent, value: unknown): Promise<
 function registerMarkdownIpc(): void {
   ipcMain.handle(OPEN_MARKDOWN_CHANNEL, handleOpenMarkdown);
   ipcMain.handle(SAVE_MARKDOWN_CHANNEL, handleSaveMarkdown);
+  ipcMain.handle(OPEN_DOCUMENT_CHANNEL, documentWorkspaceHandlers.openDocument);
+  ipcMain.handle(OPEN_MANUSCRIPT_CHANNEL, documentWorkspaceHandlers.openManuscript);
 }
 
 function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(OPEN_MARKDOWN_CHANNEL);
   ipcMain.removeHandler(SAVE_MARKDOWN_CHANNEL);
+  ipcMain.removeHandler(OPEN_DOCUMENT_CHANNEL);
+  ipcMain.removeHandler(OPEN_MANUSCRIPT_CHANNEL);
   markdownFileService.dispose();
+  documentWorkspaceService.dispose();
 }
 
 function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 960,
     height: 640,
-    show: writingSmoke.requested || !smokeMode,
+    show: writingSmoke.requested || workspaceSmoke.requested || !smokeMode,
     webPreferences: createSecureWebPreferences(path.join(__dirname, "preload.js"))
   });
 
@@ -116,6 +161,36 @@ function createMainWindow(): BrowserWindow {
         }
       });
     }
+  } else if (workspaceSmoke.requested) {
+    if (!workspaceSmoke.rootPath) {
+      failWorkspaceSmoke(new Error("The workspace smoke fixture root was not provided."));
+    } else {
+      window.webContents.once("did-finish-load", () => {
+        void runWorkspaceSmoke(window, workspaceSmoke.rootPath!).then(
+          () => completeWorkspaceSmoke(),
+          (error: unknown) => failWorkspaceSmoke(error)
+        );
+      });
+      window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) failWorkspaceSmoke(new Error(`Renderer load failed (${errorCode}): ${errorDescription}`));
+      });
+      window.webContents.on("preload-error", (_event, preloadPath, error) => {
+        failWorkspaceSmoke(new Error(`Preload failed (${preloadPath}): ${error.message}`));
+      });
+      window.webContents.on("render-process-gone", (_event, details) => {
+        failWorkspaceSmoke(new Error(`Renderer process exited: ${details.reason}`));
+      });
+      window.webContents.on("unresponsive", () => {
+        failWorkspaceSmoke(new Error("Renderer became unresponsive."));
+      });
+      window.webContents.on("console-message", (event) => {
+        if (event.level === "error") {
+          failWorkspaceSmoke(new Error(
+            `Renderer console error at ${event.sourceId}:${event.lineNumber}: ${event.message}`
+          ));
+        }
+      });
+    }
   } else if (quickSmokeMode) {
     window.webContents.once("did-finish-load", () => {
       console.log("MAGINALIA_ELECTRON_SMOKE_OK");
@@ -127,11 +202,17 @@ function createMainWindow(): BrowserWindow {
     });
   }
 
-  const loadOptions = writingSmoke.requested ? { query: { smoke: "writing" } } : undefined;
+  const loadOptions = writingSmoke.requested
+    ? { query: { smoke: "writing" } }
+    : workspaceSmoke.requested
+      ? { query: { smoke: "workspace" } }
+      : undefined;
   void window.loadFile(rendererPath, loadOptions).catch((error: unknown) => {
     console.error("MAGINALIA renderer failed to load", error);
     if (writingSmoke.requested) {
       failWritingSmoke(error);
+    } else if (workspaceSmoke.requested) {
+      failWorkspaceSmoke(error);
     } else if (quickSmokeMode) {
       app.exit(1);
     }
@@ -140,6 +221,9 @@ function createMainWindow(): BrowserWindow {
   window.on("closed", () => {
     if (writingSmoke.requested && !writingSmokeFinished) {
       failWritingSmoke(new Error("Writing smoke window closed before completion."));
+    }
+    if (workspaceSmoke.requested && !workspaceSmokeFinished) {
+      failWorkspaceSmoke(new Error("Workspace smoke window closed before completion."));
     }
     if (mainWindow === window) {
       mainWindow = null;

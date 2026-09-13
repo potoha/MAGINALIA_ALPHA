@@ -7,6 +7,7 @@ import {
   type DocumentState
 } from "@maginalia/writing-core";
 import type {
+  OpenMarkdownSuccess,
   OpenMarkdownResult,
   SaveMarkdownResult
 } from "../markdown-ipc";
@@ -73,6 +74,10 @@ export class WritingController {
     return this.document;
   }
 
+  public hasUnsavedChanges(): boolean {
+    return this.document !== null && isDirty(this.document);
+  }
+
   public async open(): Promise<void> {
     const current = this.document;
     if (current && isDirty(current) && !(await this.confirmReplace(current.displayName))) {
@@ -97,6 +102,10 @@ export class WritingController {
       return;
     }
 
+    this.applyOpenedDocument(result);
+  }
+
+  public applyOpenedDocument(result: OpenMarkdownSuccess): void {
     // Any outstanding save belongs to the replaced document. Its completion
     // is ignored by the operation id and cannot affect this new state.
     this.currentSave = null;
@@ -114,6 +123,21 @@ export class WritingController {
     }
     this.render();
     this.surface.focus();
+  }
+
+  public clearDocument(): void {
+    // A cleared surface cannot be affected by a save belonging to the
+    // document that was just removed.
+    this.currentSave = null;
+    this.errorMessage = undefined;
+    this.document = null;
+    this.replacingSurface = true;
+    try {
+      this.surface.replaceDocument("");
+    } finally {
+      this.replacingSurface = false;
+    }
+    this.render();
   }
 
   public save(): Promise<void> {

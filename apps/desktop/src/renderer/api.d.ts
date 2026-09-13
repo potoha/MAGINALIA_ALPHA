@@ -1,8 +1,8 @@
-import type { MarkdownPreloadApi } from "../preload-api";
+import type { CompleteMarkdownPreloadApi } from "../preload-api";
 
 declare global {
   interface Window {
-    readonly maginalia: MarkdownPreloadApi;
+    readonly maginalia: CompleteMarkdownPreloadApi;
   }
 }
 

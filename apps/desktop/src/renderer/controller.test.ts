@@ -130,6 +130,38 @@ describe("WritingController", () => {
     });
   });
 
+  it("applies an already opened Markdown result without calling the host", () => {
+    const { controller, surface, view } = makeHarness();
+
+    controller.applyOpenedDocument({
+      kind: "opened",
+      sessionId: "session-applied",
+      displayName: "applied.md",
+      text: "applied\r\n"
+    });
+
+    expect(surface.text).toBe("applied\r\n");
+    expect(controller.getDocumentState()).toMatchObject({
+      documentId: "session-applied",
+      currentText: "applied\r\n",
+      savedText: "applied\r\n"
+    });
+    expect(view.status).toEqual({ kind: "saved", message: "Saved" });
+  });
+
+  it("clears the active Writing state and editor surface", async () => {
+    const { controller, surface, view } = makeHarness();
+    await openDefault(controller);
+    surface.edit("draft");
+
+    controller.clearDocument();
+
+    expect(controller.getDocumentState()).toBeNull();
+    expect(surface.text).toBe("");
+    expect(view.status).toEqual({ kind: "empty", message: "No document open" });
+    expect(view.saveEnabled).toBe(false);
+  });
+
   it("marks an edit dirty", async () => {
     const { controller, surface, view } = makeHarness();
     await openDefault(controller);
