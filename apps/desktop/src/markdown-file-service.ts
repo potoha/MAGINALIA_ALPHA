@@ -1,0 +1,192 @@
+import { randomUUID } from "node:crypto";
+import { lstat, readFile, writeFile } from "node:fs/promises";
+import * as path from "node:path";
+import {
+  MAX_MARKDOWN_BYTES,
+  type MarkdownConflict,
+  type MarkdownFailure,
+  type OpenMarkdownResult,
+  type SaveMarkdownRequest,
+  type SaveMarkdownResult
+} from "./markdown-ipc";
+
+interface MarkdownSession {
+  readonly sessionId: string;
+  readonly owner: object;
+  readonly filePath: string;
+  readonly displayName: string;
+  savedText: string;
+}
+
+interface ReadMarkdownSuccess {
+  readonly kind: "read";
+  readonly text: string;
+}
+
+type ReadMarkdownResult = ReadMarkdownSuccess | MarkdownFailure;
+
+const INVALID_EXTENSION: MarkdownFailure = {
+  kind: "error",
+  code: "invalid-extension",
+  message: "Choose a Markdown file ending in .md or .markdown."
+};
+
+const NOT_REGULAR_FILE: MarkdownFailure = {
+  kind: "error",
+  code: "not-regular-file",
+  message: "The selected Markdown path is not a regular file."
+};
+
+const FILE_TOO_LARGE: MarkdownFailure = {
+  kind: "error",
+  code: "file-too-large",
+  message: `The Markdown file must be no larger than ${MAX_MARKDOWN_BYTES.toLocaleString()} bytes.`
+};
+
+const MISSING_FILE: MarkdownFailure = {
+  kind: "error",
+  code: "missing-file",
+  message: "The Markdown file is no longer available. Choose it again."
+};
+
+const FILE_UNREADABLE: MarkdownFailure = {
+  kind: "error",
+  code: "file-unreadable",
+  message: "The Markdown file could not be read. Check its permissions and try again."
+};
+
+const SESSION_NOT_OWNED: MarkdownFailure = {
+  kind: "error",
+  code: "session-not-owned",
+  message: "That Markdown document is not open in this window. Open it again before saving."
+};
+
+const CONTENT_TOO_LARGE: MarkdownFailure = {
+  kind: "error",
+  code: "content-too-large",
+  message: `The Markdown content must be no larger than ${MAX_MARKDOWN_BYTES.toLocaleString()} UTF-8 bytes.`
+};
+
+const SAVE_FAILED: MarkdownFailure = {
+  kind: "error",
+  code: "save-failed",
+  message: "The Markdown file could not be saved. Check its permissions and try again."
+};
+
+const EXTERNAL_CHANGE: MarkdownConflict = {
+  kind: "conflict",
+  code: "external-change",
+  message: "The Markdown file changed outside MAGINALIA. Reload it before saving."
+};
+
+function errorCode(error: unknown): string | undefined {
+  if (error === null || typeof error !== "object" || !("code" in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function isMarkdownPath(filePath: string): boolean {
+  const extension = path.extname(filePath).toLocaleLowerCase();
+  return extension === ".md" || extension === ".markdown";
+}
+
+async function readMarkdown(filePath: string): Promise<ReadMarkdownResult> {
+  let fileStats: Awaited<ReturnType<typeof lstat>>;
+  try {
+    fileStats = await lstat(filePath);
+  } catch (error: unknown) {
+    return errorCode(error) === "ENOENT" ? MISSING_FILE : FILE_UNREADABLE;
+  }
+
+  if (!fileStats.isFile()) return NOT_REGULAR_FILE;
+  if (fileStats.size > MAX_MARKDOWN_BYTES) return FILE_TOO_LARGE;
+
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(filePath);
+  } catch (error: unknown) {
+    return errorCode(error) === "ENOENT" ? MISSING_FILE : FILE_UNREADABLE;
+  }
+
+  if (bytes.byteLength > MAX_MARKDOWN_BYTES) return FILE_TOO_LARGE;
+  return { kind: "read", text: bytes.toString("utf8") };
+}
+
+export class MarkdownFileService {
+  private readonly sessions = new Map<string, MarkdownSession>();
+  private owners = new Map<object, MarkdownSession>();
+  private readonly saveQueues = new Map<string, Promise<SaveMarkdownResult>>();
+
+  public async openForOwner(owner: object, filePath: string): Promise<OpenMarkdownResult> {
+    if (!isMarkdownPath(filePath)) return INVALID_EXTENSION;
+
+    const readResult = await readMarkdown(filePath);
+    if (readResult.kind !== "read") return readResult;
+
+    const previous = this.owners.get(owner);
+    if (previous) this.sessions.delete(previous.sessionId);
+
+    const session: MarkdownSession = {
+      sessionId: randomUUID(),
+      owner,
+      filePath,
+      displayName: path.basename(filePath),
+      savedText: readResult.text
+    };
+    this.owners.set(owner, session);
+    this.sessions.set(session.sessionId, session);
+
+    return {
+      kind: "opened",
+      sessionId: session.sessionId,
+      displayName: session.displayName,
+      text: readResult.text
+    };
+  }
+
+  public saveForOwner(owner: object, request: SaveMarkdownRequest): Promise<SaveMarkdownResult> {
+    const session = this.sessions.get(request.sessionId);
+    if (!session || session.owner !== owner) return Promise.resolve(SESSION_NOT_OWNED);
+
+    const previous = this.saveQueues.get(session.sessionId);
+    const operation = (previous ? previous.catch(() => undefined) : Promise.resolve(undefined))
+      .then(() => this.performSave(session, request));
+    const tracked = operation.finally(() => {
+      if (this.saveQueues.get(session.sessionId) === tracked) this.saveQueues.delete(session.sessionId);
+    });
+    this.saveQueues.set(session.sessionId, tracked);
+    return tracked;
+  }
+
+  public dispose(): void {
+    this.sessions.clear();
+    this.owners = new Map<object, MarkdownSession>();
+    this.saveQueues.clear();
+  }
+
+  private async performSave(session: MarkdownSession, request: SaveMarkdownRequest): Promise<SaveMarkdownResult> {
+    if (Buffer.byteLength(request.text, "utf8") > MAX_MARKDOWN_BYTES) return CONTENT_TOO_LARGE;
+
+    const current = await readMarkdown(session.filePath);
+    if (current.kind === "error") {
+      return current;
+    }
+    if (current.text !== session.savedText) {
+      return EXTERNAL_CHANGE;
+    }
+
+    try {
+      await writeFile(session.filePath, Buffer.from(request.text, "utf8"));
+    } catch (_error: unknown) {
+      return SAVE_FAILED;
+    }
+
+    session.savedText = request.text;
+    return {
+      kind: "saved",
+      sessionId: session.sessionId,
+      displayName: session.displayName,
+      text: request.text
+    };
+  }
+}

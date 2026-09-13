@@ -3,13 +3,19 @@
   "private": true,
   "version": "0.0.0",
   "main": "dist/main/main.js",
+  "dependencies": {
+    "@maginalia/writing-core": "0.0.0",
+    "monaco-editor": "0.53.0"
+  },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.main.json --noEmit",
     "build": "npm run build:main && npm run build:renderer",
-    "build:main": "tsc -p tsconfig.main.json",
+    "build:main": "tsc -p tsconfig.main.json && npm run build:preload",
+    "build:preload": "vite build --mode preload",
     "build:renderer": "vite build",
-    "test": "vitest run",
+    "test": "vitest run --root .",
     "smoke": "npm run build && electron dist/main/main.js --smoke",
+    "smoke:writing": "npm run build && node test/writing-smoke.mjs",
     "start": "npm run build && electron dist/main/main.js"
   },
   "devDependencies": {

@@ -12,14 +12,31 @@ body {
   min-height: 100vh;
 }
 
-.shell {
+.workspace {
   box-sizing: border-box;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   min-height: 100vh;
-  place-content: center;
+  padding: 1rem;
+  gap: 1rem;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #d5cec3;
+  border-radius: 0.75rem;
+  background: #fffdf8;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
   gap: 0.75rem;
-  padding: 2rem;
-  text-align: center;
 }
 
 .eyebrow {
@@ -32,8 +49,71 @@ body {
 
 h1 {
   margin: 0;
-  font-size: clamp(2rem, 6vw, 4rem);
+  font-size: 1.25rem;
   font-weight: 650;
+}
+
+.document-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+button {
+  border: 1px solid #9b4b36;
+  border-radius: 0.4rem;
+  padding: 0.4rem 0.8rem;
+  color: #fffdf8;
+  background: #9b4b36;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.document-name,
+.document-status {
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.document-name {
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #4e5b65;
+}
+
+.document-status {
+  color: #5f6c76;
+  background: #eee9e0;
+}
+
+.document-status[data-state="modified"],
+.document-status[data-state="saving"] {
+  color: #8a431f;
+  background: #fae6d8;
+}
+
+.document-status[data-state="error"] {
+  color: #8d2929;
+  background: #f8dddd;
+}
+
+.editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid #d5cec3;
+  border-radius: 0.75rem;
+  background: #fff;
 }
 
 .status {
