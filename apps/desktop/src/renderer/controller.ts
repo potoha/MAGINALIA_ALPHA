@@ -2,9 +2,13 @@ import {
   confirmSave,
   createSaveSnapshot,
   editDocument,
+  insertQuotation as createQuotationInsertion,
   isDirty,
   openDocument,
-  type DocumentState
+  type DocumentId,
+  type DocumentState,
+  type QuotationInsertionInput,
+  type QuotationInsertionResult
 } from "@maginalia/writing-core";
 import type {
   OpenMarkdownSuccess,
@@ -16,9 +20,41 @@ import type { MarkdownPreloadApi } from "../preload-api";
 export interface WritingSurface {
   replaceDocument(text: string): void;
   getText(): string;
+  getSelection(): WritingTextRange;
+  applyEdit(range: WritingTextRange, text: string, selection: WritingTextRange): void;
   onTextChange(listener: (text: string) => void): () => void;
   focus(): void;
 }
+
+/** UTF-16 offsets shared by Writing Core and the Monaco adapter. */
+export interface WritingTextRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+export interface CapturedInsertionTarget {
+  readonly documentId: DocumentId;
+  /** Local revision invalidates a target after any edit, open, or clear. */
+  readonly revision: number;
+  readonly range: WritingTextRange;
+}
+
+export interface WritingInsertionStaleFailure {
+  readonly kind: "error";
+  readonly code: "stale-target";
+  readonly message: string;
+}
+
+export interface WritingInsertionSurfaceFailure {
+  readonly kind: "error";
+  readonly code: "surface-failed";
+  readonly message: string;
+}
+
+export type WritingInsertionResult =
+  | QuotationInsertionResult
+  | WritingInsertionStaleFailure
+  | WritingInsertionSurfaceFailure;
 
 export type WritingStatus =
   | { kind: "empty"; message: string }
@@ -58,6 +94,7 @@ export class WritingController {
   private document: DocumentState | null = null;
   private currentSave: SaveOperation | null = null;
   private nextSaveId = 1;
+  private revision = 0;
   private replacingSurface = false;
   private errorMessage: string | undefined;
 
@@ -76,6 +113,87 @@ export class WritingController {
 
   public hasUnsavedChanges(): boolean {
     return this.document !== null && isDirty(this.document);
+  }
+
+  public captureInsertionTarget(): CapturedInsertionTarget | null {
+    const current = this.document;
+    if (current === null) return null;
+    const range = this.surface.getSelection();
+    return {
+      documentId: current.documentId,
+      revision: this.revision,
+      range: { start: range.start, end: range.end }
+    };
+  }
+
+  public isInsertionTargetCurrent(target: CapturedInsertionTarget | null): boolean {
+    const current = this.document;
+    return current !== null
+      && target !== null
+      && typeof target === "object"
+      && current.documentId === target.documentId
+      && this.revision === target.revision;
+  }
+
+  public insertQuotation(
+    target: CapturedInsertionTarget,
+    input: QuotationInsertionInput
+  ): WritingInsertionResult {
+    const current = this.document;
+    if (current === null
+      || target === null
+      || typeof target !== "object"
+      || current.documentId !== target.documentId
+      || this.revision !== target.revision) {
+      return {
+        kind: "error",
+        code: "stale-target",
+        message: "The quotation target is no longer current."
+      };
+    }
+
+    const targetRange = target.range;
+    if (targetRange === null || typeof targetRange !== "object") {
+      return {
+        kind: "error",
+        code: "invalid-range",
+        message: "The quotation selection is outside the current document."
+      };
+    }
+
+    const result = createQuotationInsertion(current, {
+      documentId: target.documentId,
+      start: targetRange.start,
+      end: targetRange.end
+    }, input);
+    if (result.kind !== "inserted") return result;
+
+    const revisionBeforeEdit = this.revision;
+    try {
+      this.surface.applyEdit(
+        targetRange,
+        result.insertedText,
+        { start: result.selectionStart, end: result.selectionEnd }
+      );
+    } catch (_error: unknown) {
+      return {
+        kind: "error",
+        code: "surface-failed",
+        message: "The quotation could not be inserted into the editor."
+      };
+    }
+
+    // Monaco emits the normal text-change event synchronously. A small test
+    // surface may not, so keep the Core state correct in either case.
+    if (this.document !== null
+      && this.document.documentId === target.documentId
+      && this.document.currentText !== result.state.currentText) {
+      this.document = result.state;
+    }
+    if (this.revision === revisionBeforeEdit) this.revision += 1;
+    this.errorMessage = undefined;
+    this.render();
+    return result;
   }
 
   public async open(): Promise<void> {
@@ -115,6 +233,7 @@ export class WritingController {
       displayName: result.displayName,
       text: result.text
     });
+    this.revision += 1;
     this.replacingSurface = true;
     try {
       this.surface.replaceDocument(result.text);
@@ -131,6 +250,7 @@ export class WritingController {
     this.currentSave = null;
     this.errorMessage = undefined;
     this.document = null;
+    this.revision += 1;
     this.replacingSurface = true;
     try {
       this.surface.replaceDocument("");
@@ -183,6 +303,7 @@ export class WritingController {
   private handleTextChange(text: string): void {
     if (this.replacingSurface || this.document === null) return;
     this.document = editDocument(this.document, text);
+    this.revision += 1;
     this.errorMessage = undefined;
     this.render();
   }

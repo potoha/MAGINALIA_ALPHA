@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
+import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { DocumentWorkspaceService } from "./document-workspace";
 import {
@@ -7,38 +8,180 @@ import {
   OPEN_MANUSCRIPT_CHANNEL
 } from "./document-workspace-ipc";
 import { MarkdownFileService } from "./markdown-file-service";
-import { OPEN_MARKDOWN_CHANNEL, SAVE_MARKDOWN_CHANNEL } from "./preload-api";
+import {
+  OPEN_LIBRARY_CHANNEL,
+  OPEN_MARKDOWN_CHANNEL,
+  RESOLVE_QUOTATION_FOR_INSERT_CHANNEL,
+  SAVE_MARKDOWN_CHANNEL,
+  SEARCH_LIBRARY_CHANNEL
+} from "./preload-api";
 import {
   isSaveMarkdownRequest,
   type MarkdownFailure,
   type OpenMarkdownResult,
   type SaveMarkdownResult
 } from "./markdown-ipc";
+import { LibraryService } from "./library-service";
+import { createLibraryHandlers } from "./library-ipc";
+import {
+  CREATE_REPOSITORY_CHANNEL,
+  CREATE_REPOSITORY_HISTORY_CHANNEL,
+  LIST_REPOSITORY_HISTORY_CHANNEL,
+  OPEN_REPOSITORY_CHANNEL,
+  OPEN_REPOSITORY_HISTORY_CHANNEL,
+  OPEN_REPOSITORY_DOCUMENT_CHANNEL,
+  USE_REPOSITORY_SHELF_CHANNEL,
+  createRepositoryHandlers
+} from "./repository-ipc";
+import { LocalRepositoryService } from "./repository-service";
 import { createSecureWebPreferences } from "./security";
-import { parseWritingSmokeMode, parseWorkspaceSmokeMode } from "./smoke-mode";
+import {
+  parseQuotationSmokeMode,
+  parseRepositorySmokeMode,
+  parseWritingSmokeMode,
+  parseWorkspaceSmokeMode
+} from "./smoke-mode";
+import { runQuotationSmoke } from "./quotation-smoke";
+import { runRepositorySmoke } from "./repository-smoke";
 import { runWorkspaceSmoke } from "./workspace-smoke";
 import { runWritingSmoke } from "./writing-smoke";
 
 const quickSmokeMode = process.argv.includes("--smoke");
 const writingSmoke = parseWritingSmokeMode(process.argv);
 const workspaceSmoke = parseWorkspaceSmokeMode(process.argv);
-const smokeMode = quickSmokeMode || writingSmoke.requested || workspaceSmoke.requested;
+const quotationSmoke = parseQuotationSmokeMode(process.argv);
+const repositorySmoke = parseRepositorySmokeMode(process.argv);
+const smokeMode = quickSmokeMode
+  || writingSmoke.requested
+  || workspaceSmoke.requested
+  || quotationSmoke.requested
+  || repositorySmoke.requested;
 const markdownFileService = new MarkdownFileService();
 const documentWorkspaceService = new DocumentWorkspaceService();
+const libraryService = new LibraryService();
+const repositoryService = new LocalRepositoryService();
+let quotationResolveCount = 0;
+
+const REPOSITORY_SMOKE_BOOK_ID = "isbn:9781234567890";
+const REPOSITORY_SMOKE_ANNOTATION_ID = "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const REPOSITORY_SMOKE_PRIVATE_MEMO = "REPOSITORY_SMOKE_PRIVATE_MEMO_SENTINEL";
+const REPOSITORY_SMOKE_RAW_OCR = "REPOSITORY_SMOKE_PRIVATE_RAW_OCR_SENTINEL";
+const REPOSITORY_SMOKE_LOCAL_PATH = "REPOSITORY_SMOKE_PRIVATE_PATH_SENTINEL";
+
+async function seedRepositorySmokeShelf(owner: object, repositoryId: string): Promise<void> {
+  const resolved = await repositoryService.resolveForOwner(owner, repositoryId);
+  if (resolved.kind === "error") throw new Error(resolved.message);
+  await mkdir(path.join(resolved.canonicalRoot, "books"), { recursive: true });
+  await mkdir(path.join(resolved.canonicalRoot, "annotations"), { recursive: true });
+  await writeFile(
+    path.join(resolved.canonicalRoot, "books", "smoke-book.json"),
+    JSON.stringify({
+      type: "book",
+      version: "0.1",
+      id: REPOSITORY_SMOKE_BOOK_ID,
+      title: "Repository Smoke Book",
+      authors: ["Repository Smoke Author"],
+      isbn13: "9781234567890",
+    }) + "\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(resolved.canonicalRoot, "annotations", "smoke-annotation.json"),
+    JSON.stringify({
+      type: "annotation",
+      version: "0.1",
+      id: REPOSITORY_SMOKE_ANNOTATION_ID,
+      source: REPOSITORY_SMOKE_BOOK_ID,
+      location: { page: 17, path: "pages/p17" },
+      quote: "Repository smoke quotation",
+      privateMemo: REPOSITORY_SMOKE_PRIVATE_MEMO,
+      rawOcr: REPOSITORY_SMOKE_RAW_OCR,
+      localPath: REPOSITORY_SMOKE_LOCAL_PATH,
+    }) + "\n",
+    "utf8",
+  );
+}
 const documentWorkspaceHandlers = createDocumentWorkspaceHandlers({
-  pickDocumentFolder: async () => workspaceSmoke.requested
-    ? {
-      canceled: false,
-      filePaths: workspaceSmoke.rootPath ? [workspaceSmoke.rootPath] : []
+  pickDocumentFolder: async () => {
+    if (workspaceSmoke.requested || quotationSmoke.requested) {
+      const rootPath = workspaceSmoke.requested ? workspaceSmoke.rootPath : quotationSmoke.documentRoot;
+      return {
+        canceled: false,
+        filePaths: rootPath ? [rootPath] : []
+      };
     }
-    : dialog.showOpenDialog({
+    return dialog.showOpenDialog({
       title: "Open Document",
       properties: ["openDirectory"]
-    }),
+    });
+  },
   openDocumentRoot: (owner, rootPath) => documentWorkspaceService.openForOwner(owner, rootPath),
   resolveManuscriptPath: (owner, documentId, manuscriptId) =>
     documentWorkspaceService.resolveManuscriptPath(owner, documentId, manuscriptId),
   openMarkdown: (owner, filePath) => markdownFileService.openForOwner(owner, filePath)
+});
+const libraryHandlers = createLibraryHandlers({
+  pickLibraryFolder: () => quotationSmoke.requested
+    ? Promise.resolve({
+      canceled: false,
+      filePaths: quotationSmoke.libraryRoot ? [quotationSmoke.libraryRoot] : []
+    })
+    : dialog.showOpenDialog({
+      title: "Choose Library",
+      properties: ["openDirectory"]
+    }),
+  openLibraryRoot: (owner, rootPath) => libraryService.openForOwner(owner, rootPath),
+  searchLibrary: (owner, libraryId, query) => libraryService.searchForOwner(owner, libraryId, query),
+  resolveQuotationForInsert: (owner, libraryId, annotationId) => {
+    if (quotationSmoke.requested) quotationResolveCount += 1;
+    return libraryService.resolveQuotationForInsertForOwner(owner, libraryId, annotationId);
+  }
+});
+const repositoryHandlers = createRepositoryHandlers({
+  pickParentFolder: () => repositorySmoke.requested
+    ? Promise.resolve({
+      canceled: false,
+      filePaths: repositorySmoke.rootPath
+        ? [path.join(repositorySmoke.rootPath, "repository-parent")]
+        : []
+    })
+    : dialog.showOpenDialog({
+      title: "Create Repository",
+      properties: ["openDirectory"]
+    }),
+  pickRepositoryFolder: () => repositorySmoke.requested
+    ? Promise.resolve({ canceled: true, filePaths: [] })
+    : dialog.showOpenDialog({
+      title: "Open Repository",
+      properties: ["openDirectory"]
+    }),
+  createRepository: async (owner, parentRoot, kind, title) => {
+    const result = await repositoryService.createForOwner(owner, parentRoot, kind, title);
+    if (repositorySmoke.requested && kind === "shelf" && result.kind === "opened") {
+      await seedRepositorySmokeShelf(owner, result.repository.repositoryId);
+    }
+    return result;
+  },
+  openRepository: (owner, root) => repositoryService.openForOwner(owner, root),
+  resolveRepository: (owner, repositoryId) => repositoryService.resolveForOwner(owner, repositoryId),
+  createHistory: (owner, repositoryId) => repositoryService.createHistoryForOwner(owner, repositoryId),
+  listHistory: (owner, repositoryId) => repositoryService.listHistoryForOwner(owner, repositoryId),
+  pickHistoryDestinationParent: () => repositorySmoke.requested
+    ? Promise.resolve({
+      canceled: false,
+      filePaths: repositorySmoke.rootPath
+        ? [path.join(repositorySmoke.rootPath, "history-destination")]
+        : []
+    })
+    : dialog.showOpenDialog({
+      title: "Open History Copy",
+      properties: ["openDirectory"]
+    }),
+  openHistoryCopy: (owner, repositoryId, historyId, destinationParentRoot) => {
+    return repositoryService.openHistoryCopyForOwner(owner, repositoryId, historyId, destinationParentRoot);
+  },
+  openDocument: (owner, root) => documentWorkspaceService.openForOwner(owner, root),
+  openLibrary: (owner, root) => libraryService.openForOwner(owner, root)
 });
 const INVALID_REQUEST: MarkdownFailure = {
   kind: "error",
@@ -48,6 +191,8 @@ const INVALID_REQUEST: MarkdownFailure = {
 let mainWindow: BrowserWindow | null = null;
 let writingSmokeFinished = false;
 let workspaceSmokeFinished = false;
+let quotationSmokeFinished = false;
+let repositorySmokeFinished = false;
 
 function failWritingSmoke(error: unknown): void {
   if (writingSmokeFinished) return;
@@ -76,6 +221,36 @@ function completeWorkspaceSmoke(): void {
   if (workspaceSmokeFinished) return;
   workspaceSmokeFinished = true;
   console.log("MAGINALIA_ELECTRON_WORKSPACE_SMOKE_OK");
+  app.quit();
+}
+
+function failQuotationSmoke(error: unknown): void {
+  if (quotationSmokeFinished) return;
+  quotationSmokeFinished = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`MAGINALIA_ELECTRON_QUOTATION_SMOKE_FAILED ${message}`);
+  app.exit(1);
+}
+
+function completeQuotationSmoke(): void {
+  if (quotationSmokeFinished) return;
+  quotationSmokeFinished = true;
+  console.log("MAGINALIA_ELECTRON_QUOTATION_SMOKE_OK");
+  app.quit();
+}
+
+function failRepositorySmoke(error: unknown): void {
+  if (repositorySmokeFinished) return;
+  repositorySmokeFinished = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`MAGINALIA_ELECTRON_REPOSITORY_SMOKE_FAILED ${message}`);
+  app.exit(1);
+}
+
+function completeRepositorySmoke(): void {
+  if (repositorySmokeFinished) return;
+  repositorySmokeFinished = true;
+  console.log("MAGINALIA_ELECTRON_REPOSITORY_SMOKE_OK");
   app.quit();
 }
 
@@ -110,6 +285,16 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(SAVE_MARKDOWN_CHANNEL, handleSaveMarkdown);
   ipcMain.handle(OPEN_DOCUMENT_CHANNEL, documentWorkspaceHandlers.openDocument);
   ipcMain.handle(OPEN_MANUSCRIPT_CHANNEL, documentWorkspaceHandlers.openManuscript);
+  ipcMain.handle(OPEN_LIBRARY_CHANNEL, libraryHandlers.openLibrary);
+  ipcMain.handle(SEARCH_LIBRARY_CHANNEL, libraryHandlers.searchLibrary);
+  ipcMain.handle(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL, libraryHandlers.resolveQuotationForInsert);
+  ipcMain.handle(CREATE_REPOSITORY_CHANNEL, repositoryHandlers.createRepository);
+  ipcMain.handle(CREATE_REPOSITORY_HISTORY_CHANNEL, repositoryHandlers.createRepositoryHistory);
+  ipcMain.handle(LIST_REPOSITORY_HISTORY_CHANNEL, repositoryHandlers.listRepositoryHistory);
+  ipcMain.handle(OPEN_REPOSITORY_CHANNEL, repositoryHandlers.openRepository);
+  ipcMain.handle(OPEN_REPOSITORY_HISTORY_CHANNEL, repositoryHandlers.openRepositoryHistory);
+  ipcMain.handle(OPEN_REPOSITORY_DOCUMENT_CHANNEL, repositoryHandlers.openRepositoryDocument);
+  ipcMain.handle(USE_REPOSITORY_SHELF_CHANNEL, repositoryHandlers.useRepositoryShelf);
 }
 
 function unregisterMarkdownIpc(): void {
@@ -117,15 +302,31 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(SAVE_MARKDOWN_CHANNEL);
   ipcMain.removeHandler(OPEN_DOCUMENT_CHANNEL);
   ipcMain.removeHandler(OPEN_MANUSCRIPT_CHANNEL);
+  ipcMain.removeHandler(OPEN_LIBRARY_CHANNEL);
+  ipcMain.removeHandler(SEARCH_LIBRARY_CHANNEL);
+  ipcMain.removeHandler(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL);
+  ipcMain.removeHandler(CREATE_REPOSITORY_CHANNEL);
+  ipcMain.removeHandler(CREATE_REPOSITORY_HISTORY_CHANNEL);
+  ipcMain.removeHandler(LIST_REPOSITORY_HISTORY_CHANNEL);
+  ipcMain.removeHandler(OPEN_REPOSITORY_CHANNEL);
+  ipcMain.removeHandler(OPEN_REPOSITORY_HISTORY_CHANNEL);
+  ipcMain.removeHandler(OPEN_REPOSITORY_DOCUMENT_CHANNEL);
+  ipcMain.removeHandler(USE_REPOSITORY_SHELF_CHANNEL);
   markdownFileService.dispose();
   documentWorkspaceService.dispose();
+  libraryService.dispose();
+  repositoryService.dispose();
 }
 
 function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 960,
     height: 640,
-    show: writingSmoke.requested || workspaceSmoke.requested || !smokeMode,
+    show: writingSmoke.requested
+      || workspaceSmoke.requested
+      || quotationSmoke.requested
+      || repositorySmoke.requested
+      || !smokeMode,
     webPreferences: createSecureWebPreferences(path.join(__dirname, "preload.js"))
   });
 
@@ -191,6 +392,75 @@ function createMainWindow(): BrowserWindow {
         }
       });
     }
+  } else if (quotationSmoke.requested) {
+    if (!quotationSmoke.documentRoot || !quotationSmoke.libraryRoot) {
+      failQuotationSmoke(new Error("The quotation smoke fixture roots were not provided."));
+    } else {
+      window.webContents.once("did-finish-load", () => {
+        void runQuotationSmoke(
+          window,
+          quotationSmoke.documentRoot!,
+          quotationSmoke.libraryRoot!,
+          () => quotationResolveCount
+        ).then(
+          () => completeQuotationSmoke(),
+          (error: unknown) => failQuotationSmoke(error)
+        );
+      });
+      window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) failQuotationSmoke(new Error(`Renderer load failed (${errorCode}): ${errorDescription}`));
+      });
+      window.webContents.on("preload-error", (_event, preloadPath, error) => {
+        failQuotationSmoke(new Error(`Preload failed (${preloadPath}): ${error.message}`));
+      });
+      window.webContents.on("render-process-gone", (_event, details) => {
+        failQuotationSmoke(new Error(`Renderer process exited: ${details.reason}`));
+      });
+      window.webContents.on("unresponsive", () => {
+        failQuotationSmoke(new Error("Renderer became unresponsive."));
+      });
+      window.webContents.on("console-message", (event) => {
+        if (event.level === "error") {
+          failQuotationSmoke(new Error(
+            `Renderer console error at ${event.sourceId}:${event.lineNumber}: ${event.message}`
+          ));
+        }
+      });
+    }
+  } else if (repositorySmoke.requested) {
+    if (!repositorySmoke.rootPath) {
+      failRepositorySmoke(new Error("The repository smoke fixture root was not provided."));
+    } else {
+      const security = createSecureWebPreferences(path.join(__dirname, "preload.js"));
+      if (!security.contextIsolation || security.nodeIntegration || !security.sandbox) {
+        failRepositorySmoke(new Error("Repository smoke security preferences are not strict."));
+      }
+      window.webContents.once("did-finish-load", () => {
+        void runRepositorySmoke(window, repositorySmoke.rootPath!).then(
+          () => completeRepositorySmoke(),
+          (error: unknown) => failRepositorySmoke(error)
+        );
+      });
+      window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) failRepositorySmoke(new Error(`Renderer load failed (${errorCode}): ${errorDescription}`));
+      });
+      window.webContents.on("preload-error", (_event, preloadPath, error) => {
+        failRepositorySmoke(new Error(`Preload failed (${preloadPath}): ${error.message}`));
+      });
+      window.webContents.on("render-process-gone", (_event, details) => {
+        failRepositorySmoke(new Error(`Renderer process exited: ${details.reason}`));
+      });
+      window.webContents.on("unresponsive", () => {
+        failRepositorySmoke(new Error("Renderer became unresponsive."));
+      });
+      window.webContents.on("console-message", (event) => {
+        if (event.level === "error") {
+          failRepositorySmoke(new Error(
+            `Renderer console error at ${event.sourceId}:${event.lineNumber}: ${event.message}`
+          ));
+        }
+      });
+    }
   } else if (quickSmokeMode) {
     window.webContents.once("did-finish-load", () => {
       console.log("MAGINALIA_ELECTRON_SMOKE_OK");
@@ -206,13 +476,21 @@ function createMainWindow(): BrowserWindow {
     ? { query: { smoke: "writing" } }
     : workspaceSmoke.requested
       ? { query: { smoke: "workspace" } }
-      : undefined;
+      : quotationSmoke.requested
+      ? { query: { smoke: "quotation" } }
+        : repositorySmoke.requested
+          ? { query: { smoke: "repository" } }
+        : undefined;
   void window.loadFile(rendererPath, loadOptions).catch((error: unknown) => {
     console.error("MAGINALIA renderer failed to load", error);
     if (writingSmoke.requested) {
       failWritingSmoke(error);
     } else if (workspaceSmoke.requested) {
       failWorkspaceSmoke(error);
+    } else if (quotationSmoke.requested) {
+      failQuotationSmoke(error);
+    } else if (repositorySmoke.requested) {
+      failRepositorySmoke(error);
     } else if (quickSmokeMode) {
       app.exit(1);
     }
@@ -224,6 +502,12 @@ function createMainWindow(): BrowserWindow {
     }
     if (workspaceSmoke.requested && !workspaceSmokeFinished) {
       failWorkspaceSmoke(new Error("Workspace smoke window closed before completion."));
+    }
+    if (quotationSmoke.requested && !quotationSmokeFinished) {
+      failQuotationSmoke(new Error("Quotation smoke window closed before completion."));
+    }
+    if (repositorySmoke.requested && !repositorySmokeFinished) {
+      failRepositorySmoke(new Error("Repository smoke window closed before completion."));
     }
     if (mainWindow === window) {
       mainWindow = null;

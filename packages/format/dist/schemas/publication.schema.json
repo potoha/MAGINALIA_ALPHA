@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maginalia.app/spec/publication.schema.json", "type": "object", "additionalProperties": false,
+  "required": ["type", "version", "id", "title", "source", "publishedAt"],
+  "properties": {
+    "type": { "const": "publication" }, "version": { "$ref": "common.schema.json#/$defs/version" }, "id": { "$ref": "common.schema.json#/$defs/pubId" },
+    "title": { "type": "string", "minLength": 1 }, "source": { "type": "object", "additionalProperties": false, "required": ["repository", "output"], "properties": { "repository": { "type": "string", "pattern": "^[^/\\\\]+/[^/\\\\]+$" }, "output": { "$ref": "common.schema.json#/$defs/relativePath" } } },
+    "publishedAt": { "type": "string", "format": "date" }, "url": { "type": "string", "format": "uri" },
+    "annotations": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/annId" } }, "sources": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/isbnId" } }
+  }
+}

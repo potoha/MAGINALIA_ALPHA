@@ -17,6 +17,10 @@
     "src/main.ts",
     "src/preload.ts",
     "src/security.ts",
-    "src/document-workspace.ts"
+    "src/document-workspace.ts",
+    "src/library-service.ts",
+    "src/repository-filesystem.ts",
+    "src/repository-local-history.ts",
+    "src/repository-service.ts"
   ]
 }

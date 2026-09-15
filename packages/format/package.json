@@ -1,0 +1,32 @@
+{
+  "name": "@maginalia/format",
+  "version": "0.1.0-alpha.0",
+  "private": true,
+  "description": "Typed validator and publication projections for MAGINALIA Format v0.1.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "typecheck": "npm run build && tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-schemas.mjs",
+    "test": "npm run build && vitest run"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "ulid": "2.3.0",
+    "yaml": "2.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.0"
+  }
+}

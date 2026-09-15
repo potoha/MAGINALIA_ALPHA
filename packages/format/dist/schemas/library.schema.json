@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maginalia.app/spec/library.schema.json", "type": "object", "additionalProperties": false,
+  "required": ["type", "version", "name"],
+  "properties": {
+    "type": { "const": "library" }, "version": { "$ref": "common.schema.json#/$defs/version" },
+    "name": { "type": "string", "minLength": 1 }, "booksPath": { "$ref": "common.schema.json#/$defs/relativePath" },
+    "annotationsPath": { "$ref": "common.schema.json#/$defs/relativePath" }
+  }
+}

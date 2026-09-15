@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maginalia.app/spec/annotation.schema.json", "type": "object", "additionalProperties": false,
+  "required": ["type", "version", "id", "source", "location", "quote"],
+  "properties": {
+    "type": { "const": "annotation" }, "version": { "$ref": "common.schema.json#/$defs/version" },
+    "id": { "$ref": "common.schema.json#/$defs/annId" }, "source": { "$ref": "common.schema.json#/$defs/isbnId" },
+    "location": { "type": "object", "additionalProperties": false, "properties": { "page": { "type": "integer", "minimum": 1 }, "path": { "$ref": "common.schema.json#/$defs/relativePath" } }, "minProperties": 1 },
+    "quote": { "type": "string", "minLength": 1 }, "comment": { "type": "string" }, "attribution": { "type": "string" },
+    "captureImage": { "$ref": "common.schema.json#/$defs/relativePath" }, "rawOcr": { "type": "string" }, "localPath": { "$ref": "common.schema.json#/$defs/relativePath" },
+    "deviceMetadata": { "type": "object" }, "privateMemo": { "type": "string" }, "unpublishedComments": { "type": "array", "items": { "type": "string" } }
+  }
+}

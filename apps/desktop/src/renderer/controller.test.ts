@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { isDirty, type DocumentState } from "@maginalia/writing-core";
+import { isDirty, type DocumentState, type QuotationInsertionInput } from "@maginalia/writing-core";
 import type {
+  OpenMarkdownSuccess,
   OpenMarkdownResult,
   SaveMarkdownRequest,
   SaveMarkdownResult
 } from "../markdown-ipc";
 import {
   WritingController,
+  type WritingTextRange,
   type WritingStatus,
   type WritingSurface,
   type WritingView
@@ -16,15 +18,29 @@ class FakeSurface implements WritingSurface {
   private readonly listeners = new Set<(text: string) => void>();
   public text = "";
   public readonly replacedTexts: string[] = [];
+  public selection: WritingTextRange = { start: 0, end: 0 };
+  public readonly appliedEdits: Array<{ range: WritingTextRange; text: string; selection: WritingTextRange }> = [];
   public focused = false;
 
   public replaceDocument(text: string): void {
     this.text = text;
+    this.selection = { start: 0, end: 0 };
     this.replacedTexts.push(text);
   }
 
   public getText(): string {
     return this.text;
+  }
+
+  public getSelection(): WritingTextRange {
+    return { ...this.selection };
+  }
+
+  public applyEdit(range: WritingTextRange, text: string, selection: WritingTextRange): void {
+    this.appliedEdits.push({ range: { ...range }, text, selection: { ...selection } });
+    this.text = `${this.text.slice(0, range.start)}${text}${this.text.slice(range.end)}`;
+    this.selection = { ...selection };
+    for (const listener of this.listeners) listener(this.text);
   }
 
   public onTextChange(listener: (text: string) => void): () => void {
@@ -38,6 +54,7 @@ class FakeSurface implements WritingSurface {
 
   public edit(text: string): void {
     this.text = text;
+    this.selection = { start: text.length, end: text.length };
     for (const listener of this.listeners) listener(text);
   }
 }
@@ -77,7 +94,7 @@ function opened(
   sessionId = "session-1",
   displayName = "notes.md",
   text = "base"
-): OpenMarkdownResult {
+): OpenMarkdownSuccess {
   return { kind: "opened", sessionId, displayName, text };
 }
 
@@ -107,6 +124,15 @@ function makeHarness(options: {
 async function openDefault(controller: WritingController): Promise<void> {
   await controller.open();
 }
+
+const quotation: QuotationInsertionInput = {
+  annotationId: "annotation-1",
+  sourceId: "source-1",
+  title: "A title",
+  authors: ["An author"],
+  page: 3,
+  quote: "**literal** [brackets]"
+};
 
 describe("WritingController", () => {
   it("opens and displays the selected document", async () => {
@@ -306,6 +332,106 @@ describe("WritingController", () => {
     expect(surface.text).toBe("unsaved");
     expect(view.documentName).toBe("notes.md");
     expect(view.status).toEqual({ kind: "modified", message: "Modified" });
+  });
+
+  it("captures a cursor and inserts a quotation through one surface edit", async () => {
+    const save = vi.fn((request: SaveMarkdownRequest) => Promise.resolve({
+      kind: "saved",
+      sessionId: request.sessionId,
+      displayName: "notes.md",
+      text: request.text
+    } as const));
+    const { controller, surface, view } = makeHarness({ save });
+    await openDefault(controller);
+    surface.selection = { start: 2, end: 2 };
+
+    const target = controller.captureInsertionTarget();
+    expect(target).toMatchObject({ documentId: "session-1", revision: 1, range: { start: 2, end: 2 } });
+    const result = controller.insertQuotation(target as NonNullable<typeof target>, quotation);
+
+    expect(result.kind).toBe("inserted");
+    expect(surface.appliedEdits).toHaveLength(1);
+    expect(surface.appliedEdits[0]).toMatchObject({ range: { start: 2, end: 2 } });
+    expect(surface.selection).toEqual({
+      start: (result as Extract<typeof result, { kind: "inserted" }>).selectionStart,
+      end: (result as Extract<typeof result, { kind: "inserted" }>).selectionEnd
+    });
+    expect(surface.text).toContain("\\*\\*literal\\*\\* \\[brackets\\]");
+    expect(controller.hasUnsavedChanges()).toBe(true);
+    expect(view.status).toEqual({ kind: "modified", message: "Modified" });
+    expect(view.saveEnabled).toBe(true);
+
+    await controller.save();
+
+    expect(save).toHaveBeenCalledWith({ sessionId: "session-1", text: surface.text });
+    expect(controller.hasUnsavedChanges()).toBe(false);
+    expect(view.status).toEqual({ kind: "saved", message: "Saved" });
+  });
+
+  it("replaces a captured selection and keeps an invalid insertion non-destructive", async () => {
+    const { controller, surface } = makeHarness();
+    await openDefault(controller);
+    surface.edit("before old after");
+    surface.selection = { start: 7, end: 10 };
+    const target = controller.captureInsertionTarget();
+    expect(target).not.toBeNull();
+
+    const result = controller.insertQuotation(target as NonNullable<typeof target>, {
+      ...quotation,
+      quote: "replacement"
+    });
+    expect(result.kind).toBe("inserted");
+    expect(surface.text).toContain("replacement");
+    expect(surface.text).not.toContain("old");
+    expect(surface.appliedEdits).toHaveLength(1);
+
+    const currentTarget = controller.captureInsertionTarget();
+    expect(currentTarget).not.toBeNull();
+    const invalid = controller.insertQuotation({
+      ...(currentTarget as NonNullable<typeof currentTarget>),
+      range: { start: 999, end: 999 }
+    }, quotation);
+    expect(invalid).toMatchObject({ kind: "error", code: "invalid-range" });
+    expect(surface.appliedEdits).toHaveLength(1);
+  });
+
+  it("rejects a quotation target after an edit", async () => {
+    const { controller, surface } = makeHarness();
+    await openDefault(controller);
+    const target = controller.captureInsertionTarget();
+    surface.edit("newer");
+
+    const result = controller.insertQuotation(target as NonNullable<typeof target>, quotation);
+
+    expect(result).toMatchObject({ kind: "error", code: "stale-target" });
+    expect(surface.appliedEdits).toHaveLength(0);
+    expect(surface.text).toBe("newer");
+  });
+
+  it("rejects a quotation target after opening another document", async () => {
+    const { controller, surface } = makeHarness();
+    await openDefault(controller);
+    const target = controller.captureInsertionTarget();
+    controller.applyOpenedDocument(opened("session-2", "other.md", "other"));
+
+    const result = controller.insertQuotation(target as NonNullable<typeof target>, quotation);
+
+    expect(result).toMatchObject({ kind: "error", code: "stale-target" });
+    expect(surface.appliedEdits).toHaveLength(0);
+    expect(surface.text).toBe("other");
+  });
+
+  it("rejects a quotation target after clearing the document", async () => {
+    const { controller, surface } = makeHarness();
+    await openDefault(controller);
+    const target = controller.captureInsertionTarget();
+    controller.clearDocument();
+
+    const result = controller.insertQuotation(target as NonNullable<typeof target>, quotation);
+
+    expect(result).toMatchObject({ kind: "error", code: "stale-target" });
+    expect(surface.appliedEdits).toHaveLength(0);
+    expect(surface.text).toBe("");
   });
 
   it("preserves the current document when opening is cancelled", async () => {

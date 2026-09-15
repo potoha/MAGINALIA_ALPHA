@@ -1,4 +1,5 @@
 import type {
+  DocumentWorkspaceOpened,
   DocumentSummary,
   ManuscriptSummary
 } from "../document-workspace";
@@ -26,6 +27,14 @@ export interface WorkspaceNavigationView {
 }
 
 export type DirtySwitchDecision = "save" | "discard" | "cancel";
+
+/** Path-free result accepted from a repository-to-Document handoff. */
+export type RepositoryDocumentActivationResult =
+  | DocumentWorkspaceOpened
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "error"; readonly message: string };
+
+export type DocumentActivationOutcome = "activated" | "cancelled" | "failed";
 
 export type WorkspaceSwitchTarget =
   | { readonly kind: "document" }
@@ -62,6 +71,7 @@ export class WorkspaceNavigationController {
   private readonly decideDirtySwitch: WorkspaceNavigationControllerOptions["decideDirtySwitch"];
   private state: WorkspaceNavigationState = EMPTY_STATE;
   private navigationBusy = false;
+  private lastDirtySwitchOutcome: DocumentActivationOutcome = "cancelled";
 
   public constructor(options: WorkspaceNavigationControllerOptions) {
     this.api = options.api;
@@ -87,6 +97,26 @@ export class WorkspaceNavigationController {
     return this.runNavigation(() => this.openManuscriptNow(manuscriptId));
   }
 
+  /**
+   * Apply a path-free Document result supplied by an explicit repository
+   * handoff. The existing dirty guard runs before the loader is invoked, so a
+   * cancelled switch does not ask main to replace the current Document.
+   */
+  public openDocumentFromRepository(
+    load: () => Promise<RepositoryDocumentActivationResult>
+  ): Promise<DocumentActivationOutcome> {
+    if (this.navigationBusy) return Promise.resolve("cancelled");
+    this.navigationBusy = true;
+    return this.openDocumentFromRepositoryNow(load)
+      .catch((_error: unknown) => {
+        this.showError(OPEN_DOCUMENT_FAILED);
+        return "failed" as const;
+      })
+      .finally(() => {
+        this.navigationBusy = false;
+      });
+  }
+
   private async openDocumentNow(): Promise<void> {
     if (!(await this.canSwitch({ kind: "document" }))) return;
 
@@ -104,6 +134,30 @@ export class WorkspaceNavigationController {
       return;
     }
 
+    await this.applyOpenedDocument(result);
+  }
+
+  private async openDocumentFromRepositoryNow(
+    load: () => Promise<RepositoryDocumentActivationResult>
+  ): Promise<DocumentActivationOutcome> {
+    if (!(await this.canSwitch({ kind: "document" }))) return this.lastDirtySwitchOutcome;
+
+    let result: RepositoryDocumentActivationResult;
+    try {
+      result = await load();
+    } catch (_error: unknown) {
+      this.showError(OPEN_DOCUMENT_FAILED);
+      return "failed";
+    }
+    if (result.kind === "cancelled") return "cancelled";
+    if (result.kind !== "opened") {
+      this.showError(result.message);
+      return "failed";
+    }
+    return (await this.applyOpenedDocument(result)) ? "activated" : "failed";
+  }
+
+  private async applyOpenedDocument(result: DocumentWorkspaceOpened): Promise<boolean> {
     // The previous document must lose its editor/save capability as soon as
     // the new Document has been accepted, even if its first manuscript fails.
     this.writing.clearDocument();
@@ -115,8 +169,8 @@ export class WorkspaceNavigationController {
     this.showError(null);
 
     const first = result.manuscripts[0];
-    if (!first) return;
-    await this.openSelectedManuscript(result.document.documentId, first);
+    if (!first) return true;
+    return this.openSelectedManuscript(result.document.documentId, first);
   }
 
   private async openManuscriptNow(manuscriptId: string): Promise<void> {
@@ -140,7 +194,7 @@ export class WorkspaceNavigationController {
   private async openSelectedManuscript(
     documentId: string,
     manuscript: ManuscriptSummary
-  ): Promise<void> {
+  ): Promise<boolean> {
     let result: OpenManuscriptResult;
     try {
       result = await this.api.openManuscript({
@@ -149,7 +203,7 @@ export class WorkspaceNavigationController {
       });
     } catch (_error: unknown) {
       this.showError(OPEN_MANUSCRIPT_FAILED);
-      return;
+      return false;
     }
 
     if (result.kind === "opened") {
@@ -159,16 +213,18 @@ export class WorkspaceNavigationController {
         activeManuscriptId: manuscript.manuscriptId
       });
       this.showError(null);
-      return;
+      return true;
     }
 
     this.showError(result.kind === "error" ? result.message : OPEN_MANUSCRIPT_FAILED);
+    return false;
   }
 
   private async canSwitch(target: WorkspaceSwitchTarget): Promise<boolean> {
     if (!this.writing.hasUnsavedChanges()) return true;
     const current = this.writing.getDocumentState();
     if (!current) return true;
+    this.lastDirtySwitchOutcome = "cancelled";
 
     let decision: DirtySwitchDecision;
     try {
@@ -177,6 +233,7 @@ export class WorkspaceNavigationController {
         target
       });
     } catch (_error: unknown) {
+      this.lastDirtySwitchOutcome = "failed";
       this.showError(SWITCH_REQUIRES_CLEAN);
       return false;
     }
@@ -187,11 +244,13 @@ export class WorkspaceNavigationController {
     try {
       await this.writing.save();
     } catch (_error: unknown) {
+      this.lastDirtySwitchOutcome = "failed";
       this.showError(SWITCH_REQUIRES_CLEAN);
       return false;
     }
 
     if (this.writing.hasUnsavedChanges()) {
+      this.lastDirtySwitchOutcome = "failed";
       this.showError(SWITCH_REQUIRES_CLEAN);
       return false;
     }

@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maginalia.app/spec/published-book.schema.json", "type": "object", "additionalProperties": false,
+  "required": ["type", "version", "id", "title", "authors", "isbn13"],
+  "properties": { "type": { "const": "published-book" }, "version": { "$ref": "common.schema.json#/$defs/version" }, "id": { "$ref": "common.schema.json#/$defs/isbnId" }, "title": { "type": "string", "minLength": 1 }, "authors": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }, "publisher": { "type": "string" }, "isbn13": { "type": "string", "pattern": "^[0-9]{13}$" }, "year": { "type": "integer", "minimum": 0 } }
+}

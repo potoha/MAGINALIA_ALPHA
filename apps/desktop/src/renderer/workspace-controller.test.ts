@@ -12,6 +12,7 @@ import type {
 } from "../markdown-ipc";
 import {
   WritingController,
+  type WritingTextRange,
   type WritingStatus,
   type WritingSurface,
   type WritingView
@@ -28,14 +29,26 @@ class FakeSurface implements WritingSurface {
   private readonly listeners = new Set<(text: string) => void>();
   public text = "";
   public readonly replacedTexts: string[] = [];
+  public selection: WritingTextRange = { start: 0, end: 0 };
 
   public replaceDocument(text: string): void {
     this.text = text;
+    this.selection = { start: 0, end: 0 };
     this.replacedTexts.push(text);
   }
 
   public getText(): string {
     return this.text;
+  }
+
+  public getSelection(): WritingTextRange {
+    return { ...this.selection };
+  }
+
+  public applyEdit(range: WritingTextRange, text: string, selection: WritingTextRange): void {
+    this.text = `${this.text.slice(0, range.start)}${text}${this.text.slice(range.end)}`;
+    this.selection = { ...selection };
+    for (const listener of this.listeners) listener(this.text);
   }
 
   public onTextChange(listener: (text: string) => void): () => void {
@@ -49,6 +62,7 @@ class FakeSurface implements WritingSurface {
 
   public edit(text: string): void {
     this.text = text;
+    this.selection = { start: text.length, end: text.length };
     for (const listener of this.listeners) listener(text);
   }
 }
@@ -409,6 +423,67 @@ describe("WorkspaceNavigationController", () => {
     expect(harness.writing.getDocumentState()).toBeNull();
     expect(harness.surface.text).toBe("");
     expect(harness.workspaceView.error).toBe("The manuscript is missing.");
+  });
+
+  it("guards a repository Document handoff before invoking its loader", async () => {
+    const decisions = vi.fn(() => "cancel" as const);
+    const harness = makeHarness({ decideDirtySwitch: decisions });
+    await openDefault(harness.navigation);
+    harness.surface.edit("unsaved repository draft");
+    const load = vi.fn(async () => documentOpened("document-2", [
+      { manuscriptId: "manuscript-3", displayName: "new.md" }
+    ]));
+
+    const outcome = await harness.navigation.openDocumentFromRepository(load);
+
+    expect(outcome).toBe("cancelled");
+    expect(load).not.toHaveBeenCalled();
+    expect(harness.surface.text).toBe("unsaved repository draft");
+    expect(harness.workspaceView.state.document?.documentId).toBe("document-1");
+    expect(decisions).toHaveBeenCalledWith({
+      currentDisplayName: "manuscript-1.md",
+      target: { kind: "document" }
+    });
+  });
+
+  it("applies a repository Document after the shared dirty save guard succeeds", async () => {
+    const decisions = vi.fn(() => "save" as const);
+    const load = vi.fn(async () => documentOpened("document-2", [
+      { manuscriptId: "manuscript-3", displayName: "new.md" }
+    ]));
+    const harness = makeHarness({ decideDirtySwitch: decisions });
+    await openDefault(harness.navigation);
+    harness.surface.edit("saved before repository handoff");
+
+    const outcome = await harness.navigation.openDocumentFromRepository(load);
+
+    expect(outcome).toBe("activated");
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(harness.workspaceView.state.document?.documentId).toBe("document-2");
+    expect(harness.workspaceView.state.activeManuscriptId).toBe("manuscript-3");
+    expect(harness.surface.text).toBe("manuscript-3");
+  });
+
+  it("reports a failed repository handoff when its dirty save cannot become clean", async () => {
+    const decisions = vi.fn(() => "save" as const);
+    const harness = makeHarness({
+      decideDirtySwitch: decisions,
+      saveMarkdown: async () => ({
+        kind: "error",
+        code: "save-failed",
+        message: "The file could not be saved."
+      })
+    });
+    await openDefault(harness.navigation);
+    harness.surface.edit("unsaved repository draft");
+    const load = vi.fn(async () => documentOpened("document-2"));
+
+    const outcome = await harness.navigation.openDocumentFromRepository(load);
+
+    expect(outcome).toBe("failed");
+    expect(load).not.toHaveBeenCalled();
+    expect(harness.workspaceView.error).toBe("Save or discard the current manuscript before switching.");
+    expect(harness.surface.text).toBe("unsaved repository draft");
   });
 
   it("ignores reentrant Document navigation while the first navigation is busy", async () => {

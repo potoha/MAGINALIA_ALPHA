@@ -1,7 +1,7 @@
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api.js";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker.js?worker";
 import "monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js";
-import type { WritingSurface } from "./controller";
+import type { WritingSurface, WritingTextRange } from "./controller";
 
 (globalThis as typeof globalThis & { MonacoEnvironment?: { getWorker: () => Worker } }).MonacoEnvironment = {
   getWorker: () => new EditorWorker()
@@ -42,6 +42,39 @@ export class MonacoMarkdownSurface implements WritingSurface {
     return this.model?.getValue(monaco.editor.EndOfLinePreference.TextDefined, true) ?? "";
   }
 
+  public getSelection(): WritingTextRange {
+    const model = this.model;
+    const selection = this.editor.getSelection();
+    if (!model || !selection) return { start: 0, end: 0 };
+    return {
+      start: this.toDocumentOffset(model.getOffsetAt(selection.getStartPosition())),
+      end: this.toDocumentOffset(model.getOffsetAt(selection.getEndPosition()))
+    };
+  }
+
+  public applyEdit(range: WritingTextRange, text: string, selection: WritingTextRange): void {
+    const model = this.model;
+    if (!model) return;
+
+    const start = model.getPositionAt(this.toModelOffset(range.start));
+    const end = model.getPositionAt(this.toModelOffset(range.end));
+    this.editor.pushUndoStop();
+    this.editor.executeEdits("maginalia-quotation", [{
+      range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column),
+      text
+    }], () => {
+      const nextStart = model.getPositionAt(this.toModelOffset(selection.start));
+      const nextEnd = model.getPositionAt(this.toModelOffset(selection.end));
+      return [new monaco.Selection(
+        nextStart.lineNumber,
+        nextStart.column,
+        nextEnd.lineNumber,
+        nextEnd.column
+      )];
+    });
+    this.editor.pushUndoStop();
+  }
+
   public appendTextForSmoke(text: string): void {
     const model = this.model;
     if (!model) return;
@@ -51,6 +84,17 @@ export class MonacoMarkdownSurface implements WritingSurface {
       range: new monaco.Range(end.lineNumber, end.column, end.lineNumber, end.column),
       text
     }], () => null);
+  }
+
+  /** Test-only cursor placement used by the real Electron quotation smoke. */
+  public setCursorToEndForSmoke(): void {
+    const model = this.model;
+    if (!model) return;
+
+    const position = model.getFullModelRange().getEndPosition();
+    this.editor.setPosition(position);
+    this.editor.revealPositionInCenterIfOutsideViewport(position);
+    this.editor.focus();
   }
 
   public onTextChange(listener: (text: string) => void): () => void {
@@ -67,5 +111,18 @@ export class MonacoMarkdownSurface implements WritingSurface {
     this.model?.dispose();
     this.editor.dispose();
     this.changeListeners.clear();
+  }
+
+  private hasUtf8Bom(): boolean {
+    return this.model?.getValue(monaco.editor.EndOfLinePreference.TextDefined, true).startsWith("\uFEFF") ?? false;
+  }
+
+  /** Monaco keeps the BOM as model metadata; Core offsets include its string character. */
+  private toDocumentOffset(offset: number): number {
+    return this.hasUtf8Bom() ? offset + 1 : offset;
+  }
+
+  private toModelOffset(offset: number): number {
+    return this.hasUtf8Bom() && offset > 0 ? offset - 1 : offset;
   }
 }
