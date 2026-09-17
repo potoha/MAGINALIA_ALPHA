@@ -1,6 +1,20 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { createMarkdownPreloadApi } from "./preload-api";
+import { createMarkdownPreloadApi, type MarkdownEventSubscribe } from "./preload-api";
 
-const api = createMarkdownPreloadApi((channel, ...args) => ipcRenderer.invoke(channel, ...args));
+const subscribe: MarkdownEventSubscribe = (channel, listener) => {
+  const onEvent = (_event: Electron.IpcRendererEvent, ...args: readonly unknown[]): void => {
+    if (args.length !== 1) return;
+    listener(args[0]);
+  };
+  ipcRenderer.on(channel, onEvent);
+  return () => {
+    ipcRenderer.removeListener(channel, onEvent);
+  };
+};
+
+const api = createMarkdownPreloadApi(
+  (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+  subscribe,
+);
 
 contextBridge.exposeInMainWorld("maginalia", api);

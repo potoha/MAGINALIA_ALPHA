@@ -1,4 +1,11 @@
-import { app, BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  type IpcMainInvokeEvent,
+  type WebContents
+} from "electron";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { DocumentWorkspaceService } from "./document-workspace";
@@ -45,6 +52,18 @@ import { runQuotationSmoke } from "./quotation-smoke";
 import { runRepositorySmoke } from "./repository-smoke";
 import { runWorkspaceSmoke } from "./workspace-smoke";
 import { runWritingSmoke } from "./writing-smoke";
+import {
+  createRepositoryCloudDiscoveryCancellationHandlers,
+  createRepositoryCloudDiscoveryHandlers,
+  CANCEL_PRIVATE_WORKS_DISCOVERY_CHANNEL,
+  DISCOVER_PRIVATE_WORKS_CHANNEL,
+  GITHUB_DEVICE_PROMPT_CHANNEL,
+  GITHUB_DEVICE_VERIFICATION_URI,
+  type CloudDiscoveryOperation
+} from "./repository-cloud-ipc";
+import { discoverAuthenticatedRestoreRepositories } from "./repository-cloud-discover-operation";
+import { RepositoryCloudRestoreCatalog } from "./repository-cloud-restore-catalog";
+import type { GitHubDeviceVerificationCallback, GitHubDeviceVerificationPrompt } from "./repository-github-auth";
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -196,10 +215,147 @@ const INVALID_REQUEST: MarkdownFailure = {
   message: "The Markdown save request was invalid."
 };
 let mainWindow: BrowserWindow | null = null;
+const cloudRestoreCatalog = new RepositoryCloudRestoreCatalog();
+const cloudAbortControllers = new WeakMap<WebContents, AbortController>();
+const cloudOwnerDestroyListeners = new WeakMap<WebContents, () => void>();
+const cloudOwners = new Set<WebContents>();
+let cloudDiscoveryClosed = false;
 let writingSmokeFinished = false;
 let workspaceSmokeFinished = false;
 let quotationSmokeFinished = false;
 let repositorySmokeFinished = false;
+
+const CLOUD_USER_CODE_PATTERN = /^[A-Za-z0-9-]+$/u;
+const MAX_CLOUD_USER_CODE_LENGTH = 64;
+
+function isLiveMainWindowSender(owner: object): owner is WebContents {
+  const window = mainWindow;
+  if (window === null || window.isDestroyed()) return false;
+  const sender = window.webContents;
+  return sender === owner && !sender.isDestroyed();
+}
+
+function isDeviceVerificationPrompt(value: unknown): value is GitHubDeviceVerificationPrompt {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    if (Object.getPrototypeOf(value) !== Object.prototype) return false;
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== 2
+      || !keys.every((key) => key === "userCode" || key === "verificationUri")) {
+      return false;
+    }
+    const userCodeDescriptor = Object.getOwnPropertyDescriptor(value, "userCode");
+    const verificationUriDescriptor = Object.getOwnPropertyDescriptor(value, "verificationUri");
+    if (userCodeDescriptor === undefined
+      || !("value" in userCodeDescriptor)
+      || verificationUriDescriptor === undefined
+      || !("value" in verificationUriDescriptor)) {
+      return false;
+    }
+    const userCode = userCodeDescriptor.value;
+    return typeof userCode === "string"
+      && userCode.length > 0
+      && userCode.length <= MAX_CLOUD_USER_CODE_LENGTH
+      && CLOUD_USER_CODE_PATTERN.test(userCode)
+      && verificationUriDescriptor.value === GITHUB_DEVICE_VERIFICATION_URI;
+  } catch {
+    return false;
+  }
+}
+
+function clearCloudCatalogForOwner(owner: WebContents): void {
+  try {
+    cloudRestoreCatalog.clearForOwner(owner);
+  } catch {
+    // Shutdown may have disposed the catalog already; either state is closed.
+  }
+}
+
+function cancelCloudDiscoveryForOwner(owner: WebContents): boolean {
+  const controller = cloudAbortControllers.get(owner);
+  if (controller !== undefined) {
+    controller.abort();
+    cloudAbortControllers.delete(owner);
+  }
+  clearCloudCatalogForOwner(owner);
+  return controller !== undefined;
+}
+
+function closeCloudOwner(owner: WebContents): void {
+  cancelCloudDiscoveryForOwner(owner);
+  const onDestroyed = cloudOwnerDestroyListeners.get(owner);
+  if (onDestroyed !== undefined) owner.removeListener("destroyed", onDestroyed);
+  cloudOwnerDestroyListeners.delete(owner);
+  cloudOwners.delete(owner);
+}
+
+function attachCloudOwnerLifecycle(owner: WebContents): void {
+  if (cloudOwners.has(owner)) return;
+  const onDestroyed = (): void => closeCloudOwner(owner);
+  owner.once("destroyed", onDestroyed);
+  cloudOwnerDestroyListeners.set(owner, onDestroyed);
+  cloudOwners.add(owner);
+}
+
+function createCloudVerificationCallback(owner: object): GitHubDeviceVerificationCallback {
+  if (!isLiveMainWindowSender(owner)) throw new Error("The cloud discovery owner is not active.");
+  const sender = owner;
+  attachCloudOwnerLifecycle(sender);
+  return (prompt) => {
+    if (!isLiveMainWindowSender(sender) || !isDeviceVerificationPrompt(prompt)) {
+      throw new Error("The cloud verification prompt could not be delivered.");
+    }
+    sender.send(GITHUB_DEVICE_PROMPT_CHANNEL, {
+      userCode: prompt.userCode,
+      verificationUri: GITHUB_DEVICE_VERIFICATION_URI,
+    });
+  };
+}
+
+const cloudDiscoveryOperation: CloudDiscoveryOperation = async (owner, onVerification) => {
+  if (cloudDiscoveryClosed || !isLiveMainWindowSender(owner)) {
+    throw new Error("The cloud discovery owner is not active.");
+  }
+  const sender = owner;
+  attachCloudOwnerLifecycle(sender);
+  cloudAbortControllers.get(sender)?.abort();
+  const controller = new AbortController();
+  cloudAbortControllers.set(sender, controller);
+  try {
+    const guardedVerificationCallback: GitHubDeviceVerificationCallback = (prompt) => {
+      if (cloudDiscoveryClosed
+        || controller.signal.aborted
+        || !isLiveMainWindowSender(sender)
+        || !isDeviceVerificationPrompt(prompt)) {
+        throw new Error("The cloud verification prompt could not be delivered.");
+      }
+      return onVerification(prompt);
+    };
+    const result = await discoverAuthenticatedRestoreRepositories({
+      signal: controller.signal,
+      onVerification: guardedVerificationCallback,
+    });
+    if (cloudDiscoveryClosed || controller.signal.aborted || !isLiveMainWindowSender(sender)) {
+      throw new Error("The cloud discovery operation is no longer active.");
+    }
+    return result;
+  } finally {
+    if (cloudAbortControllers.get(sender) === controller) {
+      cloudAbortControllers.delete(sender);
+    }
+  }
+};
+
+const cloudDiscoveryHandlers = createRepositoryCloudDiscoveryHandlers({
+  discover: cloudDiscoveryOperation,
+  createVerificationCallback: createCloudVerificationCallback,
+  catalog: cloudRestoreCatalog,
+});
+
+const cloudCancellationHandlers = createRepositoryCloudDiscoveryCancellationHandlers({
+  isCurrentOwner: (owner) => !cloudDiscoveryClosed && isLiveMainWindowSender(owner),
+  cancelForOwner: (owner) => cancelCloudDiscoveryForOwner(owner as WebContents),
+});
 
 app.on("second-instance", () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -309,6 +465,10 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(OPEN_REPOSITORY_HISTORY_CHANNEL, repositoryHandlers.openRepositoryHistory);
   ipcMain.handle(OPEN_REPOSITORY_DOCUMENT_CHANNEL, repositoryHandlers.openRepositoryDocument);
   ipcMain.handle(USE_REPOSITORY_SHELF_CHANNEL, repositoryHandlers.useRepositoryShelf);
+  ipcMain.handle(DISCOVER_PRIVATE_WORKS_CHANNEL, (event, ...args) =>
+    cloudDiscoveryHandlers.discoverPrivateWorks(event, ...args));
+  ipcMain.handle(CANCEL_PRIVATE_WORKS_DISCOVERY_CHANNEL, (event, ...args) =>
+    cloudCancellationHandlers.cancelPrivateWorksDiscovery(event, ...args));
 }
 
 function unregisterMarkdownIpc(): void {
@@ -326,6 +486,11 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(OPEN_REPOSITORY_HISTORY_CHANNEL);
   ipcMain.removeHandler(OPEN_REPOSITORY_DOCUMENT_CHANNEL);
   ipcMain.removeHandler(USE_REPOSITORY_SHELF_CHANNEL);
+  ipcMain.removeHandler(DISCOVER_PRIVATE_WORKS_CHANNEL);
+  ipcMain.removeHandler(CANCEL_PRIVATE_WORKS_DISCOVERY_CHANNEL);
+  cloudDiscoveryClosed = true;
+  for (const owner of cloudOwners) closeCloudOwner(owner);
+  cloudRestoreCatalog.dispose();
   markdownFileService.dispose();
   documentWorkspaceService.dispose();
   libraryService.dispose();
@@ -343,6 +508,7 @@ function createMainWindow(): BrowserWindow {
       || !smokeMode,
     webPreferences: createSecureWebPreferences(path.join(__dirname, "preload.js"))
   });
+  const cloudOwner = window.webContents;
 
   const rendererPath = path.join(__dirname, "..", "renderer", "index.html");
 
@@ -511,6 +677,7 @@ function createMainWindow(): BrowserWindow {
   });
 
   window.on("closed", () => {
+    closeCloudOwner(cloudOwner);
     if (writingSmoke.requested && !writingSmokeFinished) {
       failWritingSmoke(new Error("Writing smoke window closed before completion."));
     }

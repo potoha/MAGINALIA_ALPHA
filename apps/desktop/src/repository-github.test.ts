@@ -1,11 +1,15 @@
+import { createIdentity, type RepositoryIdentity } from "@maginalia/repository-core";
 import { describe, expect, it } from "vitest";
 import {
   GITHUB_API_VERSION,
   GITHUB_REQUEST_TIMEOUT_MS,
+  MAX_GITHUB_RESTORE_IDENTITY_BYTES,
+  MAX_GITHUB_REPOSITORY_LIST_RESPONSE_BYTES,
   MAX_GITHUB_RESPONSE_BYTES,
   GitHubAdapter,
   GitHubAdapterError,
   type FetchImplementation,
+  type GitHubRepositoryCandidate,
   type UnverifiedPrivateCandidate,
   type VerifiedPrivateRemote,
 } from "./repository-github";
@@ -74,6 +78,18 @@ function remote(overrides: Partial<VerifiedPrivateRemote> = {}): VerifiedPrivate
   };
 }
 
+function candidate(overrides: Partial<GitHubRepositoryCandidate> = {}): GitHubRepositoryCandidate {
+  const owner = overrides.owner ?? "alice";
+  const name = overrides.name ?? "private-repo";
+  return {
+    id: overrides.id ?? 42,
+    nodeId: overrides.nodeId ?? "R_kgDO42",
+    owner,
+    name,
+    url: overrides.url ?? `https://github.com/${owner}/${name}.git`,
+  };
+}
+
 function graphQlResponse(overrides: Record<string, unknown> = {}): Response {
   return jsonResponse({
     data: {
@@ -109,6 +125,29 @@ function installationListing(
   totalCount = installations.length,
 ): Response {
   return jsonResponse({ total_count: totalCount, installations });
+}
+
+function repositoryListing(
+  repositories: Array<Record<string, unknown>>,
+  totalCount = repositories.length,
+): Response {
+  return jsonResponse({ total_count: totalCount, repositories });
+}
+
+function identityContents(
+  identity: RepositoryIdentity,
+  overrides: Record<string, unknown> = {},
+): Response {
+  const content = Buffer.from(JSON.stringify(identity), "utf8").toString("base64");
+  return jsonResponse({
+    type: "file",
+    encoding: "base64",
+    size: Buffer.byteLength(JSON.stringify(identity), "utf8"),
+    name: "repository.json",
+    path: ".maginalia/repository.json",
+    content,
+    ...overrides,
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -238,6 +277,303 @@ describe("desktop GitHub adapter", () => {
     const invalidCountError = await failure(() => makeAdapter("secret", invalidCount.fetch)
       .verifyPersonalInstallation(42));
     expect(invalidCountError.code).toBe("INSTALLATION_LOOKUP_INCOMPLETE");
+  });
+
+  it("lists bounded private candidates across fixed personal-installation pages", async () => {
+    const publicRepository = restRepository({
+      id: 100,
+      node_id: "R_public100",
+      name: "public-repository",
+      private: false,
+      visibility: "public",
+    });
+    const firstPrivate = restRepository({
+      id: 101,
+      node_id: "R_private101",
+      name: "private-one",
+    });
+    const secondPrivate = restRepository({
+      id: 102,
+      node_id: "R_private102",
+      name: "private-two",
+    });
+    const firstPage = [
+      publicRepository,
+      firstPrivate,
+      ...Array.from({ length: 98 }, (_, index) => restRepository({
+        id: 1_000 + index,
+        node_id: `R_public_${index}`,
+        name: `public-extra-${index}`,
+        private: false,
+        visibility: "public",
+      })),
+    ];
+    const { fetch, calls } = queuedFetch([
+      installationListing([personalInstallation()]),
+      repositoryListing(firstPage, 101),
+      repositoryListing([secondPrivate], 101),
+    ]);
+    const result = await makeAdapter("secret-token", fetch).listPrivateRepositoryCandidates(42);
+
+    expect(result.kind).toBe("candidates");
+    if (result.kind !== "candidates") throw new Error("expected private candidates");
+    expect(result).toEqual({
+      kind: "candidates",
+      candidates: [
+        {
+          id: 101,
+          nodeId: "R_private101",
+          owner: "alice",
+          name: "private-one",
+          url: "https://github.com/alice/private-one.git",
+        },
+        {
+          id: 102,
+          nodeId: "R_private102",
+          owner: "alice",
+          name: "private-two",
+          url: "https://github.com/alice/private-two.git",
+        },
+      ],
+    });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.candidates)).toBe(true);
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.github.com/user/installations",
+      "https://api.github.com/user/installations/7/repositories?per_page=100&page=1",
+      "https://api.github.com/user/installations/7/repositories?per_page=100&page=2",
+    ]);
+    expect(calls.every((call) => call.init.method === "GET")).toBe(true);
+    expect(calls.every((call) => call.init.redirect === "error")).toBe(true);
+    expect(calls.every((call) => header(call.init, "Authorization") === "Bearer secret-token")).toBe(true);
+    expect(calls.some((call) => call.init.method === "POST")).toBe(false);
+  });
+
+  it("distinguishes an empty private result from an incomplete pagination", async () => {
+    const empty = queuedFetch([
+      installationListing([personalInstallation()]),
+      repositoryListing([], 0),
+    ]);
+    await expect(makeAdapter("secret", empty.fetch).listPrivateRepositoryCandidates(42))
+      .resolves.toEqual({ kind: "empty" });
+
+    const publicOnly = queuedFetch([
+      installationListing([personalInstallation()]),
+      repositoryListing([restRepository({ private: false, visibility: "public" })]),
+    ]);
+    await expect(makeAdapter("secret", publicOnly.fetch).listPrivateRepositoryCandidates(42))
+      .resolves.toEqual({ kind: "empty" });
+
+    const incomplete = queuedFetch([
+      installationListing([personalInstallation()]),
+      repositoryListing([restRepository()], 2),
+    ]);
+    const incompleteError = await failure(() => makeAdapter("secret", incomplete.fetch)
+      .listPrivateRepositoryCandidates(42));
+    expect(incompleteError.code).toBe("INSTALLATION_LOOKUP_INCOMPLETE");
+    expect(incomplete.calls).toHaveLength(2);
+  });
+
+  it("uses a larger fixed cap only for verbose repository-listing responses", async () => {
+    expect(MAX_GITHUB_REPOSITORY_LIST_RESPONSE_BYTES).toBeGreaterThan(MAX_GITHUB_RESPONSE_BYTES);
+    const verboseRepository = restRepository({
+      description: "x".repeat(MAX_GITHUB_RESPONSE_BYTES + 1_024),
+    });
+    const withinListingCap = queuedFetch([
+      installationListing([personalInstallation()]),
+      repositoryListing([verboseRepository]),
+    ]);
+    await expect(makeAdapter("secret", withinListingCap.fetch).listPrivateRepositoryCandidates(42))
+      .resolves.toEqual({
+        kind: "candidates",
+        candidates: [{
+          id: 42,
+          nodeId: "R_kgDO42",
+          owner: "alice",
+          name: "private-repo",
+          url: "https://github.com/alice/private-repo.git",
+        }],
+      });
+    expect(withinListingCap.calls).toHaveLength(2);
+
+    const overListingCap = queuedFetch([
+      installationListing([personalInstallation()]),
+      repositoryListing([restRepository({
+        description: "x".repeat(MAX_GITHUB_REPOSITORY_LIST_RESPONSE_BYTES + 1),
+      })]),
+    ]);
+    const overListingCapError = await failure(() => makeAdapter("secret", overListingCap.fetch)
+      .listPrivateRepositoryCandidates(42));
+    expect(overListingCapError.code).toBe("RESPONSE_TOO_LARGE");
+    expect(overListingCap.calls).toHaveLength(2);
+  });
+
+  it("reads only the fixed main portable identity after independently verifying privacy", async () => {
+    const identity = createIdentity(
+      "project",
+      "Restore candidate",
+      "11111111-1111-4111-8111-111111111111",
+    );
+    const { fetch, calls } = queuedFetch([
+      jsonResponse(restRepository()),
+      identityContents(identity),
+    ]);
+    const result = await makeAdapter("secret-token", fetch)
+      .readRestoreCandidateIdentity(candidate());
+
+    expect(result).toEqual({ kind: "identity", identity, remote: remote() });
+    if (result.kind !== "identity") throw new Error("expected identity");
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.identity)).toBe(true);
+    expect(Object.isFrozen(result.remote)).toBe(true);
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.github.com/repos/alice/private-repo",
+      "https://api.github.com/repos/alice/private-repo/contents/.maginalia/repository.json?ref=main",
+    ]);
+    expect(calls.every((call) => call.init.method === "GET")).toBe(true);
+    expect(calls.every((call) => call.init.redirect === "error")).toBe(true);
+    expect(calls.every((call) => header(call.init, "Authorization") === "Bearer secret-token")).toBe(true);
+  });
+
+  it("returns not-maginalia for a missing fixed identity file", async () => {
+    const { fetch, calls } = queuedFetch([
+      jsonResponse(restRepository()),
+      new Response(null, { status: 404 }),
+    ]);
+    const result = await makeAdapter("secret", fetch).readRestoreCandidateIdentity(candidate());
+    expect(result.kind).toBe("not-maginalia");
+    if (result.kind !== "not-maginalia") throw new Error("expected not-maginalia");
+    expect(result.remote).toEqual(remote());
+    expect(calls).toHaveLength(2);
+  });
+
+  it("rejects malformed, oversized, and non-UTF-8 portable identity contents", async () => {
+    const identity = createIdentity(
+      "workbench",
+      "Restore candidate",
+      "22222222-2222-4222-8222-222222222222",
+    );
+    const malformedContents: Array<Record<string, unknown>> = [
+      { type: "directory" },
+      { encoding: "utf-8" },
+      { path: ".maginalia/other.json" },
+      { size: MAX_GITHUB_RESTORE_IDENTITY_BYTES + 1 },
+      { size: 1 },
+      { content: "%%%%" },
+      {
+        content: Buffer.from([0xff]).toString("base64"),
+        size: 1,
+      },
+      {
+        content: Buffer.from("{", "utf8").toString("base64"),
+        size: 1,
+      },
+      {
+        content: Buffer.from(JSON.stringify({ schemaVersion: 2 }), "utf8").toString("base64"),
+        size: Buffer.byteLength(JSON.stringify({ schemaVersion: 2 }), "utf8"),
+      },
+    ];
+    for (const overrides of malformedContents) {
+      const queued = queuedFetch([
+        jsonResponse(restRepository()),
+        identityContents(identity, overrides),
+      ]);
+      const error = await failure(() => makeAdapter("secret", queued.fetch)
+        .readRestoreCandidateIdentity(candidate()));
+      expect(error.code).toBe("INVALID_RESPONSE");
+      expect(queued.calls).toHaveLength(2);
+    }
+  });
+
+  it("propagates fixed-content lookup errors and never falls back to another path", async () => {
+    for (const [status, code] of [[401, "AUTH_REVOKED"], [403, "PERMISSION_DENIED"], [429, "RATE_LIMITED"]] as const) {
+      const queued = queuedFetch([
+        jsonResponse(restRepository()),
+        new Response(null, { status }),
+      ]);
+      const error = await failure(() => makeAdapter("secret", queued.fetch)
+        .readRestoreCandidateIdentity(candidate()));
+      expect(error.code).toBe(code);
+      expect(queued.calls).toHaveLength(2);
+    }
+
+    const network = queuedFetch([
+      jsonResponse(restRepository()),
+      () => { throw new Error("network secret-token"); },
+    ]);
+    const networkError = await failure(() => makeAdapter("secret-token", network.fetch)
+      .readRestoreCandidateIdentity(candidate()));
+    expect(networkError.code).toBe("NETWORK_ERROR");
+    expect(networkError.message).not.toContain("secret-token");
+    expect(network.calls).toHaveLength(2);
+  });
+
+  it("rejects public, changed, or malformed candidates before reading identity contents", async () => {
+    const publicRepository = queuedFetch([
+      jsonResponse(restRepository({ private: false, visibility: "public" })),
+    ]);
+    const publicError = await failure(() => makeAdapter("secret", publicRepository.fetch)
+      .readRestoreCandidateIdentity(candidate()));
+    expect(publicError.code).toBe("REMOTE_NOT_PRIVATE");
+    expect(publicRepository.calls).toHaveLength(1);
+
+    const changedRepository = queuedFetch([
+      jsonResponse(restRepository({ id: 43, node_id: "R_kgDO43" })),
+    ]);
+    const changedError = await failure(() => makeAdapter("secret", changedRepository.fetch)
+      .readRestoreCandidateIdentity(candidate()));
+    expect(changedError.code).toBe("REMOTE_MISMATCH");
+    expect(changedRepository.calls).toHaveLength(1);
+
+    const malformedCandidate = candidate({ url: "https://github.com/alice/private-repo.git?token=secret" });
+    const noRequest = queuedFetch([]);
+    const inputError = await failure(() => makeAdapter("secret", noRequest.fetch)
+      .readRestoreCandidateIdentity(malformedCandidate));
+    expect(inputError.code).toBe("INVALID_INPUT");
+    expect(noRequest.calls).toHaveLength(0);
+  });
+
+  it("fails closed on malformed, duplicate, over-limit, and mid-pagination results", async () => {
+    const malformed = queuedFetch([
+      installationListing([personalInstallation()]),
+      repositoryListing([restRepository({ clone_url: undefined })]),
+    ]);
+    const malformedError = await failure(() => makeAdapter("secret", malformed.fetch)
+      .listPrivateRepositoryCandidates(42));
+    expect(malformedError.code).toBe("INSTALLATION_LOOKUP_INCOMPLETE");
+
+    const duplicate = restRepository();
+    const duplicatePage = queuedFetch([
+      installationListing([personalInstallation()]),
+      repositoryListing([duplicate, duplicate], 2),
+    ]);
+    const duplicateError = await failure(() => makeAdapter("secret", duplicatePage.fetch)
+      .listPrivateRepositoryCandidates(42));
+    expect(duplicateError.code).toBe("INSTALLATION_LOOKUP_INCOMPLETE");
+
+    const overLimit = queuedFetch([
+      installationListing([personalInstallation()]),
+      repositoryListing([], 1_001),
+    ]);
+    const overLimitError = await failure(() => makeAdapter("secret", overLimit.fetch)
+      .listPrivateRepositoryCandidates(42));
+    expect(overLimitError.code).toBe("INSTALLATION_LOOKUP_INCOMPLETE");
+    expect(overLimit.calls).toHaveLength(2);
+
+    const firstPage = Array.from({ length: 100 }, (_, index) => restRepository({
+      id: 200 + index,
+      node_id: `R_page_${index}`,
+      name: `page-${index}`,
+    }));
+    const failedPage = queuedFetch([
+      installationListing([personalInstallation()]),
+      repositoryListing(firstPage, 101),
+      jsonResponse({ message: "temporary" }, 500),
+    ]);
+    const failedPageError = await failure(() => makeAdapter("secret", failedPage.fetch)
+      .listPrivateRepositoryCandidates(42));
+    expect(failedPageError.code).toBe("REMOTE_REQUEST_FAILED");
+    expect(failedPage.calls).toHaveLength(3);
   });
 
   it("rejects installation redirects and HTTP failures without any POST or fallback", async () => {

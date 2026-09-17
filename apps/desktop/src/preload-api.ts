@@ -40,6 +40,15 @@ import {
   type RepositoryHistoryRequest,
   type UseRepositoryShelfResult
 } from "./repository-ipc";
+import {
+  DISCOVER_PRIVATE_WORKS_CHANNEL,
+  CANCEL_PRIVATE_WORKS_DISCOVERY_CHANNEL,
+  GITHUB_DEVICE_PROMPT_CHANNEL,
+  GITHUB_DEVICE_VERIFICATION_URI,
+  type RepositoryCloudDevicePrompt,
+  type RepositoryCloudDiscoveryCancelResult,
+  type RepositoryCloudDiscoveryIpcResult
+} from "./repository-cloud-ipc";
 
 export const OPEN_MARKDOWN_CHANNEL = "maginalia:open-markdown";
 export const SAVE_MARKDOWN_CHANNEL = "maginalia:save-markdown";
@@ -58,6 +67,12 @@ export {
   OPEN_REPOSITORY_DOCUMENT_CHANNEL,
   USE_REPOSITORY_SHELF_CHANNEL
 } from "./repository-ipc";
+export {
+  DISCOVER_PRIVATE_WORKS_CHANNEL,
+  CANCEL_PRIVATE_WORKS_DISCOVERY_CHANNEL,
+  GITHUB_DEVICE_PROMPT_CHANNEL,
+  GITHUB_DEVICE_VERIFICATION_URI
+} from "./repository-cloud-ipc";
 
 export type {
   OpenLibraryResult,
@@ -80,6 +95,14 @@ export type {
   RepositoryHistoryRequest,
   UseRepositoryShelfResult
 } from "./repository-ipc";
+export type {
+  RepositoryCloudDevicePrompt,
+  RepositoryCloudDiscoveryCancelResult,
+  RepositoryCloudDiscoveryIpcResult
+} from "./repository-cloud-ipc";
+
+export type DevicePromptCallback = (prompt: RepositoryCloudDevicePrompt) => void;
+export type DevicePromptUnsubscribe = () => void;
 
 export interface MarkdownPreloadApi {
   openMarkdown(): Promise<OpenMarkdownResult>;
@@ -96,6 +119,9 @@ export interface MarkdownPreloadApi {
   openRepository?(): Promise<OpenRepositoryResult>;
   openRepositoryDocument?(request: RepositoryHandoffRequest): Promise<OpenRepositoryDocumentResult>;
   useRepositoryShelf?(request: RepositoryHandoffRequest): Promise<UseRepositoryShelfResult>;
+  discoverPrivateWorks?(): Promise<RepositoryCloudDiscoveryIpcResult>;
+  cancelPrivateWorksDiscovery?(): Promise<RepositoryCloudDiscoveryCancelResult>;
+  onDevicePrompt?(callback: DevicePromptCallback): DevicePromptUnsubscribe;
 }
 
 export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
@@ -111,11 +137,69 @@ export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   openRepository(): Promise<OpenRepositoryResult>;
   openRepositoryDocument(request: RepositoryHandoffRequest): Promise<OpenRepositoryDocumentResult>;
   useRepositoryShelf(request: RepositoryHandoffRequest): Promise<UseRepositoryShelfResult>;
+  discoverPrivateWorks(): Promise<RepositoryCloudDiscoveryIpcResult>;
+  cancelPrivateWorksDiscovery(): Promise<RepositoryCloudDiscoveryCancelResult>;
+  onDevicePrompt(callback: DevicePromptCallback): DevicePromptUnsubscribe;
 };
 
 export type MarkdownInvoke = (channel: string, ...args: readonly unknown[]) => Promise<unknown>;
+export type MarkdownEventSubscribe = (
+  channel: string,
+  listener: (value: unknown) => void,
+) => DevicePromptUnsubscribe;
 
-export function createMarkdownPreloadApi(invoke: MarkdownInvoke): CompleteMarkdownPreloadApi {
+const DEVICE_USER_CODE_PATTERN = /^[A-Za-z0-9-]+$/u;
+const MAX_DEVICE_USER_CODE_LENGTH = 64;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    return Object.getPrototypeOf(value) === Object.prototype;
+  } catch {
+    return false;
+  }
+}
+
+function isExactDataKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  try {
+    const keys = Reflect.ownKeys(value);
+    return keys.length === expected.length
+      && keys.every((key) => typeof key === "string" && expected.includes(key))
+      && expected.every((key) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return descriptor !== undefined && "value" in descriptor;
+      });
+  } catch {
+    return false;
+  }
+}
+
+function normalizeDevicePrompt(value: unknown): RepositoryCloudDevicePrompt | undefined {
+  if (!isPlainRecord(value) || !isExactDataKeys(value, ["userCode", "verificationUri"])) return undefined;
+  try {
+    const userCode = value.userCode;
+    if (typeof userCode !== "string"
+      || userCode.length === 0
+      || userCode.length > MAX_DEVICE_USER_CODE_LENGTH
+      || !DEVICE_USER_CODE_PATTERN.test(userCode)
+      || value.verificationUri !== GITHUB_DEVICE_VERIFICATION_URI) {
+      return undefined;
+    }
+    return Object.freeze({
+      userCode,
+      verificationUri: GITHUB_DEVICE_VERIFICATION_URI,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+const noEventSubscription: MarkdownEventSubscribe = () => () => undefined;
+
+export function createMarkdownPreloadApi(
+  invoke: MarkdownInvoke,
+  subscribe: MarkdownEventSubscribe = noEventSubscription,
+): CompleteMarkdownPreloadApi {
   return {
     openMarkdown: () => invoke(OPEN_MARKDOWN_CHANNEL) as Promise<OpenMarkdownResult>,
     saveMarkdown: (request) => invoke(SAVE_MARKDOWN_CHANNEL, request) as Promise<SaveMarkdownResult>,
@@ -137,6 +221,22 @@ export function createMarkdownPreloadApi(invoke: MarkdownInvoke): CompleteMarkdo
     openRepositoryDocument: (request) =>
       invoke(OPEN_REPOSITORY_DOCUMENT_CHANNEL, request) as Promise<OpenRepositoryDocumentResult>,
     useRepositoryShelf: (request) =>
-      invoke(USE_REPOSITORY_SHELF_CHANNEL, request) as Promise<UseRepositoryShelfResult>
+      invoke(USE_REPOSITORY_SHELF_CHANNEL, request) as Promise<UseRepositoryShelfResult>,
+    discoverPrivateWorks: () =>
+      invoke(DISCOVER_PRIVATE_WORKS_CHANNEL) as Promise<RepositoryCloudDiscoveryIpcResult>,
+    cancelPrivateWorksDiscovery: () =>
+      invoke(CANCEL_PRIVATE_WORKS_DISCOVERY_CHANNEL) as Promise<RepositoryCloudDiscoveryCancelResult>,
+    onDevicePrompt: (callback) => {
+      if (typeof callback !== "function") throw new TypeError("The Device Flow prompt callback is invalid.");
+      return subscribe(GITHUB_DEVICE_PROMPT_CHANNEL, (value) => {
+        const prompt = normalizeDevicePrompt(value);
+        if (prompt === undefined) return;
+        try {
+          callback(prompt);
+        } catch {
+          // Renderer callback failures must not affect the fixed IPC listener.
+        }
+      });
+    },
   };
 }

@@ -7,12 +7,19 @@
  * response, redirect, cancellation, and private-identity checks.
  */
 
+import type { RepositoryIdentity } from "@maginalia/repository-core" with { "resolution-mode": "import" };
+
 export const GITHUB_REQUEST_TIMEOUT_MS = 10_000;
 export const MAX_GITHUB_REQUEST_TIMEOUT_MS = 60_000;
 export const MAX_GITHUB_RESPONSE_BYTES = 256 * 1024;
+/** Repository listings contain verbose records, but remain explicitly bounded. */
+export const MAX_GITHUB_REPOSITORY_LIST_RESPONSE_BYTES = 1024 * 1024;
 
 export const GITHUB_API_ORIGIN = "https://api.github.com";
 export const GITHUB_API_VERSION = "2022-11-28";
+export const GITHUB_REPOSITORY_PAGE_SIZE = 100;
+export const MAX_GITHUB_REPOSITORY_PAGES = 10;
+export const MAX_GITHUB_RESTORE_IDENTITY_BYTES = 16 * 1024;
 
 const GITHUB_WEB_ORIGIN = "https://github.com";
 const MAX_OWNER_LENGTH = 39;
@@ -46,6 +53,29 @@ export interface UnverifiedPrivateCandidate {
   readonly name: string;
   readonly url: string;
 }
+
+/**
+ * A minimal Restore candidate from the installation listing.  This is not a
+ * verified MAGINALIA remote and deliberately has no private marker; callers
+ * must independently inspect any selected repository before adoption.
+ */
+export interface GitHubRepositoryCandidate {
+  readonly id: number;
+  readonly nodeId: string;
+  readonly owner: string;
+  readonly name: string;
+  readonly url: string;
+}
+
+export type GitHubRepositoryCandidateResult = Readonly<
+  | { readonly kind: "empty" }
+  | { readonly kind: "candidates"; readonly candidates: readonly GitHubRepositoryCandidate[] }
+>;
+
+export type GitHubRestoreIdentityResult = Readonly<
+  | { readonly kind: "identity"; readonly identity: RepositoryIdentity; readonly remote: VerifiedPrivateRemote }
+  | { readonly kind: "not-maginalia"; readonly remote: VerifiedPrivateRemote }
+>;
 
 export interface VerifiedPrivateRemote extends UnverifiedPrivateCandidate {
   readonly private: true;
@@ -237,6 +267,32 @@ interface RepositoryExpectation {
   readonly url?: string;
 }
 
+interface ParsedRepositoryListingEntry {
+  readonly private: boolean;
+  readonly candidate: GitHubRepositoryCandidate;
+}
+
+interface ParsedRepositoryListingPage {
+  readonly totalCount: number;
+  readonly entries: readonly ParsedRepositoryListingEntry[];
+}
+
+interface ContentsIdentityRequest {
+  readonly url: string;
+  readonly search: string;
+}
+
+type ParseIdentity = typeof import("@maginalia/repository-core", {
+  with: { "resolution-mode": "import" }
+})["parseIdentity"];
+
+let parseIdentityPromise: Promise<ParseIdentity> | undefined;
+
+function loadParseIdentity(): Promise<ParseIdentity> {
+  parseIdentityPromise ??= import("@maginalia/repository-core").then((repositoryCore) => repositoryCore.parseIdentity);
+  return parseIdentityPromise;
+}
+
 const defaultFetch: FetchImplementation = (input, init) => {
   const implementation = globalThis.fetch;
   if (typeof implementation !== "function") {
@@ -343,7 +399,7 @@ function repositoryApiUrl(owner: string, name: string): string {
   return url;
 }
 
-function assertApiUrl(value: string): void {
+function assertApiUrl(value: string, expectedSearch = ""): void {
   try {
     const parsed = new URL(value);
     if (parsed.protocol !== "https:"
@@ -351,13 +407,38 @@ function assertApiUrl(value: string): void {
       || parsed.port !== ""
       || parsed.username !== ""
       || parsed.password !== ""
-      || parsed.search !== ""
+      || parsed.search !== expectedSearch
       || parsed.hash !== "") {
       invalidInput();
     }
   } catch {
     invalidInput();
   }
+}
+
+function installationRepositoriesUrl(
+  installationId: number,
+  page: number,
+): { readonly url: string; readonly search: string } {
+  if (!isPositiveSafeInteger(installationId)
+    || !Number.isSafeInteger(page)
+    || page < 1
+    || page > MAX_GITHUB_REPOSITORY_PAGES) {
+    invalidInput();
+  }
+  const search = `?per_page=${GITHUB_REPOSITORY_PAGE_SIZE}&page=${page}`;
+  const url = `${GITHUB_API_ORIGIN}/user/installations/${installationId}/repositories${search}`;
+  assertApiUrl(url, search);
+  return { url, search };
+}
+
+function repositoryIdentityContentsUrl(owner: string, name: string): ContentsIdentityRequest {
+  if (!isSafeOwner(owner) || !isSafeRepositoryName(name)) invalidInput();
+  const search = "?ref=main";
+  const url = `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`
+    + `/contents/.maginalia/repository.json${search}`;
+  assertApiUrl(url, search);
+  return { url, search };
 }
 
 function validateRepositoryName(value: unknown): string {
@@ -441,6 +522,123 @@ function parseRestCandidate(body: unknown, expectation: RepositoryExpectation = 
   if (expectation.url !== undefined && url !== expectation.url) mismatch();
 
   return Object.freeze({ id, nodeId, owner, name, url });
+}
+
+function parseRepositoryListingOwner(value: unknown): string {
+  if (!isRecord(value)) installationLookupIncomplete();
+  const login = ownValue(value, "login");
+  if (!isSafeOwner(login)) installationLookupIncomplete();
+  return login;
+}
+
+function parseRepositoryListingEntry(body: unknown): ParsedRepositoryListingEntry {
+  if (!isRecord(body)) installationLookupIncomplete();
+  const id = ownValue(body, "id");
+  const nodeId = ownValue(body, "node_id");
+  const name = ownValue(body, "name");
+  const owner = parseRepositoryListingOwner(ownValue(body, "owner"));
+  const privateValue = ownValue(body, "private");
+  const rawUrl = ownValue(body, "clone_url");
+  if (!isPositiveSafeInteger(id)
+    || !isSafeNodeId(nodeId)
+    || !isSafeRepositoryName(name)
+    || typeof privateValue !== "boolean"
+    || !isExactHttpsUrl(rawUrl, cloneUrlFor(owner, name))) {
+    installationLookupIncomplete();
+  }
+  if (hasOwnData(body, "full_name")
+    && (typeof ownValue(body, "full_name") !== "string"
+      || ownValue(body, "full_name") !== `${owner}/${name}`)) {
+    installationLookupIncomplete();
+  }
+  if (hasOwnData(body, "visibility")) {
+    const visibility = ownValue(body, "visibility");
+    if (visibility !== "private" && visibility !== "public" && visibility !== "internal") {
+      installationLookupIncomplete();
+    }
+    if (privateValue === true && visibility !== "private") installationLookupIncomplete();
+  }
+  return Object.freeze({
+    private: privateValue,
+    candidate: Object.freeze({
+      id,
+      nodeId,
+      owner,
+      name,
+      url: cloneUrlFor(owner, name),
+    }),
+  });
+}
+
+function parseRepositoryListingPage(body: unknown): ParsedRepositoryListingPage {
+  if (!isRecord(body)
+    || !hasOwnData(body, "total_count")
+    || !hasOwnData(body, "repositories")) {
+    installationLookupIncomplete();
+  }
+  const totalCount = ownValue(body, "total_count");
+  const repositories = ownValue(body, "repositories");
+  if (!isPositiveSafeInteger(totalCount) && totalCount !== 0) installationLookupIncomplete();
+  if (!Array.isArray(repositories) || repositories.length > GITHUB_REPOSITORY_PAGE_SIZE) {
+    installationLookupIncomplete();
+  }
+  if (totalCount > GITHUB_REPOSITORY_PAGE_SIZE * MAX_GITHUB_REPOSITORY_PAGES) {
+    installationLookupIncomplete();
+  }
+  return Object.freeze({
+    totalCount,
+    entries: Object.freeze(repositories.map(parseRepositoryListingEntry)),
+  });
+}
+
+function decodeRestoreIdentityContent(value: string, expectedSize: number): Uint8Array {
+  // GitHub may wrap base64 with CR/LF; all other whitespace is rejected.
+  const compact = value.replace(/[\r\n]/gu, "");
+  const maximumEncodedLength = MAX_GITHUB_RESTORE_IDENTITY_BYTES * 2;
+  if (compact.length === 0
+    || value.length > maximumEncodedLength
+    || compact.length % 4 !== 0
+    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(compact)) {
+    invalidResponse();
+  }
+  let decoded: Buffer;
+  try {
+    decoded = Buffer.from(compact, "base64");
+  } catch {
+    invalidResponse();
+  }
+  if (decoded.length !== expectedSize || decoded.toString("base64") !== compact) invalidResponse();
+  return new Uint8Array(decoded);
+}
+
+async function parseRestoreIdentity(body: unknown): Promise<RepositoryIdentity> {
+  if (!isRecord(body)
+    || ownValue(body, "type") !== "file"
+    || ownValue(body, "encoding") !== "base64"
+    || ownValue(body, "name") !== "repository.json"
+    || ownValue(body, "path") !== ".maginalia/repository.json") {
+    invalidResponse();
+  }
+  const size = ownValue(body, "size");
+  const content = ownValue(body, "content");
+  if (!isPositiveSafeInteger(size)
+    || size > MAX_GITHUB_RESTORE_IDENTITY_BYTES
+    || typeof content !== "string") {
+    invalidResponse();
+  }
+  const bytes = decodeRestoreIdentityContent(content, size);
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    invalidResponse();
+  }
+  try {
+    const parseIdentity = await loadParseIdentity();
+    return parseIdentity(JSON.parse(text));
+  } catch {
+    invalidResponse();
+  }
 }
 
 function parseAccount(body: unknown): GitHubAccount {
@@ -659,7 +857,7 @@ function tooLarge(): never {
 
 function creationUnknownForError(
   error: GitHubAdapterError,
-  operation: "account" | "create" | "verify-created" | "verify-remote" | "installation",
+  operation: "account" | "create" | "verify-created" | "verify-remote" | "installation" | "list-repositories" | "restore-identity",
 ): boolean {
   if (error.code === "REDIRECT_REJECTED") return operation === "create";
   return error.status === undefined || error.status < 400 || error.status >= 500;
@@ -674,15 +872,21 @@ async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): Pr
   }
 }
 
-export async function readResponseBytes(
+async function readResponseBytesWithLimit(
   response: Response,
   signal: AbortSignal = new AbortController().signal,
+  maxBytes: number,
 ): Promise<Uint8Array> {
+  if (!Number.isSafeInteger(maxBytes)
+    || maxBytes <= 0
+    || maxBytes > MAX_GITHUB_REPOSITORY_LIST_RESPONSE_BYTES) {
+    invalidInput();
+  }
   const body = response.body;
   const contentLength = responseHeader(response, "content-length");
   if (contentLength !== null && contentLength.trim() !== "") {
     const parsedLength = Number(contentLength);
-    if (Number.isFinite(parsedLength) && parsedLength > MAX_GITHUB_RESPONSE_BYTES) {
+    if (Number.isFinite(parsedLength) && parsedLength > maxBytes) {
       if (body && typeof body.getReader === "function") {
         const reader = body.getReader();
         await cancelReader(reader);
@@ -724,7 +928,7 @@ export async function readResponseBytes(
       if (result.done) break;
       const chunk = result.value instanceof Uint8Array ? result.value : new Uint8Array(result.value);
       total += chunk.byteLength;
-      if (total > MAX_GITHUB_RESPONSE_BYTES) {
+      if (total > maxBytes) {
         await cancelReader(reader);
         tooLarge();
       }
@@ -741,6 +945,14 @@ export async function readResponseBytes(
     offset += chunk.byteLength;
   }
   return bytes;
+}
+
+/** Read a normal GitHub API response using the conservative default cap. */
+export function readResponseBytes(
+  response: Response,
+  signal: AbortSignal = new AbortController().signal,
+): Promise<Uint8Array> {
+  return readResponseBytesWithLimit(response, signal, MAX_GITHUB_RESPONSE_BYTES);
 }
 
 function decodeJson(bytes: Uint8Array): unknown {
@@ -832,6 +1044,106 @@ export class GitHubAdapter {
     );
     if (response.status !== 200) this.throwHttpError(response, "installation");
     return parsePersonalInstallation(response.body, accountId);
+  }
+
+  /**
+   * Enumerate bounded private repository candidates reachable through the
+   * verified personal installation.  An empty result is distinct from an
+   * incomplete lookup; neither result is a verified MAGINALIA remote.
+   */
+  public async listPrivateRepositoryCandidates(
+    accountId: number,
+    options?: GitHubOperationOptions,
+  ): Promise<GitHubRepositoryCandidateResult> {
+    this.assertActive();
+    if (!isPositiveSafeInteger(accountId)) invalidInput();
+    const installation = await this.verifyPersonalInstallation(accountId, options);
+    const seenIds = new Set<number>();
+    const seenNodeIds = new Set<string>();
+    const candidates: GitHubRepositoryCandidate[] = [];
+    let totalCount: number | undefined;
+    let expectedPages = 1;
+    let entriesSeen = 0;
+
+    for (let page = 1; page <= MAX_GITHUB_REPOSITORY_PAGES; page += 1) {
+      const request = installationRepositoriesUrl(installation.installationId, page);
+      const response = await this.requestJson(
+        request.url,
+        "list-repositories",
+        "GET",
+        undefined,
+        options,
+        request.search,
+      );
+      if (response.status !== 200) this.throwHttpError(response, "list-repositories");
+      const parsed = parseRepositoryListingPage(response.body);
+      if (totalCount === undefined) {
+        totalCount = parsed.totalCount;
+        expectedPages = Math.max(1, Math.ceil(totalCount / GITHUB_REPOSITORY_PAGE_SIZE));
+      } else if (parsed.totalCount !== totalCount) {
+        installationLookupIncomplete();
+      }
+
+      const expectedEntries = page < expectedPages
+        ? GITHUB_REPOSITORY_PAGE_SIZE
+        : totalCount - ((expectedPages - 1) * GITHUB_REPOSITORY_PAGE_SIZE);
+      if (parsed.entries.length !== expectedEntries) installationLookupIncomplete();
+
+      for (const entry of parsed.entries) {
+        if (seenIds.has(entry.candidate.id) || seenNodeIds.has(entry.candidate.nodeId)) {
+          installationLookupIncomplete();
+        }
+        seenIds.add(entry.candidate.id);
+        seenNodeIds.add(entry.candidate.nodeId);
+        if (entry.private) candidates.push(entry.candidate);
+      }
+      entriesSeen += parsed.entries.length;
+      if (page === expectedPages) break;
+    }
+
+    if (totalCount === undefined || entriesSeen !== totalCount) installationLookupIncomplete();
+    if (candidates.length === 0) return Object.freeze({ kind: "empty" as const });
+    return Object.freeze({
+      kind: "candidates" as const,
+      candidates: Object.freeze(candidates.slice()),
+    });
+  }
+
+  /**
+   * Read only the fixed portable identity file for a Restore candidate. The
+   * candidate is rechecked privately first; a missing identity is a normal
+   * non-MAGINALIA result, while all other HTTP failures remain errors.
+   * Contents `type: file` is only discovery evidence; later Git graph
+   * validation remains responsible for rejecting unsafe tree objects such as
+   * symlinks.
+   */
+  public async readRestoreCandidateIdentity(
+    candidate: GitHubRepositoryCandidate,
+    options?: GitHubOperationOptions,
+  ): Promise<GitHubRestoreIdentityResult> {
+    this.assertActive();
+    const input = validateCandidate(candidate);
+    const remote = await this.verifyCreatedCandidate(input, options);
+    const request = repositoryIdentityContentsUrl(remote.owner, remote.name);
+    let response: JsonResponse;
+    try {
+      response = await this.requestJson(
+        request.url,
+        "restore-identity",
+        "GET",
+        undefined,
+        options,
+        request.search,
+      );
+    } catch (error) {
+      if (error instanceof GitHubAdapterError && error.code === "REMOTE_NOT_FOUND") {
+        return Object.freeze({ kind: "not-maginalia" as const, remote });
+      }
+      throw error;
+    }
+    if (response.status !== 200) this.throwHttpError(response, "restore-identity");
+    const identity = await parseRestoreIdentity(response.body);
+    return Object.freeze({ kind: "identity" as const, identity, remote });
   }
 
   public async createPrivateCandidate(
@@ -929,12 +1241,13 @@ export class GitHubAdapter {
 
   private async requestJson(
     url: string,
-    operation: "account" | "create" | "verify-created" | "verify-remote" | "installation",
+    operation: "account" | "create" | "verify-created" | "verify-remote" | "installation" | "list-repositories" | "restore-identity",
     method: "GET" | "POST",
     body: string | undefined,
     operationOptions: GitHubOperationOptions | undefined,
+    expectedSearch = "",
   ): Promise<JsonResponse> {
-    assertApiUrl(url);
+    assertApiUrl(url, expectedSearch);
     const options = normalizeRequestOptions(operationOptions, this.#timeoutMs);
     if (options.signal?.aborted) {
       throw new GitHubAdapterError("ABORTED", {
@@ -992,7 +1305,10 @@ export class GitHubAdapter {
       if (response.status < 200 || response.status >= 300) this.throwHttpError(response, operation);
 
       validateJsonContentType(response);
-      const bytes = await readResponseBytes(response, controller.signal);
+      const maxResponseBytes = operation === "list-repositories"
+        ? MAX_GITHUB_REPOSITORY_LIST_RESPONSE_BYTES
+        : MAX_GITHUB_RESPONSE_BYTES;
+      const bytes = await readResponseBytesWithLimit(response, controller.signal, maxResponseBytes);
       if (state.disposed) throw new GitHubAdapterError("DISPOSED", { recoverable: false });
       if (state.timedOut) {
         throw new GitHubAdapterError("TIMEOUT", { recoverable: true, creationUnknown: operation === "create" });
@@ -1045,7 +1361,7 @@ export class GitHubAdapter {
 
   private throwHttpError(
     response: ResponseMetadata,
-    operation: "account" | "create" | "verify-created" | "verify-remote" | "installation",
+    operation: "account" | "create" | "verify-created" | "verify-remote" | "installation" | "list-repositories" | "restore-identity",
   ): never {
     const status = response.status;
     const creationUnknown = operation === "create"

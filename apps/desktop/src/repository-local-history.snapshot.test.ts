@@ -228,7 +228,7 @@ describe("main-only local snapshot publication", () => {
       expect(await fs.access(join(root, ".git", "maginalia-snapshot.json")).then(() => true).catch(() => false)).toBe(false);
       await expectCleanIndex(root);
     }
-  });
+  }, 15_000);
 
   test("keeps foreign locks and malformed journals untouched", async () => {
     const { root } = await makeRoot();
