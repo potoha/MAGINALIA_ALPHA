@@ -21,6 +21,18 @@
     "src/library-service.ts",
     "src/repository-filesystem.ts",
     "src/repository-local-history.ts",
-    "src/repository-service.ts"
+    "src/repository-service.ts",
+    "src/repository-github.ts",
+    "src/repository-cloud-pending.ts",
+    "src/repository-cloud-connection-store.ts",
+    "src/repository-git-http.ts",
+    "src/repository-github-auth.ts",
+    "src/repository-git-probe.ts",
+    "src/repository-git-stage.ts",
+    "src/repository-git-fetch.ts",
+    "src/repository-git-push.ts",
+    "src/repository-git-materialize.ts",
+    "src/repository-git-confirm.ts",
+    "src/repository-git-validate.ts"
   ]
 }

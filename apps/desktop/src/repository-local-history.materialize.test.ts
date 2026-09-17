@@ -13,6 +13,7 @@ import {
   initializeRepository,
   inspectRepository,
   materializeHistoryCommit,
+  readLocalHistoryGraph,
 } from "./repository-local-history.js";
 import {
   createIdentity,
@@ -438,6 +439,85 @@ describe("validated local History materialization", () => {
     expect(sourceAfter.head).toBe(sourceBefore.head);
     expect(Buffer.from(sourceAfter.index)).toEqual(Buffer.from(sourceBefore.index));
     expect(Buffer.from(sourceAfter.manuscript ?? [])).toEqual(Buffer.from(sourceBefore.manuscript ?? []));
+  });
+
+  test("exports the complete validated main History closure without changing the source", async () => {
+    const { root, identity } = await makeRepository();
+    await prepareOlderVersion(root);
+    const sourceBefore = await repositorySnapshot(root);
+    const expectedStats = await objectStats(root, sourceBefore.head);
+
+    const result = await readLocalHistoryGraph(root);
+
+    expect(result.identity).toEqual(identity);
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.identity)).toBe(true);
+    expect(Object.isFrozen(result.objects)).toBe(true);
+    expect(result.head).toBe(sourceBefore.head);
+    expect(result.indexHash).toBe(createHash("sha256").update(sourceBefore.index).digest("hex"));
+    expect(result.objects).toHaveLength(expectedStats.unique);
+    expect(new Set(result.objects.map((object) => object.oid)).size).toBe(expectedStats.unique);
+    expect(new Set(result.objects.map((object) => object.type))).toEqual(new Set(["commit", "tree", "blob"]));
+
+    for (const object of result.objects) {
+      const raw = await git.readObject({ fs: gitFs(), dir: root, oid: object.oid, format: "content" });
+      expect(raw.type).toBe(object.type);
+      expect(raw.object).toBeInstanceOf(Uint8Array);
+      expect(Buffer.from(raw.object as Uint8Array)).toEqual(Buffer.from(object.bytes));
+    }
+
+    const sourceAfter = await repositorySnapshot(root);
+    expect(sourceAfter.head).toBe(sourceBefore.head);
+    expect(Buffer.from(sourceAfter.index)).toEqual(Buffer.from(sourceBefore.index));
+    expect(Buffer.from(sourceAfter.manuscript ?? [])).toEqual(Buffer.from(sourceBefore.manuscript ?? []));
+  });
+
+  test("keeps the graph's established object and byte ceilings hard and read-only", async () => {
+    const { root } = await makeRepository();
+    await prepareOlderVersion(root);
+    const sourceBefore = await repositorySnapshot(root);
+
+    await expectCode(
+      readLocalHistoryGraph(root, { maxObjectBytes: 1 }),
+      "limits-exceeded",
+    );
+    await expectCode(
+      readLocalHistoryGraph(root, { limits: { maxObjects: 1 } }),
+      "limits-exceeded",
+    );
+    const boundedResult = await readLocalHistoryGraph(root, {
+      maxObjectBytes: Number.MAX_SAFE_INTEGER,
+    });
+    expect(boundedResult.objects.length).toBeGreaterThan(0);
+
+    const sourceAfter = await repositorySnapshot(root);
+    expect(sourceAfter.head).toBe(sourceBefore.head);
+    expect(Buffer.from(sourceAfter.index)).toEqual(Buffer.from(sourceBefore.index));
+  });
+
+  test("rejects a secret present only in historical closure before returning any graph", async () => {
+    const { root } = await makeRepository();
+    await fs.writeFile(join(root, "notes", "history-secret.txt"), "-----BEGIN PRIVATE KEY-----\n", "utf8");
+    await git.add({ fs: gitFs(), dir: root, filepath: "notes/history-secret.txt" });
+    const secretCommit = await git.commit({
+      fs: gitFs(),
+      dir: root,
+      message: "historical secret fixture",
+      author: { name: "Fixture", email: "fixture@example.invalid" },
+      committer: { name: "Fixture", email: "fixture@example.invalid" },
+    });
+    await fs.unlink(join(root, "notes", "history-secret.txt"));
+    await git.remove({ fs: gitFs(), dir: root, filepath: "notes/history-secret.txt" });
+    const cleanDescendant = await git.commit({
+      fs: gitFs(),
+      dir: root,
+      message: "clean descendant fixture",
+      author: { name: "Fixture", email: "fixture@example.invalid" },
+      committer: { name: "Fixture", email: "fixture@example.invalid" },
+    });
+    expect(cleanDescendant).not.toBe(secretCommit);
+
+    await expectCode(readLocalHistoryGraph(root), "unsafe-secret");
   });
 
   test("rejects a linked marker where the platform permits link creation", async () => {

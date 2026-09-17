@@ -968,9 +968,46 @@ export interface MaterializeHistoryOptions extends Omit<LocalRepositoryOptions, 
     | "after-ref-write";
 }
 
+export interface LocalHistoryObject {
+  readonly oid: string;
+  readonly type: LocalHistoryObjectType;
+  /**
+   * A defensive copy of the validated raw Git object bytes.  Typed-array
+   * elements cannot be frozen in JavaScript; later staging must revalidate
+   * type, size, and the Git OID before writing these bytes.
+   */
+  readonly bytes: Uint8Array;
+}
+
+export interface LocalHistoryObjectGraph {
+  readonly identity: RepositoryIdentity;
+  readonly head: string;
+  /** SHA-256 digest of the validated source .git/index bytes. */
+  readonly indexHash: string;
+  readonly objects: readonly LocalHistoryObject[];
+}
+
+/** Minimal result of validating a history closure in an object-only stage. */
+export interface ValidatedLocalHistoryGraph {
+  readonly head: string;
+  readonly identity: RepositoryIdentity;
+  readonly objectCount: number;
+  readonly objectBytes: number;
+}
+
+export interface ReadLocalHistoryGraphOptions {
+  /** Limits may be lowered; the graph's default ceilings remain hard caps. */
+  readonly limits?: Partial<LocalHistoryLimits> & {
+    readonly maxObjectBytes?: number;
+  };
+  readonly maxObjectBytes?: number;
+}
+
 export const DEFAULT_MATERIALIZATION_MAX_OBJECT_BYTES = 256 * 1024 * 1024;
 
-type MaterializationObjectType = "commit" | "tree" | "blob";
+export type LocalHistoryObjectType = "commit" | "tree" | "blob";
+
+type MaterializationObjectType = LocalHistoryObjectType;
 
 interface MaterializationObject {
   readonly oid: string;
@@ -1011,6 +1048,29 @@ function materializationLimits(options?: MaterializeHistoryOptions): {
     fail("limits-exceeded", LIMIT_MESSAGE);
   }
   return { limits, maxObjectBytes: candidate };
+}
+
+function readGraphLimits(options?: ReadLocalHistoryGraphOptions): {
+  readonly limits: LocalHistoryLimits;
+  readonly maxObjectBytes: number;
+} {
+  const requested = materializationLimits(options);
+  // The object graph is an in-memory main-process handoff.  Callers may make
+  // these ceilings smaller for a particular operation, but cannot raise the
+  // repository's established graph bounds through this read-only API.
+  const limits = Object.freeze({
+    maxFiles: Math.min(requested.limits.maxFiles, DEFAULT_LOCAL_HISTORY_LIMITS.maxFiles),
+    maxFileBytes: Math.min(requested.limits.maxFileBytes, DEFAULT_LOCAL_HISTORY_LIMITS.maxFileBytes),
+    maxTotalBytes: Math.min(requested.limits.maxTotalBytes, DEFAULT_LOCAL_HISTORY_LIMITS.maxTotalBytes),
+    maxPathBytes: Math.min(requested.limits.maxPathBytes, DEFAULT_LOCAL_HISTORY_LIMITS.maxPathBytes),
+    maxDepth: Math.min(requested.limits.maxDepth, DEFAULT_LOCAL_HISTORY_LIMITS.maxDepth),
+    maxEntries: Math.min(requested.limits.maxEntries, DEFAULT_LOCAL_HISTORY_LIMITS.maxEntries),
+    maxObjects: Math.min(requested.limits.maxObjects, DEFAULT_LOCAL_HISTORY_LIMITS.maxObjects),
+  });
+  return {
+    limits,
+    maxObjectBytes: Math.min(requested.maxObjectBytes, DEFAULT_MATERIALIZATION_MAX_OBJECT_BYTES),
+  };
 }
 
 function gitObjectHash(type: MaterializationObjectType, bytes: Uint8Array): string {
@@ -1536,6 +1596,357 @@ export async function materializeHistoryCommit(
       identity: verified.identity,
       head: selected.oid,
       fingerprint: verifiedCapture.fingerprint,
+    });
+  } catch (error) {
+    throw normalizeUnexpected(error);
+  }
+}
+
+async function assertObjectRootMaterializationState(
+  rootReal: string,
+  selectedOid: string,
+): Promise<{ readonly head: string; readonly remote: string; readonly refs: readonly string[] }> {
+  const gitdir = join(rootReal, ".git");
+  await validateAdministrativeTree(rootReal, gitdir);
+  const headText = await fs.readFile(join(gitdir, "HEAD"), "utf8").catch(() => {
+    fail("unsupported-state", UNSUPPORTED_MESSAGE);
+  });
+  if (headText.trim() !== "ref: " + MAIN_REF) fail("unsupported-state", UNSUPPORTED_MESSAGE);
+  const refs = await listRefs(rootReal, "refs");
+  const remoteRef = "refs/remotes/maginalia/main";
+  if (
+    !refs.includes(MAIN_REF)
+    || !refs.includes(remoteRef)
+    || refs.some((ref) => ref !== MAIN_REF && ref !== remoteRef)
+  ) {
+    fail("unsupported-state", UNSUPPORTED_MESSAGE);
+  }
+
+  let head: string;
+  let remote: string;
+  try {
+    head = await git.resolveRef({ fs: GIT_FS, dir: rootReal, ref: MAIN_REF });
+    remote = await git.resolveRef({ fs: GIT_FS, dir: rootReal, ref: remoteRef });
+  } catch {
+    fail("changed", CHANGED_MESSAGE);
+  }
+  if (!SHA1.test(head) || !SHA1.test(remote) || remote !== selectedOid) {
+    fail("changed", CHANGED_MESSAGE);
+  }
+  return Object.freeze({ head, remote, refs: Object.freeze([...refs]) });
+}
+
+/**
+ * Materialize one selected remote commit from an object-only Git root.  The
+ * root must have main and refs/remotes/maginalia/main pinned to the selected
+ * OID; callers should normally reach this through the LocalGitStage wrapper.
+ * The complete closure is validated before the destination is inspected for
+ * the first write, and the destination remains marked incomplete on success.
+ */
+export async function materializeHistoryCommitFromObjectRoot(
+  sourceRoot: string,
+  destinationRoot: string,
+  oidValue: string,
+  expectedIdentity: RepositoryIdentity,
+  options?: MaterializeHistoryOptions,
+): Promise<LocalHistoryMaterialization> {
+  try {
+    const { limits, maxObjectBytes } = readGraphLimits(options);
+    let expected: RepositoryIdentity;
+    try {
+      const parseIdentity = await loadParseIdentity();
+      expected = parseIdentity(expectedIdentity);
+    } catch {
+      fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
+    }
+    if (typeof oidValue !== "string" || !SHA1.test(oidValue) || oidValue !== oidValue.toLowerCase()) {
+      fail("unsafe-tree", UNSAFE_TREE_MESSAGE);
+    }
+    const selectedOid = oidValue;
+    const sourceReal = await assertSafeRoot(sourceRoot);
+    const stateBefore = await assertObjectRootMaterializationState(sourceReal, selectedOid);
+
+    // This complete object-only walk is deliberately before destination
+    // validation/init, so malformed, secret, or incomplete history cannot
+    // publish even a partially initialized destination.
+    await validateLocalHistoryGraphAtRoot(sourceReal, selectedOid, expected, options);
+
+    const graph: MaterializationGraph = {
+      objects: new Map(),
+      references: new Map(),
+      commits: new Map(),
+      limits,
+      maxObjectBytes,
+      objectBytes: 0,
+      entries: 0,
+    };
+    const visitedCommits = new Set<string>();
+    const chain: MaterializationCommitState[] = [];
+    let cursor = selectedOid;
+    while (true) {
+      if (visitedCommits.has(cursor)) fail("unsupported-state", UNSUPPORTED_MESSAGE);
+      visitedCommits.add(cursor);
+      if (visitedCommits.size > limits.maxObjects) fail("limits-exceeded", LIMIT_MESSAGE);
+      const commit = await readMaterializationCommit(sourceReal, cursor, graph);
+      if (!stableIdentityMatches(commit.identity, expected)) {
+        fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
+      }
+      chain.push(commit);
+      if (!commit.parent) break;
+      cursor = commit.parent;
+    }
+    const selected = chain[0];
+    if (!selected) fail("unsupported-state", UNSUPPORTED_MESSAGE);
+
+    const stateAfter = await assertObjectRootMaterializationState(sourceReal, selectedOid);
+    if (
+      stateAfter.head !== stateBefore.head
+      || stateAfter.remote !== stateBefore.remote
+      || stateAfter.refs.length !== stateBefore.refs.length
+      || stateAfter.refs.some((ref, index) => ref !== stateBefore.refs[index])
+    ) {
+      fail("changed", CHANGED_MESSAGE);
+    }
+
+    const objects = [...reachableMaterializationObjects(selected.oid, graph)]
+      .sort((left, right) => left.oid.localeCompare(right.oid));
+    const destinationReal = await assertFreshMaterializationDestination(sourceReal, destinationRoot);
+    await git.init({ fs: GIT_FS, dir: destinationReal, defaultBranch: "main" });
+    maybeInterruptMaterialization("after-git-init", options);
+
+    for (const object of objects) {
+      let written: string;
+      try {
+        written = await git.writeObject({
+          fs: GIT_FS,
+          dir: destinationReal,
+          type: object.type,
+          object: object.bytes,
+          format: "content",
+        });
+      } catch {
+        fail("io-error", IO_MESSAGE);
+      }
+      if (written.toLowerCase() !== object.oid) fail("changed", CHANGED_MESSAGE);
+    }
+    maybeInterruptMaterialization("after-object-write", options);
+
+    await writeMaterializationFiles(destinationReal, selected.files);
+    maybeInterruptMaterialization("after-content-write", options);
+
+    const prepared = await prepareFiles(destinationReal, selected.files);
+    await writeInitialIndex(destinationReal, prepared);
+    maybeInterruptMaterialization("after-index-write", options);
+    await git.writeRef({
+      fs: GIT_FS,
+      dir: destinationReal,
+      ref: MAIN_REF,
+      value: selected.oid,
+      force: false,
+    });
+    maybeInterruptMaterialization("after-ref-write", options);
+
+    const verified = await inspectInternal(destinationReal, { limits }, true);
+    const verifiedCapture = await captureWorkingTree(destinationReal, {
+      limits,
+      trackedPaths: new Set(selected.files.map((file) => file.path)),
+      modeHints: new Map(selected.files.map((file) => [file.path, file.mode] as const)),
+      allowIncompleteMarker: true,
+    });
+    const verifiedPrepared = await prepareFiles(destinationReal, verifiedCapture.files);
+    if (
+      verified.head.toLowerCase() !== selected.oid
+      || !stableIdentityMatches(verified.identity, expected)
+      || !sameTree(verifiedPrepared, selected.files)
+      || verifiedCapture.fingerprint !== filesystemFingerprint(selected.files)
+    ) {
+      fail("changed", CHANGED_MESSAGE);
+    }
+    await assertMarker(destinationReal);
+    return Object.freeze({
+      canonicalRoot: destinationReal,
+      identity: verified.identity,
+      head: selected.oid,
+      fingerprint: verifiedCapture.fingerprint,
+    });
+  } catch (error) {
+    throw normalizeUnexpected(error);
+  }
+}
+
+/**
+ * Read and export the complete validated object closure reachable from the
+ * current pinned refs/heads/main.  This is deliberately the read-only Phase A
+ * used by later staging: no destination, FsClient, or Git write is involved.
+ * The source HEAD and index hash are checked again after the graph walk so a
+ * concurrent source change is never handed off as a validated graph.
+ */
+export async function readLocalHistoryGraph(
+  root: string,
+  options?: ReadLocalHistoryGraphOptions,
+): Promise<LocalHistoryObjectGraph> {
+  try {
+    const { limits, maxObjectBytes } = readGraphLimits(options);
+    const sourceReal = await assertSafeRoot(root);
+    const sourceInspection = await inspectRepository(sourceReal, { limits });
+    const sourceIndex = await readIndexBytes(sourceReal);
+    const sourceIndexHash = sourceIndex.hash;
+    if (!sourceIndex.bytes || !sourceIndexHash) fail("unsupported-state", UNSUPPORTED_MESSAGE);
+
+    const graph: MaterializationGraph = {
+      objects: new Map(),
+      references: new Map(),
+      commits: new Map(),
+      limits,
+      maxObjectBytes,
+      objectBytes: 0,
+      entries: 0,
+    };
+    const visitedCommits = new Set<string>();
+    let cursor = sourceInspection.head.toLowerCase();
+    while (true) {
+      if (visitedCommits.has(cursor)) fail("unsupported-state", UNSUPPORTED_MESSAGE);
+      visitedCommits.add(cursor);
+      if (visitedCommits.size > limits.maxObjects) fail("limits-exceeded", LIMIT_MESSAGE);
+      const commit = await readMaterializationCommit(sourceReal, cursor, graph);
+      if (!stableIdentityMatches(commit.identity, sourceInspection.identity)) {
+        fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
+      }
+      if (!commit.parent) break;
+      cursor = commit.parent;
+    }
+
+    // The graph is tied to the source's pinned main ref and clean index.  A
+    // changed ref or index means the bytes must be discarded and re-read.
+    const sourceAfter = await inspectRepository(sourceReal, { limits });
+    const sourceIndexAfter = await readIndexBytes(sourceReal);
+    if (
+      sourceAfter.head.toLowerCase() !== sourceInspection.head.toLowerCase()
+      || sourceIndexAfter.hash !== sourceIndexHash
+      || !stableIdentityMatches(sourceAfter.identity, sourceInspection.identity)
+    ) {
+      fail("changed", CHANGED_MESSAGE);
+    }
+
+    const objects = [...reachableMaterializationObjects(sourceInspection.head, graph)]
+      .sort((left, right) => left.oid.localeCompare(right.oid))
+      .map((object): LocalHistoryObject => Object.freeze({
+        oid: object.oid,
+        type: object.type,
+        // Keep the graph's bounded bytes private from later caller mutation;
+        // the public typed-array copy is intentionally revalidated later.
+        bytes: new Uint8Array(object.bytes),
+      }));
+    const identity = Object.freeze({
+      schemaVersion: sourceInspection.identity.schemaVersion,
+      id: sourceInspection.identity.id,
+      kind: sourceInspection.identity.kind,
+      title: sourceInspection.identity.title,
+      templateVersion: sourceInspection.identity.templateVersion,
+    });
+    return Object.freeze({
+      identity,
+      head: sourceInspection.head.toLowerCase(),
+      indexHash: sourceIndexHash,
+      objects: Object.freeze(objects),
+    });
+  } catch (error) {
+    throw normalizeUnexpected(error);
+  }
+}
+
+/**
+ * Validate a complete first-parent History closure from an object-only Git
+ * directory. Unlike readLocalHistoryGraph/materialization this does not read
+ * an index, working tree, or identity file from the root; the expected
+ * portable identity is supplied by the trusted caller and the identity file
+ * embedded in every validated commit tree must match it.
+ */
+export async function validateLocalHistoryGraphAtRoot(
+  root: string,
+  oidValue: string,
+  expectedIdentity: RepositoryIdentity,
+  options?: ReadLocalHistoryGraphOptions,
+): Promise<ValidatedLocalHistoryGraph> {
+  try {
+    const { limits, maxObjectBytes } = readGraphLimits(options);
+    if (typeof oidValue !== "string" || !SHA1.test(oidValue) || oidValue !== oidValue.toLowerCase()) {
+      fail("unsafe-tree", UNSAFE_TREE_MESSAGE);
+    }
+    const selectedOid = oidValue;
+    let expected: RepositoryIdentity;
+    try {
+      const parseIdentity = await loadParseIdentity();
+      expected = parseIdentity(expectedIdentity);
+    } catch {
+      fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
+    }
+
+    const rootReal = await assertSafeRoot(root);
+    // The stage may contain only the generated main remote-tracking ref in
+    // addition to refs/heads/main.  Administrative files are still checked
+    // for links, hardlinks, locks, and unsafe names by the existing walker.
+    const gitdir = join(rootReal, ".git");
+    await validateAdministrativeTree(rootReal, gitdir);
+    const headText = await fs.readFile(join(gitdir, "HEAD"), "utf8").catch(() => {
+      fail("unsupported-state", UNSUPPORTED_MESSAGE);
+    });
+    if (headText.trim() !== "ref: " + MAIN_REF) fail("unsupported-state", UNSUPPORTED_MESSAGE);
+    const allowedRemoteRef = "refs/remotes/maginalia/main";
+    const initialRefs = await listRefs(rootReal, "refs");
+    if (
+      !initialRefs.includes(MAIN_REF)
+      || initialRefs.some((ref) => ref !== MAIN_REF && ref !== allowedRemoteRef)
+    ) {
+      fail("unsupported-state", UNSUPPORTED_MESSAGE);
+    }
+
+    const graph: MaterializationGraph = {
+      objects: new Map(),
+      references: new Map(),
+      commits: new Map(),
+      limits,
+      maxObjectBytes,
+      objectBytes: 0,
+      entries: 0,
+    };
+    const visitedCommits = new Set<string>();
+    let cursor = selectedOid;
+    let actualIdentity: RepositoryIdentity | undefined;
+    while (true) {
+      if (visitedCommits.has(cursor)) fail("unsupported-state", UNSUPPORTED_MESSAGE);
+      visitedCommits.add(cursor);
+      if (visitedCommits.size > limits.maxObjects) fail("limits-exceeded", LIMIT_MESSAGE);
+      const commit = await readMaterializationCommit(rootReal, cursor, graph);
+      actualIdentity ??= commit.identity;
+      if (!stableIdentityMatches(commit.identity, expected)) {
+        fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
+      }
+      if (!commit.parent) break;
+      cursor = commit.parent;
+    }
+
+    // Ref/config administrative state is checked again after object reads so
+    // a concurrent stage mutation cannot turn an incomplete closure into a
+    // successful validation result. The object bytes themselves are hashed
+    // by readMaterializationObject on every cache miss.
+    const finalHead = await fs.readFile(join(gitdir, "HEAD"), "utf8").catch(() => {
+      fail("changed", CHANGED_MESSAGE);
+    });
+    const finalRefs = await listRefs(rootReal, "refs");
+    if (
+      finalHead.trim() !== headText.trim()
+      || finalRefs.length !== initialRefs.length
+      || finalRefs.some((ref, index) => ref !== initialRefs[index])
+    ) {
+      fail("changed", CHANGED_MESSAGE);
+    }
+    if (!actualIdentity) fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
+    return Object.freeze({
+      head: selectedOid,
+      identity: actualIdentity,
+      objectCount: graph.objects.size,
+      objectBytes: graph.objectBytes,
     });
   } catch (error) {
     throw normalizeUnexpected(error);

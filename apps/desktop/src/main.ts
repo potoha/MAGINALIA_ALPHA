@@ -46,6 +46,13 @@ import { runRepositorySmoke } from "./repository-smoke";
 import { runWorkspaceSmoke } from "./workspace-smoke";
 import { runWritingSmoke } from "./writing-smoke";
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  // Do not construct services, register IPC, or touch app state in a second
+  // process. The first process remains the sole owner of the app data root.
+  app.quit();
+} else {
 const quickSmokeMode = process.argv.includes("--smoke");
 const writingSmoke = parseWritingSmokeMode(process.argv);
 const workspaceSmoke = parseWorkspaceSmokeMode(process.argv);
@@ -193,6 +200,13 @@ let writingSmokeFinished = false;
 let workspaceSmokeFinished = false;
 let quotationSmokeFinished = false;
 let repositorySmokeFinished = false;
+
+app.on("second-instance", () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
 
 function failWritingSmoke(error: unknown): void {
   if (writingSmokeFinished) return;
@@ -539,3 +553,4 @@ app.on("window-all-closed", () => {
     app.quit();
   }
 });
+}

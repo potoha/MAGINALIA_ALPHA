@@ -18,6 +18,7 @@
     "build:preload": "vite build --mode preload",
     "build:renderer": "vite build",
     "test": "vitest run --root .",
+    "test:github:live-auth": "node test/github-device-preflight.mjs",
     "smoke": "npm run build && electron dist/main/main.js --smoke",
     "smoke:writing": "npm run build && node test/writing-smoke.mjs",
     "smoke:workspace": "npm run build && node test/workspace-smoke.mjs",
