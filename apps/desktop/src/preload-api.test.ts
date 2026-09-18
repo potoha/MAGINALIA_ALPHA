@@ -4,6 +4,11 @@ import {
   OPEN_DOCUMENT_CHANNEL,
   OPEN_MARKDOWN_CHANNEL,
   OPEN_MANUSCRIPT_CHANNEL,
+  OPEN_PROJECT_CHANNEL,
+  CREATE_PROJECT_CHANNEL,
+  RESTORE_PROJECT_CHANNEL,
+  OPEN_PROJECT_FILE_CHANNEL,
+  CREATE_PROJECT_FILE_CHANNEL,
   SAVE_MARKDOWN_CHANNEL,
   OPEN_LIBRARY_CHANNEL,
   SEARCH_LIBRARY_CHANNEL,
@@ -34,6 +39,11 @@ describe("preload boundary", () => {
       "saveMarkdown",
       "openDocument",
       "openManuscript",
+      "openProject",
+      "createProject",
+      "restoreProject",
+      "openProjectFile",
+      "createProjectFile",
       "openLibrary",
       "searchLibrary",
       "resolveQuotationForInsert",
@@ -54,6 +64,19 @@ describe("preload boundary", () => {
     await api.openManuscript({
       documentId: "00000000-0000-4000-8000-000000000000",
       manuscriptId: "11111111-1111-4111-8111-111111111111"
+    });
+    await api.openProject();
+    await api.createProject({ title: "Coffee" });
+    await api.restoreProject();
+    await api.openProjectFile({
+      projectId: "77777777-7777-4777-8777-777777777777",
+      fileId: "88888888-8888-4888-8888-888888888888"
+    });
+    await api.createProjectFile({
+      projectId: "77777777-7777-4777-8777-777777777777",
+      fileName: "memo.md",
+      title: "Memo",
+      documentType: "memo"
     });
     await api.openLibrary();
     await api.searchLibrary({
@@ -90,6 +113,25 @@ describe("preload boundary", () => {
         args: [{
           documentId: "00000000-0000-4000-8000-000000000000",
           manuscriptId: "11111111-1111-4111-8111-111111111111"
+        }]
+      },
+      { channel: OPEN_PROJECT_CHANNEL, args: [] },
+      { channel: CREATE_PROJECT_CHANNEL, args: [{ title: "Coffee" }] },
+      { channel: RESTORE_PROJECT_CHANNEL, args: [] },
+      {
+        channel: OPEN_PROJECT_FILE_CHANNEL,
+        args: [{
+          projectId: "77777777-7777-4777-8777-777777777777",
+          fileId: "88888888-8888-4888-8888-888888888888"
+        }]
+      },
+      {
+        channel: CREATE_PROJECT_FILE_CHANNEL,
+        args: [{
+          projectId: "77777777-7777-4777-8777-777777777777",
+          fileName: "memo.md",
+          title: "Memo",
+          documentType: "memo"
         }]
       },
       { channel: OPEN_LIBRARY_CHANNEL, args: [] },

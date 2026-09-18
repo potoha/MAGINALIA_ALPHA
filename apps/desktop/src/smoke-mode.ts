@@ -2,6 +2,7 @@ export const WRITING_SMOKE_FLAG = "--smoke-writing";
 export const WORKSPACE_SMOKE_FLAG = "--smoke-workspace";
 export const QUOTATION_SMOKE_FLAG = "--smoke-quotation";
 export const REPOSITORY_SMOKE_FLAG = "--smoke-repository";
+export const PROJECT_SMOKE_FLAG = "--smoke-project";
 
 export interface WritingSmokeMode {
   readonly requested: boolean;
@@ -20,6 +21,11 @@ export interface QuotationSmokeMode {
 }
 
 export interface RepositorySmokeMode {
+  readonly requested: boolean;
+  readonly rootPath?: string;
+}
+
+export interface ProjectSmokeMode {
   readonly requested: boolean;
   readonly rootPath?: string;
 }
@@ -59,6 +65,14 @@ export function parseRepositorySmokeMode(args: readonly string[]): RepositorySmo
   const flagIndex = args.indexOf(REPOSITORY_SMOKE_FLAG);
   if (flagIndex < 0) return { requested: false };
 
+  const candidate = args[flagIndex + 1];
+  if (!candidate || candidate.startsWith("--")) return { requested: true };
+  return { requested: true, rootPath: candidate };
+}
+
+export function parseProjectSmokeMode(args: readonly string[]): ProjectSmokeMode {
+  const flagIndex = args.indexOf(PROJECT_SMOKE_FLAG);
+  if (flagIndex < 0) return { requested: false };
   const candidate = args[flagIndex + 1];
   if (!candidate || candidate.startsWith("--")) return { requested: true };
   return { requested: true, rootPath: candidate };

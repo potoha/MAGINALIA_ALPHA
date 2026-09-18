@@ -13,7 +13,7 @@ export interface WorkbenchViewDescriptor extends WorkbenchView {
 export const WORKBENCH_VIEW_MANIFEST = [
   {
     id: "workspace",
-    title: "Documents",
+    title: "Project",
     defaultRegion: "primary-sidebar",
     activityButtonId: "activity-view-workspace",
     panelId: "workspace-navigation"

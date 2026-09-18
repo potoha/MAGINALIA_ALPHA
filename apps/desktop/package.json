@@ -9,7 +9,8 @@
     "@maginalia/writing-core": "0.0.0",
     "isomorphic-git": "1.41.9",
     "koffi": "3.3.0",
-    "monaco-editor": "0.53.0"
+    "monaco-editor": "0.53.0",
+    "yaml": "2.8.3"
   },
   "scripts": {
     "postinstall": "install-electron",
@@ -23,6 +24,7 @@
     "smoke": "npm run build && electron dist/main/main.js --smoke",
     "smoke:writing": "npm run build && node test/writing-smoke.mjs",
     "smoke:workspace": "npm run build && node test/workspace-smoke.mjs",
+    "smoke:project": "npm run build && node test/project-smoke.mjs",
     "smoke:quotation": "npm run build && node test/quotation-smoke.mjs",
     "smoke:repository": "npm run build && node test/repository-smoke.mjs",
     "smoke:worker-job": "npm run build:main && electron dist/main/repository-materialization-worker-smoke.js",

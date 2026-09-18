@@ -1,0 +1,311 @@
+import type { OpenMarkdownResult, OpenMarkdownSuccess } from "../markdown-ipc";
+import type {
+  CreateProjectFileRequest,
+  CreateProjectRequest,
+  OpenProjectFileRequest,
+  ProjectCreateResultWithCancel,
+  ProjectFileCreateResultWithError,
+  ProjectFileOpenResult,
+  ProjectOpenResult,
+  ProjectRestoreResult
+} from "../project-ipc";
+import type { ProjectFileSummary, ProjectOpened, ProjectSummary } from "../project-service";
+import type { DocumentWorkspaceOpened } from "../document-workspace";
+import type { WritingController } from "./controller";
+import type {
+  DirtySwitchDecision,
+  DocumentActivationOutcome,
+  RepositoryDocumentActivationResult,
+  DirtySwitchContext,
+  WorkspaceSwitchTarget
+} from "./workspace-controller";
+
+export interface ProjectNavigationApi {
+  openProject(): Promise<ProjectOpenResult>;
+  createProject(request: CreateProjectRequest): Promise<ProjectCreateResultWithCancel>;
+  restoreProject(): Promise<ProjectRestoreResult>;
+  openProjectFile(request: OpenProjectFileRequest): Promise<ProjectFileOpenResult>;
+  createProjectFile(request: CreateProjectFileRequest): Promise<ProjectFileCreateResultWithError>;
+}
+
+export interface ProjectNavigationState {
+  readonly project: ProjectSummary | null;
+  readonly files: readonly ProjectFileSummary[];
+  readonly activeFileId: string | null;
+}
+
+export interface ProjectNavigationView {
+  setProjectState(state: ProjectNavigationState): void;
+  setProjectError(message: string | null): void;
+}
+
+export interface ProjectNavigationControllerOptions {
+  readonly api: ProjectNavigationApi;
+  readonly writing: WritingController;
+  readonly view: ProjectNavigationView;
+  readonly decideDirtySwitch: (context: DirtySwitchContext) => DirtySwitchDecision | Promise<DirtySwitchDecision>;
+}
+
+const EMPTY_STATE: ProjectNavigationState = { project: null, files: [], activeFileId: null };
+const OPEN_FAILED = "The Project folder could not be opened. Choose it again.";
+const FILE_OPEN_FAILED = "The Markdown file could not be opened. Try again.";
+const SWITCH_REQUIRES_CLEAN = "Save or discard the current manuscript before switching.";
+
+function copyState(state: ProjectNavigationState): ProjectNavigationState {
+  return { project: state.project, files: [...state.files], activeFileId: state.activeFileId };
+}
+
+function projectFileFromLegacy(file: { readonly manuscriptId: string; readonly displayName: string }): ProjectFileSummary {
+  return {
+    fileId: file.manuscriptId,
+    displayName: file.displayName,
+    documentType: "other",
+    title: file.displayName.replace(/\.(?:md|markdown)$/iu, "")
+  };
+}
+
+function projectFromLegacy(result: DocumentWorkspaceOpened): ProjectOpened {
+  return {
+    kind: "opened",
+    project: { projectId: result.document.documentId, displayName: result.document.displayName },
+    files: result.manuscripts.map(projectFileFromLegacy)
+  };
+}
+
+export class ProjectNavigationController {
+  private readonly api: ProjectNavigationApi;
+  private readonly writing: WritingController;
+  private readonly view: ProjectNavigationView;
+  private readonly decideDirtySwitch: ProjectNavigationControllerOptions["decideDirtySwitch"];
+  private state: ProjectNavigationState = EMPTY_STATE;
+  private busy = false;
+
+  public constructor(options: ProjectNavigationControllerOptions) {
+    this.api = options.api;
+    this.writing = options.writing;
+    this.view = options.view;
+    this.decideDirtySwitch = options.decideDirtySwitch;
+    this.view.setProjectState(this.state);
+    this.view.setProjectError(null);
+  }
+
+  public getState(): ProjectNavigationState {
+    return copyState(this.state);
+  }
+
+  public restoreProject(): Promise<void> {
+    return this.run(async () => {
+      let result: ProjectRestoreResult;
+      try {
+        result = await this.api.restoreProject();
+      } catch (_error: unknown) {
+        this.showError(OPEN_FAILED);
+        return;
+      }
+      if (result.kind === "none") return;
+      if (result.kind !== "opened") {
+        this.showError(result.message);
+        return;
+      }
+      await this.applyProject(result);
+    });
+  }
+
+  public openProject(): Promise<void> {
+    return this.run(async () => {
+      if (!(await this.canSwitch({ kind: "document" }))) return;
+      let result: ProjectOpenResult;
+      try {
+        result = await this.api.openProject();
+      } catch (_error: unknown) {
+        this.showError(OPEN_FAILED);
+        return;
+      }
+      if (result.kind === "cancelled") return;
+      if (result.kind !== "opened") {
+        this.showError(result.message);
+        return;
+      }
+      await this.applyProject(result);
+    });
+  }
+
+  public createProject(title: string): Promise<void> {
+    return this.run(async () => {
+      if (!(await this.canSwitch({ kind: "document" }))) return;
+      let result: ProjectCreateResultWithCancel;
+      try {
+        result = await this.api.createProject({ title });
+      } catch (_error: unknown) {
+        this.showError("The Project could not be created. Try again.");
+        return;
+      }
+      if (result.kind === "cancelled") return;
+      if (result.kind !== "opened") {
+        this.showError(result.message);
+        return;
+      }
+      await this.applyProject(result);
+    });
+  }
+
+  public createFile(request: Omit<CreateProjectFileRequest, "projectId">): Promise<void> {
+    return this.run(async () => {
+      const project = this.state.project;
+      if (!project) {
+        this.showError("Open a Project before creating a Markdown file.");
+        return;
+      }
+      if (!(await this.canSwitch({ kind: "manuscript", displayName: request.fileName }))) return;
+      let result: ProjectFileCreateResultWithError;
+      try {
+        result = await this.api.createProjectFile({ ...request, projectId: project.projectId });
+      } catch (_error: unknown) {
+        this.showError("The Markdown file could not be created. Try another name.");
+        return;
+      }
+      if (result.kind !== "created") {
+        this.showError(result.message);
+        return;
+      }
+      const previousActive = this.state.activeFileId;
+      this.replaceState({
+        project: result.project,
+        files: result.files,
+        activeFileId: result.files.some((file) => file.fileId === previousActive) ? previousActive : null
+      });
+      await this.openFileNow(result.file.fileId);
+    });
+  }
+
+  public openFile(fileId: string): Promise<void> {
+    return this.run(() => this.openFileNow(fileId));
+  }
+
+  /** Repository handoff adapter retained for the existing Repository feature. */
+  public openDocumentFromRepository(
+    load: () => Promise<RepositoryDocumentActivationResult>
+  ): Promise<DocumentActivationOutcome> {
+    if (this.busy) return Promise.resolve("cancelled");
+    this.busy = true;
+    return (async () => {
+      if (!(await this.canSwitch({ kind: "document" }))) return "cancelled" as const;
+      let result: RepositoryDocumentActivationResult;
+      try {
+        result = await load();
+      } catch (_error: unknown) {
+        this.showError(OPEN_FAILED);
+        return "failed" as const;
+      }
+      if (result.kind === "cancelled") return "cancelled" as const;
+      if (result.kind !== "opened") {
+        this.showError(result.message);
+        return "failed" as const;
+      }
+      const project = projectFromLegacy(result);
+      if (!(await this.applyProject(project))) return "failed" as const;
+      return "activated" as const;
+    })().finally(() => {
+      this.busy = false;
+    });
+  }
+
+  private async applyProject(result: ProjectOpened): Promise<boolean> {
+    const first = result.files[0];
+    if (!first) {
+      this.writing.clearDocument();
+      this.replaceState({ project: result.project, files: result.files, activeFileId: null });
+      this.showError(null);
+      return true;
+    }
+
+    let opened: ProjectFileOpenResult;
+    try {
+      opened = await this.api.openProjectFile({ projectId: result.project.projectId, fileId: first.fileId });
+    } catch (_error: unknown) {
+      this.showError(FILE_OPEN_FAILED);
+      return false;
+    }
+    if (opened.kind !== "opened") {
+      this.showError(opened.kind === "error" ? opened.message : FILE_OPEN_FAILED);
+      return false;
+    }
+    this.writing.applyOpenedDocument(opened);
+    this.replaceState({ project: result.project, files: result.files, activeFileId: first.fileId });
+    this.showError(null);
+    return true;
+  }
+
+  private async openFileNow(fileId: string): Promise<void> {
+    const project = this.state.project;
+    if (!project) {
+      this.showError("Open a Project before choosing a file.");
+      return;
+    }
+    const file = this.state.files.find((candidate) => candidate.fileId === fileId);
+    if (!file) {
+      this.showError("That Markdown file is not available in the current Project.");
+      return;
+    }
+    if (file.fileId === this.state.activeFileId) return;
+    if (!(await this.canSwitch({ kind: "manuscript", displayName: file.displayName }))) return;
+
+    let result: ProjectFileOpenResult;
+    try {
+      result = await this.api.openProjectFile({ projectId: project.projectId, fileId: file.fileId });
+    } catch (_error: unknown) {
+      this.showError(FILE_OPEN_FAILED);
+      return;
+    }
+    if (result.kind !== "opened") {
+      this.showError(result.kind === "error" ? result.message : FILE_OPEN_FAILED);
+      return;
+    }
+    this.writing.applyOpenedDocument(result);
+    this.replaceState({ ...this.state, activeFileId: file.fileId });
+    this.showError(null);
+  }
+
+  private async canSwitch(target: WorkspaceSwitchTarget): Promise<boolean> {
+    if (!this.writing.hasUnsavedChanges()) return true;
+    const current = this.writing.getDocumentState();
+    if (!current) return true;
+    let decision: DirtySwitchDecision;
+    try {
+      decision = await this.decideDirtySwitch({ currentDisplayName: current.displayName, target });
+    } catch (_error: unknown) {
+      this.showError(SWITCH_REQUIRES_CLEAN);
+      return false;
+    }
+    if (decision === "discard") return true;
+    if (decision !== "save") return false;
+    try {
+      await this.writing.save();
+    } catch (_error: unknown) {
+      this.showError(SWITCH_REQUIRES_CLEAN);
+      return false;
+    }
+    if (this.writing.hasUnsavedChanges()) {
+      this.showError(SWITCH_REQUIRES_CLEAN);
+      return false;
+    }
+    return true;
+  }
+
+  private run(operation: () => Promise<void>): Promise<void> {
+    if (this.busy) return Promise.resolve();
+    this.busy = true;
+    return operation().catch((_error: unknown) => this.showError(OPEN_FAILED)).finally(() => {
+      this.busy = false;
+    });
+  }
+
+  private replaceState(state: ProjectNavigationState): void {
+    this.state = copyState(state);
+    this.view.setProjectState(this.state);
+  }
+
+  private showError(message: string | null): void {
+    this.view.setProjectError(message);
+  }
+}

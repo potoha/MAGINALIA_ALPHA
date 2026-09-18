@@ -9,6 +9,13 @@ import {
 } from "./library-controller";
 import { MonacoMarkdownSurface } from "./monaco-surface";
 import {
+  ProjectNavigationController,
+  type ProjectNavigationApi,
+  type ProjectNavigationState,
+  type ProjectNavigationView
+} from "./project-controller";
+import { PROJECT_DOCUMENT_TYPES, type ProjectDocumentType } from "../project-metadata";
+import {
   WorkspaceNavigationController,
   type WorkspaceNavigationApi,
   type DirtySwitchDecision,
@@ -70,13 +77,30 @@ app.innerHTML = `
         <div id="primary-sidebar-resizer" class="sidebar-resizer" data-workbench-resize="primary-sidebar" role="separator" aria-label="Resize primary sidebar" aria-orientation="vertical" tabindex="0"></div>
         <div class="view-container primary-view-container">
           <section id="workspace-navigation" class="workspace-navigation view-panel" aria-labelledby="workspace-document-heading">
-            <h2 id="workspace-document-heading" class="visually-hidden">Document manuscripts</h2>
+            <h2 id="workspace-document-heading" class="visually-hidden">Project Registry</h2>
             <div class="workspace-document-heading">
-              <span class="workspace-label">Document</span>
-              <strong id="workspace-document-name">No Document open</strong>
+              <span id="workspace-label" class="workspace-label">Project</span>
+              <strong id="workspace-document-name">No Project open</strong>
+            </div>
+            <div class="project-controls">
+              <button id="open-project" type="button">Open Project</button>
+              <input id="create-project-title" type="text" maxlength="200" autocomplete="off" placeholder="New Project name">
+              <button id="create-project" type="button">Create Project</button>
             </div>
             <p id="workspace-error" class="workspace-error" role="alert" aria-live="assertive" hidden></p>
-            <p id="empty-document-message" class="empty-document-message">Open a Document folder to see its Markdown manuscripts.</p>
+            <form id="new-file-form" class="new-file-form">
+              <strong>Registry</strong>
+              <label for="new-file-name">Filename</label>
+              <input id="new-file-name" type="text" maxlength="240" autocomplete="off" placeholder="idea.md">
+              <label for="new-file-title">Title</label>
+              <input id="new-file-title" type="text" maxlength="240" autocomplete="off" placeholder="Untitled note">
+              <label for="new-file-type">Type</label>
+              <select id="new-file-type">
+                ${PROJECT_DOCUMENT_TYPES.map((type) => `<option value="${type}">${type}</option>`).join("")}
+              </select>
+              <button id="new-file" type="submit">New File (.md)</button>
+            </form>
+            <p id="empty-document-message" class="empty-document-message">Open a Project folder to see its Markdown files.</p>
             <ul id="manuscript-list" class="manuscript-list" aria-label="Markdown manuscripts"></ul>
           </section>
           <section id="repository-navigation" class="repository-navigation view-panel" aria-labelledby="repository-heading">
@@ -188,13 +212,21 @@ const toolbarTogglePrimarySidebarButton = requiredElement<HTMLButtonElement>("#t
 const toolbarToggleSecondarySidebarButton = requiredElement<HTMLButtonElement>("#toolbar-toggle-secondary-sidebar");
 const toolbarToggleEditorOnlyButton = requiredElement<HTMLButtonElement>("#toolbar-toggle-editor-only");
 const openButton = requiredElement<HTMLButtonElement>("#open-markdown");
+const openProjectButton = requiredElement<HTMLButtonElement>("#open-project");
 const saveButton = requiredElement<HTMLButtonElement>("#save-markdown");
 const documentName = requiredElement<HTMLElement>("#document-name");
 const documentStatus = requiredElement<HTMLElement>("#document-status");
+const workspaceLabel = requiredElement<HTMLElement>("#workspace-label");
 const workspaceDocumentName = requiredElement<HTMLElement>("#workspace-document-name");
 const workspaceError = requiredElement<HTMLElement>("#workspace-error");
 const emptyDocumentMessage = requiredElement<HTMLElement>("#empty-document-message");
 const manuscriptList = requiredElement<HTMLUListElement>("#manuscript-list");
+const createProjectTitle = requiredElement<HTMLInputElement>("#create-project-title");
+const createProjectButton = requiredElement<HTMLButtonElement>("#create-project");
+const newFileForm = requiredElement<HTMLFormElement>("#new-file-form");
+const newFileName = requiredElement<HTMLInputElement>("#new-file-name");
+const newFileTitle = requiredElement<HTMLInputElement>("#new-file-title");
+const newFileType = requiredElement<HTMLSelectElement>("#new-file-type");
 const chooseLibraryButton = requiredElement<HTMLButtonElement>("#choose-library");
 const libraryName = requiredElement<HTMLElement>("#library-name");
 const librarySearchForm = requiredElement<HTMLFormElement>("#library-search-form");
@@ -372,6 +404,7 @@ const controller = new WritingController({
 });
 
 function renderWorkspaceState(state: WorkspaceNavigationState): void {
+  workspaceLabel.textContent = "Document";
   workspaceDocumentName.textContent = state.document?.displayName ?? "No Document open";
   manuscriptList.replaceChildren();
 
@@ -403,6 +436,46 @@ function renderWorkspaceState(state: WorkspaceNavigationState): void {
   }
 }
 
+function renderProjectState(state: ProjectNavigationState): void {
+  workspaceLabel.textContent = "Project";
+  workspaceDocumentName.textContent = state.project?.displayName ?? "No Project open";
+  manuscriptList.replaceChildren();
+
+  if (!state.project) {
+    emptyDocumentMessage.textContent = "Open or create a Project folder to see its Markdown files.";
+    emptyDocumentMessage.hidden = false;
+    return;
+  }
+  if (state.files.length === 0) {
+    emptyDocumentMessage.textContent = "This Project has no Markdown files yet. Create one from Registry.";
+    emptyDocumentMessage.hidden = false;
+    return;
+  }
+
+  emptyDocumentMessage.hidden = true;
+  for (const file of state.files) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "manuscript-button";
+    button.textContent = file.displayName;
+    button.dataset.manuscriptId = file.fileId;
+    button.dataset.projectFileType = file.documentType;
+    if (state.activeFileId === file.fileId) {
+      button.classList.add("active");
+      button.setAttribute("aria-current", "page");
+    }
+    const type = document.createElement("small");
+    type.className = "project-file-type";
+    type.textContent = file.documentType;
+    item.append(button, type);
+    manuscriptList.append(item);
+  }
+}
+
+let projectController: ProjectNavigationController | undefined;
+let workspaceController: WorkspaceNavigationController | undefined;
+
 const workspaceView: WorkspaceNavigationView = {
   setWorkspaceState(state: WorkspaceNavigationState): void {
     renderWorkspaceState(state);
@@ -415,6 +488,22 @@ const workspaceView: WorkspaceNavigationView = {
     }
   },
   setWorkspaceError(message: string | null): void {
+    workspaceError.textContent = message ?? "";
+    workspaceError.hidden = message === null;
+  }
+};
+
+const projectView: ProjectNavigationView = {
+  setProjectState(state: ProjectNavigationState): void {
+    renderProjectState(state);
+    for (const button of manuscriptList.querySelectorAll<HTMLButtonElement>("button[data-manuscript-id]")) {
+      button.addEventListener("click", () => {
+        const fileId = button.dataset.manuscriptId;
+        if (fileId) void projectController?.openFile(fileId);
+      });
+    }
+  },
+  setProjectError(message: string | null): void {
     workspaceError.textContent = message ?? "";
     workspaceError.hidden = message === null;
   }
@@ -600,6 +689,30 @@ function getWorkspaceApi(): WorkspaceNavigationApi | null {
   };
 }
 
+function getProjectApi(): ProjectNavigationApi | null {
+  const api = window.maginalia;
+  if (!api
+    || typeof api.openProject !== "function"
+    || typeof api.createProject !== "function"
+    || typeof api.restoreProject !== "function"
+    || typeof api.openProjectFile !== "function"
+    || typeof api.createProjectFile !== "function") {
+    return null;
+  }
+  const openProject = api.openProject;
+  const createProject = api.createProject;
+  const restoreProject = api.restoreProject;
+  const openProjectFile = api.openProjectFile;
+  const createProjectFile = api.createProjectFile;
+  return {
+    openProject: () => openProject(),
+    createProject: (request) => createProject(request),
+    restoreProject: () => restoreProject(),
+    openProjectFile: (request) => openProjectFile(request),
+    createProjectFile: (request) => createProjectFile(request)
+  };
+}
+
 function getLibraryApi(): LibraryControllerApi | null {
   const api = window.maginalia;
   if (!api
@@ -654,12 +767,17 @@ const writingSmokeMode = smokeQuery === "writing";
 const workspaceSmokeMode = smokeQuery === "workspace";
 const quotationSmokeMode = smokeQuery === "quotation";
 const repositorySmokeMode = smokeQuery === "repository";
+const projectSmokeMode = smokeQuery === "project";
 const smokeDecisionQueue: DirtySwitchDecision[] = [];
-openButton.textContent = writingSmokeMode ? "Open" : "Open Document";
+const legacyWorkspaceMode = workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode;
+openButton.textContent = writingSmokeMode ? "Open" : legacyWorkspaceMode ? "Open Document" : "Open Project";
 repositoryNavigation.hidden = writingSmokeMode;
+newFileForm.hidden = writingSmokeMode || legacyWorkspaceMode;
+createProjectButton.hidden = writingSmokeMode || legacyWorkspaceMode;
+createProjectTitle.hidden = writingSmokeMode || legacyWorkspaceMode;
+openProjectButton.hidden = writingSmokeMode || legacyWorkspaceMode;
 
-let workspaceController: WorkspaceNavigationController | undefined;
-if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode) {
+if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || projectSmokeMode) {
   const updateSmokeText = (): void => {
     editorContainer.dataset.smokeText = surface.getText();
   };
@@ -669,8 +787,10 @@ if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySm
     : workspaceSmokeMode
       ? "workspace"
       : quotationSmokeMode
-        ? "quotation"
-        : "repository";
+      ? "quotation"
+        : projectSmokeMode
+          ? "project"
+          : "repository";
   editorContainer.addEventListener("maginalia-smoke-append", (event) => {
     const text = (event as CustomEvent<string>).detail;
     if (typeof text === "string") surface.appendTextForSmoke(text);
@@ -683,7 +803,7 @@ if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySm
   updateSmokeText();
 }
 
-if (workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode) {
+if (workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || projectSmokeMode) {
   window.addEventListener("maginalia-smoke-decision", (event) => {
     const decision = (event as CustomEvent<unknown>).detail;
     if (decision === "save" || decision === "discard" || decision === "cancel") {
@@ -691,16 +811,16 @@ if (workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode) {
     }
   });
   window.addEventListener("error", (event) => {
-    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : "Workspace";
+    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : projectSmokeMode ? "Project" : "Workspace";
     console.error(`${smokeLabel} smoke page error: ${event.message}`);
   });
   window.addEventListener("unhandledrejection", (event) => {
-    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : "Workspace";
+    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : projectSmokeMode ? "Project" : "Workspace";
     console.error(`${smokeLabel} smoke unhandled rejection: ${String(event.reason)}`);
   });
 }
 
-if (!writingSmokeMode) {
+if (legacyWorkspaceMode) {
   const workspaceApi = getWorkspaceApi();
   if (!workspaceApi) {
     const message = "Document workspace is unavailable. Reload MAGINALIA to try again.";
@@ -708,7 +828,7 @@ if (!writingSmokeMode) {
     openButton.disabled = true;
     if (workspaceSmokeMode) console.error(message);
   } else {
-    workspaceController = new WorkspaceNavigationController({
+      workspaceController = new WorkspaceNavigationController({
       api: workspaceApi,
       writing: controller,
       view: workspaceView,
@@ -716,6 +836,27 @@ if (!writingSmokeMode) {
         ? () => smokeDecisionQueue.shift() ?? "cancel"
         : (context) => decideDirtySwitch(context, (message) => window.confirm(message))
     });
+  }
+} else if (!writingSmokeMode) {
+  const projectApi = getProjectApi();
+  if (!projectApi) {
+    projectView.setProjectError("Project is unavailable. Reload MAGINALIA to try again.");
+    openButton.disabled = true;
+    openProjectButton.disabled = true;
+    createProjectButton.disabled = true;
+    newFileForm.querySelectorAll("input, select, button").forEach((element) => {
+      (element as HTMLInputElement | HTMLSelectElement | HTMLButtonElement).disabled = true;
+    });
+  } else {
+    projectController = new ProjectNavigationController({
+      api: projectApi,
+      writing: controller,
+      view: projectView,
+      decideDirtySwitch: projectSmokeMode
+        ? () => smokeDecisionQueue.shift() ?? "cancel"
+        : (context) => decideDirtySwitch(context, (message) => window.confirm(message))
+    });
+    if (!projectSmokeMode) void projectController.restoreProject();
   }
 }
 
@@ -749,7 +890,8 @@ if (!libraryApi) {
 let repositoryController: RepositoryController | undefined;
 if (!writingSmokeMode) {
   const repositoryApi = getRepositoryApi();
-  if (!repositoryApi || !workspaceController || !libraryController) {
+  const documentPort = workspaceController ?? projectController;
+  if (!repositoryApi || !documentPort || !libraryController) {
     createRepositoryButton.disabled = true;
     openRepositoryButton.disabled = true;
     activateRepositoryButton.disabled = true;
@@ -763,7 +905,7 @@ if (!writingSmokeMode) {
   } else {
     repositoryController = new RepositoryController({
       api: repositoryApi,
-      workspace: workspaceController,
+      workspace: documentPort,
       library: libraryController,
       view: repositoryView,
       writing: { hasUnsavedChanges: () => controller.hasUnsavedChanges() }
@@ -803,7 +945,29 @@ if (writingSmokeMode) {
   openButton.addEventListener("click", () => {
     void workspaceController?.openDocument();
   });
+} else if (projectController) {
+  openButton.addEventListener("click", () => {
+    void projectController?.openProject();
+  });
+  openProjectButton.addEventListener("click", () => {
+    void projectController?.openProject();
+  });
 }
+
+createProjectButton.addEventListener("click", () => {
+  if (!projectController) return;
+  void projectController.createProject(createProjectTitle.value);
+});
+
+newFileForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!projectController) return;
+  void projectController.createFile({
+    fileName: newFileName.value,
+    title: newFileTitle.value,
+    documentType: newFileType.value as ProjectDocumentType
+  });
+});
 
 saveButton.addEventListener("click", () => {
   void controller.save();

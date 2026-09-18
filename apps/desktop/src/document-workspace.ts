@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
-import { lstat, readdir, realpath } from "node:fs/promises";
+import { lstat, readdir, realpath, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 
 export interface DocumentSummary {
@@ -27,6 +27,9 @@ export type DocumentWorkspaceFailureCode =
   | "root-unreadable"
   | "invalid-document-id"
   | "document-not-owned"
+  | "invalid-manuscript-name"
+  | "manuscript-exists"
+  | "manuscript-create-failed"
   | "invalid-manuscript-id"
   | "manuscript-not-owned"
   | "manuscript-unavailable";
@@ -49,6 +52,22 @@ export interface ResolvedManuscriptPath {
 }
 
 export type ResolveManuscriptPathResult = ResolvedManuscriptPath | DocumentWorkspaceFailure;
+
+/** Main-process-only root handle used by the Project adapter. */
+export interface ResolvedDocumentRoot {
+  readonly kind: "resolved";
+  readonly canonicalRoot: string;
+}
+
+export type ResolveDocumentRootResult = ResolvedDocumentRoot | DocumentWorkspaceFailure;
+
+export interface CreatedManuscript {
+  readonly kind: "created";
+  readonly document: DocumentSummary;
+  readonly manuscript: ManuscriptSummary;
+}
+
+export type CreateManuscriptResult = CreatedManuscript | DocumentWorkspaceFailure;
 
 interface ManuscriptRecord extends ManuscriptSummary {
   readonly canonicalPath: string;
@@ -108,6 +127,24 @@ const MANUSCRIPT_UNAVAILABLE: DocumentWorkspaceFailure = {
   message: "The selected Markdown manuscript is no longer available."
 };
 
+const INVALID_MANUSCRIPT_NAME: DocumentWorkspaceFailure = {
+  kind: "error",
+  code: "invalid-manuscript-name",
+  message: "Use a Markdown file name without path separators or reserved characters."
+};
+
+const MANUSCRIPT_EXISTS: DocumentWorkspaceFailure = {
+  kind: "error",
+  code: "manuscript-exists",
+  message: "A Markdown file with that name already exists. Choose another name."
+};
+
+const MANUSCRIPT_CREATE_FAILED: DocumentWorkspaceFailure = {
+  kind: "error",
+  code: "manuscript-create-failed",
+  message: "The Markdown file could not be created. Check the Project folder permissions and try again."
+};
+
 const OPAQUE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isOwner(value: unknown): value is object {
@@ -142,6 +179,17 @@ function manuscriptFailure(): DocumentWorkspaceFailure {
 function isMarkdownName(name: string): boolean {
   const extension = path.extname(name).toLowerCase();
   return extension === ".md" || extension === ".markdown";
+}
+
+function isSafeManuscriptName(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const name = value.trim();
+  return name.length > 0
+    && name !== "."
+    && name !== ".."
+    && !/[<>:"/\\|?*\u0000-\u001f]/u.test(name)
+    && !/[. ]$/u.test(name)
+    && /\.(?:md|markdown)$/iu.test(name);
 }
 
 function compareNames(left: string, right: string): number {
@@ -179,6 +227,16 @@ function isDirectChild(rootPath: string, candidatePath: string): boolean {
     && !relativePath.includes(path.sep);
 }
 
+async function listManuscriptEntries(canonicalRoot: string): Promise<Dirent[]> {
+  const entries = await readdir(canonicalRoot, { withFileTypes: true, encoding: "utf8" });
+  return entries
+    .filter((entry) => !entry.name.startsWith("."))
+    .filter((entry) => entry.isFile())
+    .filter((entry) => !entry.isSymbolicLink())
+    .filter((entry) => isMarkdownName(entry.name))
+    .sort(compareManuscripts);
+}
+
 export class DocumentWorkspaceService {
   private readonly documents = new Map<string, DocumentRecord>();
   private readonly owners = new Map<object, DocumentRecord>();
@@ -210,20 +268,13 @@ export class DocumentWorkspaceService {
 
     let entries: Dirent[];
     try {
-      entries = await readdir(canonicalRoot, { withFileTypes: true, encoding: "utf8" });
+      entries = await listManuscriptEntries(canonicalRoot);
     } catch (error: unknown) {
       return rootFailure(error);
     }
 
-    const manuscriptEntries = entries
-      .filter((entry) => !entry.name.startsWith("."))
-      .filter((entry) => entry.isFile())
-      .filter((entry) => !entry.isSymbolicLink())
-      .filter((entry) => isMarkdownName(entry.name))
-      .sort(compareManuscripts);
-
     const documentId = randomUUID();
-    const manuscriptRecords = manuscriptEntries.map((entry): ManuscriptRecord => ({
+    const manuscriptRecords = entries.map((entry): ManuscriptRecord => ({
       manuscriptId: randomUUID(),
       displayName: entry.name,
       canonicalPath: path.join(canonicalRoot, entry.name)
@@ -254,6 +305,92 @@ export class DocumentWorkspaceService {
         manuscriptId,
         displayName
       }))
+    };
+  }
+
+  /** Main-process-only root handle used by the Project adapter. */
+  public async resolveDocumentRoot(owner: unknown, documentId: unknown): Promise<ResolveDocumentRootResult> {
+    const document = this.findDocument(owner, documentId);
+    if ("kind" in document) return document;
+    try {
+      const currentRoot = await realpath(document.canonicalRoot);
+      const rootStats = await lstat(currentRoot);
+      if (currentRoot !== document.canonicalRoot || !rootStats.isDirectory() || rootStats.isSymbolicLink()) {
+        return ROOT_UNREADABLE;
+      }
+      return { kind: "resolved", canonicalRoot: currentRoot };
+    } catch (error: unknown) {
+      return rootFailure(error);
+    }
+  }
+
+  /** Refresh the root-level Markdown registry while retaining existing IDs. */
+  public async refreshForOwner(owner: unknown, documentId: unknown): Promise<DocumentWorkspaceResult> {
+    const document = this.findDocument(owner, documentId);
+    if ("kind" in document) return document;
+
+    let entries: Dirent[];
+    try {
+      const root = await this.resolveDocumentRoot(owner, documentId);
+      if (root.kind !== "resolved") return root;
+      entries = await listManuscriptEntries(root.canonicalRoot);
+    } catch (error: unknown) {
+      return rootFailure(error);
+    }
+
+    const previousByName = new Map(
+      [...document.manuscripts.values()].map((manuscript) => [manuscript.displayName, manuscript] as const)
+    );
+    const manuscriptRecords = entries.map((entry): ManuscriptRecord => {
+      const previous = previousByName.get(entry.name);
+      return previous ?? {
+        manuscriptId: randomUUID(),
+        displayName: entry.name,
+        canonicalPath: path.join(document.canonicalRoot, entry.name)
+      };
+    });
+    const updated: DocumentRecord = {
+      ...document,
+      manuscripts: new Map(manuscriptRecords.map((manuscript) => [manuscript.manuscriptId, manuscript] as const))
+    };
+    this.documents.set(updated.documentId, updated);
+    this.owners.set(updated.owner, updated);
+    return {
+      kind: "opened",
+      document: { documentId: updated.documentId, displayName: updated.displayName },
+      manuscripts: manuscriptRecords.map(({ manuscriptId, displayName }) => ({ manuscriptId, displayName }))
+    };
+  }
+
+  /** Create a root-level Markdown file with exclusive creation and refresh. */
+  public async createManuscriptForOwner(
+    owner: unknown,
+    documentId: unknown,
+    fileName: unknown,
+    contents: unknown
+  ): Promise<CreateManuscriptResult> {
+    if (!isSafeManuscriptName(fileName) || typeof contents !== "string") return INVALID_MANUSCRIPT_NAME;
+    const root = await this.resolveDocumentRoot(owner, documentId);
+    if (root.kind !== "resolved") return root;
+    const normalizedName = fileName.trim();
+    const candidatePath = path.join(root.canonicalRoot, normalizedName);
+    if (!isDirectChild(root.canonicalRoot, candidatePath)) return INVALID_MANUSCRIPT_NAME;
+
+    try {
+      await writeFile(candidatePath, contents, { encoding: "utf8", flag: "wx" });
+    } catch (error: unknown) {
+      if (errorCode(error) === "EEXIST") return MANUSCRIPT_EXISTS;
+      return MANUSCRIPT_CREATE_FAILED;
+    }
+
+    const refreshed = await this.refreshForOwner(owner, documentId);
+    if (refreshed.kind !== "opened") return refreshed;
+    const manuscript = refreshed.manuscripts.find((candidate) => candidate.displayName === normalizedName);
+    if (!manuscript) return MANUSCRIPT_CREATE_FAILED;
+    return {
+      kind: "created",
+      document: refreshed.document,
+      manuscript
     };
   }
 

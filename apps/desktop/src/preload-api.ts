@@ -49,10 +49,32 @@ import {
   type RepositoryCloudDiscoveryCancelResult,
   type RepositoryCloudDiscoveryIpcResult
 } from "./repository-cloud-ipc";
+import {
+  CREATE_PROJECT_CHANNEL,
+  CREATE_PROJECT_FILE_CHANNEL,
+  OPEN_PROJECT_CHANNEL,
+  OPEN_PROJECT_FILE_CHANNEL,
+  RESTORE_PROJECT_CHANNEL,
+  type CreateProjectFileRequest,
+  type CreateProjectRequest,
+  type OpenProjectFileRequest,
+  type ProjectCreateResultWithCancel,
+  type ProjectFileCreateResultWithError,
+  type ProjectFileOpenResult,
+  type ProjectOpenResult,
+  type ProjectRestoreResult
+} from "./project-ipc";
 
 export const OPEN_MARKDOWN_CHANNEL = "maginalia:open-markdown";
 export const SAVE_MARKDOWN_CHANNEL = "maginalia:save-markdown";
 export { OPEN_DOCUMENT_CHANNEL, OPEN_MANUSCRIPT_CHANNEL } from "./document-workspace-ipc";
+export {
+  CREATE_PROJECT_CHANNEL,
+  CREATE_PROJECT_FILE_CHANNEL,
+  OPEN_PROJECT_CHANNEL,
+  OPEN_PROJECT_FILE_CHANNEL,
+  RESTORE_PROJECT_CHANNEL
+} from "./project-ipc";
 export {
   OPEN_LIBRARY_CHANNEL,
   SEARCH_LIBRARY_CHANNEL,
@@ -100,6 +122,16 @@ export type {
   RepositoryCloudDiscoveryCancelResult,
   RepositoryCloudDiscoveryIpcResult
 } from "./repository-cloud-ipc";
+export type {
+  CreateProjectFileRequest,
+  CreateProjectRequest,
+  OpenProjectFileRequest,
+  ProjectCreateResultWithCancel,
+  ProjectFileCreateResultWithError,
+  ProjectFileOpenResult,
+  ProjectOpenResult,
+  ProjectRestoreResult
+} from "./project-ipc";
 
 export type DevicePromptCallback = (prompt: RepositoryCloudDevicePrompt) => void;
 export type DevicePromptUnsubscribe = () => void;
@@ -109,6 +141,11 @@ export interface MarkdownPreloadApi {
   saveMarkdown(request: SaveMarkdownRequest): Promise<SaveMarkdownResult>;
   openDocument?(): Promise<OpenDocumentResult>;
   openManuscript?(request: OpenManuscriptRequest): Promise<OpenManuscriptResult>;
+  openProject?(): Promise<ProjectOpenResult>;
+  createProject?(request: CreateProjectRequest): Promise<ProjectCreateResultWithCancel>;
+  restoreProject?(): Promise<ProjectRestoreResult>;
+  openProjectFile?(request: OpenProjectFileRequest): Promise<ProjectFileOpenResult>;
+  createProjectFile?(request: CreateProjectFileRequest): Promise<ProjectFileCreateResultWithError>;
   openLibrary?(): Promise<OpenLibraryResult>;
   searchLibrary?(request: SearchLibraryRequest): Promise<SearchLibraryResult>;
   resolveQuotationForInsert?(request: ResolveQuotationForInsertRequest): Promise<ResolveQuotationForInsertResult>;
@@ -127,6 +164,11 @@ export interface MarkdownPreloadApi {
 export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   openDocument(): Promise<OpenDocumentResult>;
   openManuscript(request: OpenManuscriptRequest): Promise<OpenManuscriptResult>;
+  openProject(): Promise<ProjectOpenResult>;
+  createProject(request: CreateProjectRequest): Promise<ProjectCreateResultWithCancel>;
+  restoreProject(): Promise<ProjectRestoreResult>;
+  openProjectFile(request: OpenProjectFileRequest): Promise<ProjectFileOpenResult>;
+  createProjectFile(request: CreateProjectFileRequest): Promise<ProjectFileCreateResultWithError>;
   openLibrary(): Promise<OpenLibraryResult>;
   searchLibrary(request: SearchLibraryRequest): Promise<SearchLibraryResult>;
   resolveQuotationForInsert(request: ResolveQuotationForInsertRequest): Promise<ResolveQuotationForInsertResult>;
@@ -205,6 +247,11 @@ export function createMarkdownPreloadApi(
     saveMarkdown: (request) => invoke(SAVE_MARKDOWN_CHANNEL, request) as Promise<SaveMarkdownResult>,
     openDocument: () => invoke(OPEN_DOCUMENT_CHANNEL) as Promise<OpenDocumentResult>,
     openManuscript: (request) => invoke(OPEN_MANUSCRIPT_CHANNEL, request) as Promise<OpenManuscriptResult>,
+    openProject: () => invoke(OPEN_PROJECT_CHANNEL) as Promise<ProjectOpenResult>,
+    createProject: (request) => invoke(CREATE_PROJECT_CHANNEL, request) as Promise<ProjectCreateResultWithCancel>,
+    restoreProject: () => invoke(RESTORE_PROJECT_CHANNEL) as Promise<ProjectRestoreResult>,
+    openProjectFile: (request) => invoke(OPEN_PROJECT_FILE_CHANNEL, request) as Promise<ProjectFileOpenResult>,
+    createProjectFile: (request) => invoke(CREATE_PROJECT_FILE_CHANNEL, request) as Promise<ProjectFileCreateResultWithError>,
     openLibrary: () => invoke(OPEN_LIBRARY_CHANNEL) as Promise<OpenLibraryResult>,
     searchLibrary: (request) => invoke(SEARCH_LIBRARY_CHANNEL, request) as Promise<SearchLibraryResult>,
     resolveQuotationForInsert: (request) =>

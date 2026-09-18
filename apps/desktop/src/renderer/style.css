@@ -118,6 +118,57 @@ button:disabled {
   background: #fffdf8;
 }
 
+.project-controls,
+.new-file-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.project-controls input,
+.new-file-form input,
+.new-file-form select {
+  box-sizing: border-box;
+  min-width: 7rem;
+  max-width: 100%;
+  border: 1px solid #c8beb1;
+  border-radius: 0.35rem;
+  padding: 0.35rem 0.45rem;
+  color: inherit;
+  background: #fff;
+  font: inherit;
+}
+
+.project-controls input {
+  flex: 1 1 9rem;
+}
+
+.new-file-form {
+  padding-top: 0.35rem;
+  border-top: 1px solid #e1d9ce;
+}
+
+.new-file-form strong {
+  flex: 1 0 100%;
+  color: #5f6c76;
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.new-file-form label {
+  color: #5f6c76;
+  font-size: 0.78rem;
+}
+
+.project-file-type {
+  margin-left: 0.35rem;
+  color: #7f6b5f;
+  font-size: 0.75rem;
+}
+
 .repository-navigation {
   display: flex;
   flex-direction: column;

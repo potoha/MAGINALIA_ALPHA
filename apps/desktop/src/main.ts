@@ -16,6 +16,15 @@ import {
 } from "./document-workspace-ipc";
 import { MarkdownFileService } from "./markdown-file-service";
 import {
+  CREATE_PROJECT_CHANNEL,
+  CREATE_PROJECT_FILE_CHANNEL,
+  OPEN_PROJECT_CHANNEL,
+  OPEN_PROJECT_FILE_CHANNEL,
+  RESTORE_PROJECT_CHANNEL,
+  createProjectHandlers
+} from "./project-ipc";
+import { FileProjectPathStore, ProjectService } from "./project-service";
+import {
   OPEN_LIBRARY_CHANNEL,
   OPEN_MARKDOWN_CHANNEL,
   RESOLVE_QUOTATION_FOR_INSERT_CHANNEL,
@@ -44,11 +53,13 @@ import { LocalRepositoryService } from "./repository-service";
 import { createSecureWebPreferences } from "./security";
 import {
   parseQuotationSmokeMode,
+  parseProjectSmokeMode,
   parseRepositorySmokeMode,
   parseWritingSmokeMode,
   parseWorkspaceSmokeMode
 } from "./smoke-mode";
 import { runQuotationSmoke } from "./quotation-smoke";
+import { runProjectSmoke } from "./project-smoke";
 import { runRepositorySmoke } from "./repository-smoke";
 import { runWorkspaceSmoke } from "./workspace-smoke";
 import { runWritingSmoke } from "./writing-smoke";
@@ -76,14 +87,21 @@ const quickSmokeMode = process.argv.includes("--smoke");
 const writingSmoke = parseWritingSmokeMode(process.argv);
 const workspaceSmoke = parseWorkspaceSmokeMode(process.argv);
 const quotationSmoke = parseQuotationSmokeMode(process.argv);
+const projectSmoke = parseProjectSmokeMode(process.argv);
 const repositorySmoke = parseRepositorySmokeMode(process.argv);
 const smokeMode = quickSmokeMode
   || writingSmoke.requested
   || workspaceSmoke.requested
   || quotationSmoke.requested
+  || projectSmoke.requested
   || repositorySmoke.requested;
 const markdownFileService = new MarkdownFileService();
 const documentWorkspaceService = new DocumentWorkspaceService();
+const projectService = new ProjectService(
+  documentWorkspaceService,
+  markdownFileService,
+  new FileProjectPathStore(path.join(app.getPath("userData"), "last-project.json"))
+);
 const libraryService = new LibraryService();
 const repositoryService = new LocalRepositoryService();
 let quotationResolveCount = 0;
@@ -145,6 +163,29 @@ const documentWorkspaceHandlers = createDocumentWorkspaceHandlers({
   resolveManuscriptPath: (owner, documentId, manuscriptId) =>
     documentWorkspaceService.resolveManuscriptPath(owner, documentId, manuscriptId),
   openMarkdown: (owner, filePath) => markdownFileService.openForOwner(owner, filePath)
+});
+const projectHandlers = createProjectHandlers({
+  pickProjectFolder: () => projectSmoke.requested
+    ? Promise.resolve({ canceled: false, filePaths: projectSmoke.rootPath ? [projectSmoke.rootPath] : [] })
+    : dialog.showOpenDialog({
+      title: "Open Project",
+      properties: ["openDirectory"]
+    }),
+  pickProjectParent: () => dialog.showOpenDialog({
+    title: "Choose a folder for the new Project",
+    properties: ["openDirectory"]
+  }),
+  openProjectRoot: (owner, rootPath) => projectService.openForOwner(owner, rootPath),
+  createProject: (owner, parentPath, title) => projectService.createForOwner(owner, parentPath, title),
+  restoreProject: (owner) => projectService.restoreForOwner(owner),
+  openProjectFile: (owner, projectId, fileId) => projectService.openFileForOwner(owner, projectId, fileId),
+  createProjectFile: (owner, request) => projectService.createFileForOwner(
+    owner,
+    request.projectId,
+    request.fileName,
+    request.title,
+    request.documentType
+  )
 });
 const libraryHandlers = createLibraryHandlers({
   pickLibraryFolder: () => quotationSmoke.requested
@@ -217,6 +258,7 @@ const INVALID_REQUEST: MarkdownFailure = {
 let mainWindow: BrowserWindow | null = null;
 let writingSmokeFinished = false;
 let workspaceSmokeFinished = false;
+let projectSmokeFinished = false;
 let quotationSmokeFinished = false;
 let repositorySmokeFinished = false;
 
@@ -333,6 +375,21 @@ function completeWorkspaceSmoke(): void {
   app.quit();
 }
 
+function failProjectSmoke(error: unknown): void {
+  if (projectSmokeFinished) return;
+  projectSmokeFinished = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`MAGINALIA_ELECTRON_PROJECT_SMOKE_FAILED ${message}`);
+  app.exit(1);
+}
+
+function completeProjectSmoke(): void {
+  if (projectSmokeFinished) return;
+  projectSmokeFinished = true;
+  console.log("MAGINALIA_ELECTRON_PROJECT_SMOKE_OK");
+  app.quit();
+}
+
 function failQuotationSmoke(error: unknown): void {
   if (quotationSmokeFinished) return;
   quotationSmokeFinished = true;
@@ -394,6 +451,11 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(SAVE_MARKDOWN_CHANNEL, handleSaveMarkdown);
   ipcMain.handle(OPEN_DOCUMENT_CHANNEL, documentWorkspaceHandlers.openDocument);
   ipcMain.handle(OPEN_MANUSCRIPT_CHANNEL, documentWorkspaceHandlers.openManuscript);
+  ipcMain.handle(OPEN_PROJECT_CHANNEL, projectHandlers.openProject);
+  ipcMain.handle(CREATE_PROJECT_CHANNEL, projectHandlers.createProject);
+  ipcMain.handle(RESTORE_PROJECT_CHANNEL, projectHandlers.restoreProject);
+  ipcMain.handle(OPEN_PROJECT_FILE_CHANNEL, projectHandlers.openProjectFile);
+  ipcMain.handle(CREATE_PROJECT_FILE_CHANNEL, projectHandlers.createProjectFile);
   ipcMain.handle(OPEN_LIBRARY_CHANNEL, libraryHandlers.openLibrary);
   ipcMain.handle(SEARCH_LIBRARY_CHANNEL, libraryHandlers.searchLibrary);
   ipcMain.handle(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL, libraryHandlers.resolveQuotationForInsert);
@@ -415,6 +477,11 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(SAVE_MARKDOWN_CHANNEL);
   ipcMain.removeHandler(OPEN_DOCUMENT_CHANNEL);
   ipcMain.removeHandler(OPEN_MANUSCRIPT_CHANNEL);
+  ipcMain.removeHandler(OPEN_PROJECT_CHANNEL);
+  ipcMain.removeHandler(CREATE_PROJECT_CHANNEL);
+  ipcMain.removeHandler(RESTORE_PROJECT_CHANNEL);
+  ipcMain.removeHandler(OPEN_PROJECT_FILE_CHANNEL);
+  ipcMain.removeHandler(CREATE_PROJECT_FILE_CHANNEL);
   ipcMain.removeHandler(OPEN_LIBRARY_CHANNEL);
   ipcMain.removeHandler(SEARCH_LIBRARY_CHANNEL);
   ipcMain.removeHandler(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL);
@@ -440,6 +507,7 @@ function createMainWindow(): BrowserWindow {
     height: 640,
     show: writingSmoke.requested
       || workspaceSmoke.requested
+      || projectSmoke.requested
       || quotationSmoke.requested
       || repositorySmoke.requested
       || !smokeMode,
@@ -504,6 +572,36 @@ function createMainWindow(): BrowserWindow {
       window.webContents.on("console-message", (event) => {
         if (event.level === "error") {
           failWorkspaceSmoke(new Error(
+            `Renderer console error at ${event.sourceId}:${event.lineNumber}: ${event.message}`
+          ));
+        }
+      });
+    }
+  } else if (projectSmoke.requested) {
+    if (!projectSmoke.rootPath) {
+      failProjectSmoke(new Error("The project smoke fixture root was not provided."));
+    } else {
+      window.webContents.once("did-finish-load", () => {
+        void runProjectSmoke(window, projectSmoke.rootPath!).then(
+          () => completeProjectSmoke(),
+          (error: unknown) => failProjectSmoke(error)
+        );
+      });
+      window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) failProjectSmoke(new Error(`Renderer load failed (${errorCode}): ${errorDescription}`));
+      });
+      window.webContents.on("preload-error", (_event, preloadPath, error) => {
+        failProjectSmoke(new Error(`Preload failed (${preloadPath}): ${error.message}`));
+      });
+      window.webContents.on("render-process-gone", (_event, details) => {
+        failProjectSmoke(new Error(`Renderer process exited: ${details.reason}`));
+      });
+      window.webContents.on("unresponsive", () => {
+        failProjectSmoke(new Error("Renderer became unresponsive."));
+      });
+      window.webContents.on("console-message", (event) => {
+        if (event.level === "error") {
+          failProjectSmoke(new Error(
             `Renderer console error at ${event.sourceId}:${event.lineNumber}: ${event.message}`
           ));
         }
@@ -593,6 +691,8 @@ function createMainWindow(): BrowserWindow {
     ? { query: { smoke: "writing" } }
     : workspaceSmoke.requested
       ? { query: { smoke: "workspace" } }
+      : projectSmoke.requested
+        ? { query: { smoke: "project" } }
       : quotationSmoke.requested
       ? { query: { smoke: "quotation" } }
         : repositorySmoke.requested
@@ -604,6 +704,8 @@ function createMainWindow(): BrowserWindow {
       failWritingSmoke(error);
     } else if (workspaceSmoke.requested) {
       failWorkspaceSmoke(error);
+    } else if (projectSmoke.requested) {
+      failProjectSmoke(error);
     } else if (quotationSmoke.requested) {
       failQuotationSmoke(error);
     } else if (repositorySmoke.requested) {
@@ -620,6 +722,9 @@ function createMainWindow(): BrowserWindow {
     }
     if (workspaceSmoke.requested && !workspaceSmokeFinished) {
       failWorkspaceSmoke(new Error("Workspace smoke window closed before completion."));
+    }
+    if (projectSmoke.requested && !projectSmokeFinished) {
+      failProjectSmoke(new Error("Project smoke window closed before completion."));
     }
     if (quotationSmoke.requested && !quotationSmokeFinished) {
       failQuotationSmoke(new Error("Quotation smoke window closed before completion."));
