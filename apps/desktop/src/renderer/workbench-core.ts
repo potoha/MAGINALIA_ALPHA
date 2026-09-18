@@ -58,8 +58,8 @@ export const DEFAULT_LAYOUT: LayoutState = {
   primarySidebarWidth: 300,
   secondarySidebarVisible: true,
   secondarySidebarWidth: 300,
-  activePrimaryView: "workspace",
-  activeSecondaryView: "library"
+  activePrimaryView: "",
+  activeSecondaryView: ""
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {

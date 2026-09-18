@@ -29,6 +29,7 @@ import {
   type LayoutState,
   type ViewRegion
 } from "./workbench-core";
+import { WORKBENCH_VIEW_MANIFEST } from "./workbench-views";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -58,9 +59,7 @@ app.innerHTML = `
     </header>
     <div class="workbench-body">
       <nav id="activity-bar" class="activity-bar" data-workbench-region="activity-bar" aria-label="Workbench view containers">
-        <button id="activity-view-workspace" class="activity-button" type="button" data-workbench-view="workspace" data-workbench-view-region="primary-sidebar" aria-pressed="true" title="Documents">Documents</button>
-        <button id="activity-view-repository" class="activity-button" type="button" data-workbench-view="repository" data-workbench-view-region="primary-sidebar" aria-pressed="false" title="Repository">Repository</button>
-        <button id="activity-view-library" class="activity-button" type="button" data-workbench-view="library" data-workbench-view-region="secondary-sidebar" aria-pressed="false" title="Library">Library</button>
+        <div id="activity-view-buttons" class="activity-view-buttons"></div>
         <span class="activity-spacer" aria-hidden="true"></span>
         <button id="toggle-primary-sidebar" class="activity-command" data-workbench-command="maginalia.view.togglePrimarySidebar" type="button" title="Toggle primary sidebar" aria-label="Toggle primary sidebar">P</button>
         <button id="toggle-secondary-sidebar" class="activity-command" data-workbench-command="maginalia.view.toggleSecondarySidebar" type="button" title="Toggle secondary sidebar" aria-label="Toggle secondary sidebar">S</button>
@@ -70,7 +69,7 @@ app.innerHTML = `
       <aside id="primary-sidebar" class="workbench-sidebar primary-sidebar" data-workbench-region="primary-sidebar" aria-label="Primary sidebar">
         <div id="primary-sidebar-resizer" class="sidebar-resizer" data-workbench-resize="primary-sidebar" role="separator" aria-label="Resize primary sidebar" aria-orientation="vertical" tabindex="0"></div>
         <div class="view-container primary-view-container">
-          <section id="workspace-navigation" class="workspace-navigation view-panel" data-workbench-view-panel="workspace" aria-labelledby="workspace-document-heading">
+          <section id="workspace-navigation" class="workspace-navigation view-panel" aria-labelledby="workspace-document-heading">
             <h2 id="workspace-document-heading" class="visually-hidden">Document manuscripts</h2>
             <div class="workspace-document-heading">
               <span class="workspace-label">Document</span>
@@ -80,7 +79,7 @@ app.innerHTML = `
             <p id="empty-document-message" class="empty-document-message">Open a Document folder to see its Markdown manuscripts.</p>
             <ul id="manuscript-list" class="manuscript-list" aria-label="Markdown manuscripts"></ul>
           </section>
-          <section id="repository-navigation" class="repository-navigation view-panel" data-workbench-view-panel="repository" aria-labelledby="repository-heading">
+          <section id="repository-navigation" class="repository-navigation view-panel" aria-labelledby="repository-heading">
             <div class="repository-heading-row">
               <h2 id="repository-heading">Repository</h2>
               <span id="repository-kind-label" class="repository-kind-label">No repository selected</span>
@@ -126,7 +125,7 @@ app.innerHTML = `
       <aside id="secondary-sidebar" class="workbench-sidebar secondary-sidebar" data-workbench-region="secondary-sidebar" aria-label="Secondary sidebar">
         <div id="secondary-sidebar-resizer" class="sidebar-resizer" data-workbench-resize="secondary-sidebar" role="separator" aria-label="Resize secondary sidebar" aria-orientation="vertical" tabindex="0"></div>
         <div class="view-container secondary-view-container">
-          <section id="library-navigation" class="library-navigation view-panel" data-workbench-view-panel="library" aria-labelledby="library-heading">
+          <section id="library-navigation" class="library-navigation view-panel" aria-labelledby="library-heading">
             <div class="library-heading-row">
               <h2 id="library-heading">Library</h2>
               <button id="choose-library" type="button">Choose Library</button>
@@ -151,6 +150,23 @@ function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
   if (!element) throw new Error(`Renderer element was not found: ${selector}`);
   return element;
+}
+
+const activityViewButtonHost = requiredElement<HTMLElement>("#activity-view-buttons");
+for (const view of WORKBENCH_VIEW_MANIFEST) {
+  const button = document.createElement("button");
+  button.id = view.activityButtonId;
+  button.className = "activity-button";
+  button.type = "button";
+  button.dataset.workbenchView = view.id;
+  button.dataset.workbenchViewRegion = view.defaultRegion;
+  button.setAttribute("aria-pressed", "false");
+  button.title = view.title;
+  button.textContent = view.title;
+  activityViewButtonHost.append(button);
+
+  const panel = requiredElement<HTMLElement>(`#${view.panelId}`);
+  panel.dataset.workbenchViewPanel = view.id;
 }
 
 const workbenchRoot = requiredElement<HTMLElement>(".workbench");
@@ -206,12 +222,7 @@ const repositoryHistoryStatus = requiredElement<HTMLElement>("#repository-histor
 const repositoryHistoryError = requiredElement<HTMLElement>("#repository-history-error");
 
 const workbench = new WorkbenchCore(createLocalStorageLayoutStore());
-const workbenchViews = [
-  { id: "workspace", title: "Documents", defaultRegion: "primary-sidebar" },
-  { id: "repository", title: "Repository", defaultRegion: "primary-sidebar" },
-  { id: "library", title: "Library", defaultRegion: "secondary-sidebar" }
-] as const;
-for (const view of workbenchViews) workbench.registerView(view);
+for (const view of WORKBENCH_VIEW_MANIFEST) workbench.registerView(view);
 
 function updateViewPanels(state: LayoutState): void {
   for (const panel of viewPanels) {

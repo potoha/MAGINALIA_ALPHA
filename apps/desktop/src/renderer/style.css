@@ -560,6 +560,12 @@ button:focus-visible {
   overflow: auto;
 }
 
+.activity-view-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
 .activity-button,
 .activity-command {
   min-height: 2.25rem;

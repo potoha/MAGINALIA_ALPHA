@@ -24,6 +24,11 @@ class MemoryLayoutStore implements LayoutStore {
 }
 
 describe("WorkbenchCore", () => {
+  it("keeps feature view IDs out of the default layout", () => {
+    expect(DEFAULT_LAYOUT.activePrimaryView).toBe("");
+    expect(DEFAULT_LAYOUT.activeSecondaryView).toBe("");
+  });
+
   it("toggles each chrome region independently and persists every change", () => {
     const store = new MemoryLayoutStore();
     const core = new WorkbenchCore(store);
