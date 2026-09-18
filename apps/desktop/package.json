@@ -8,6 +8,7 @@
     "@maginalia/repository-core": "0.0.0",
     "@maginalia/writing-core": "0.0.0",
     "isomorphic-git": "1.41.9",
+    "koffi": "3.3.0",
     "monaco-editor": "0.53.0"
   },
   "scripts": {
@@ -24,6 +25,7 @@
     "smoke:workspace": "npm run build && node test/workspace-smoke.mjs",
     "smoke:quotation": "npm run build && node test/quotation-smoke.mjs",
     "smoke:repository": "npm run build && node test/repository-smoke.mjs",
+    "smoke:worker-job": "npm run build:main && electron dist/main/repository-materialization-worker-smoke.js",
     "start": "npm run build && electron dist/main/main.js"
   },
   "devDependencies": {

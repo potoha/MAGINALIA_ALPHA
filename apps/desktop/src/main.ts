@@ -62,7 +62,7 @@ import {
   type CloudDiscoveryOperation
 } from "./repository-cloud-ipc";
 import { discoverAuthenticatedRestoreRepositories } from "./repository-cloud-discover-operation";
-import { RepositoryCloudRestoreCatalog } from "./repository-cloud-restore-catalog";
+import { RepositoryCloudCoordinator } from "./repository-cloud-coordinator";
 import type { GitHubDeviceVerificationCallback, GitHubDeviceVerificationPrompt } from "./repository-github-auth";
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -215,11 +215,6 @@ const INVALID_REQUEST: MarkdownFailure = {
   message: "The Markdown save request was invalid."
 };
 let mainWindow: BrowserWindow | null = null;
-const cloudRestoreCatalog = new RepositoryCloudRestoreCatalog();
-const cloudAbortControllers = new WeakMap<WebContents, AbortController>();
-const cloudOwnerDestroyListeners = new WeakMap<WebContents, () => void>();
-const cloudOwners = new Set<WebContents>();
-let cloudDiscoveryClosed = false;
 let writingSmokeFinished = false;
 let workspaceSmokeFinished = false;
 let quotationSmokeFinished = false;
@@ -263,44 +258,9 @@ function isDeviceVerificationPrompt(value: unknown): value is GitHubDeviceVerifi
   }
 }
 
-function clearCloudCatalogForOwner(owner: WebContents): void {
-  try {
-    cloudRestoreCatalog.clearForOwner(owner);
-  } catch {
-    // Shutdown may have disposed the catalog already; either state is closed.
-  }
-}
-
-function cancelCloudDiscoveryForOwner(owner: WebContents): boolean {
-  const controller = cloudAbortControllers.get(owner);
-  if (controller !== undefined) {
-    controller.abort();
-    cloudAbortControllers.delete(owner);
-  }
-  clearCloudCatalogForOwner(owner);
-  return controller !== undefined;
-}
-
-function closeCloudOwner(owner: WebContents): void {
-  cancelCloudDiscoveryForOwner(owner);
-  const onDestroyed = cloudOwnerDestroyListeners.get(owner);
-  if (onDestroyed !== undefined) owner.removeListener("destroyed", onDestroyed);
-  cloudOwnerDestroyListeners.delete(owner);
-  cloudOwners.delete(owner);
-}
-
-function attachCloudOwnerLifecycle(owner: WebContents): void {
-  if (cloudOwners.has(owner)) return;
-  const onDestroyed = (): void => closeCloudOwner(owner);
-  owner.once("destroyed", onDestroyed);
-  cloudOwnerDestroyListeners.set(owner, onDestroyed);
-  cloudOwners.add(owner);
-}
-
 function createCloudVerificationCallback(owner: object): GitHubDeviceVerificationCallback {
   if (!isLiveMainWindowSender(owner)) throw new Error("The cloud discovery owner is not active.");
   const sender = owner;
-  attachCloudOwnerLifecycle(sender);
   return (prompt) => {
     if (!isLiveMainWindowSender(sender) || !isDeviceVerificationPrompt(prompt)) {
       throw new Error("The cloud verification prompt could not be delivered.");
@@ -312,49 +272,28 @@ function createCloudVerificationCallback(owner: object): GitHubDeviceVerificatio
   };
 }
 
-const cloudDiscoveryOperation: CloudDiscoveryOperation = async (owner, onVerification) => {
-  if (cloudDiscoveryClosed || !isLiveMainWindowSender(owner)) {
-    throw new Error("The cloud discovery owner is not active.");
-  }
-  const sender = owner;
-  attachCloudOwnerLifecycle(sender);
-  cloudAbortControllers.get(sender)?.abort();
-  const controller = new AbortController();
-  cloudAbortControllers.set(sender, controller);
-  try {
-    const guardedVerificationCallback: GitHubDeviceVerificationCallback = (prompt) => {
-      if (cloudDiscoveryClosed
-        || controller.signal.aborted
-        || !isLiveMainWindowSender(sender)
-        || !isDeviceVerificationPrompt(prompt)) {
-        throw new Error("The cloud verification prompt could not be delivered.");
-      }
-      return onVerification(prompt);
-    };
-    const result = await discoverAuthenticatedRestoreRepositories({
-      signal: controller.signal,
-      onVerification: guardedVerificationCallback,
-    });
-    if (cloudDiscoveryClosed || controller.signal.aborted || !isLiveMainWindowSender(sender)) {
-      throw new Error("The cloud discovery operation is no longer active.");
-    }
-    return result;
-  } finally {
-    if (cloudAbortControllers.get(sender) === controller) {
-      cloudAbortControllers.delete(sender);
-    }
-  }
-};
+const cloudCoordinator = new RepositoryCloudCoordinator({
+  isLiveOwner: isLiveMainWindowSender,
+  registerOwnerLifecycle: (owner, onClose) => {
+    const sender = owner as WebContents;
+    sender.once("destroyed", onClose);
+    return () => sender.removeListener("destroyed", onClose);
+  },
+  discover: (request) => discoverAuthenticatedRestoreRepositories(request),
+});
+
+const cloudDiscoveryOperation: CloudDiscoveryOperation = (owner, onVerification) =>
+  cloudCoordinator.discoverForOwner(owner, onVerification);
 
 const cloudDiscoveryHandlers = createRepositoryCloudDiscoveryHandlers({
   discover: cloudDiscoveryOperation,
   createVerificationCallback: createCloudVerificationCallback,
-  catalog: cloudRestoreCatalog,
+  catalog: cloudCoordinator.catalog,
 });
 
 const cloudCancellationHandlers = createRepositoryCloudDiscoveryCancellationHandlers({
-  isCurrentOwner: (owner) => !cloudDiscoveryClosed && isLiveMainWindowSender(owner),
-  cancelForOwner: (owner) => cancelCloudDiscoveryForOwner(owner as WebContents),
+  isCurrentOwner: (owner) => cloudCoordinator.isCurrentOwner(owner),
+  cancelForOwner: (owner) => cloudCoordinator.cancelForOwner(owner),
 });
 
 app.on("second-instance", () => {
@@ -488,9 +427,7 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(USE_REPOSITORY_SHELF_CHANNEL);
   ipcMain.removeHandler(DISCOVER_PRIVATE_WORKS_CHANNEL);
   ipcMain.removeHandler(CANCEL_PRIVATE_WORKS_DISCOVERY_CHANNEL);
-  cloudDiscoveryClosed = true;
-  for (const owner of cloudOwners) closeCloudOwner(owner);
-  cloudRestoreCatalog.dispose();
+  cloudCoordinator.dispose();
   markdownFileService.dispose();
   documentWorkspaceService.dispose();
   libraryService.dispose();
@@ -677,7 +614,7 @@ function createMainWindow(): BrowserWindow {
   });
 
   window.on("closed", () => {
-    closeCloudOwner(cloudOwner);
+    cloudCoordinator.closeOwner(cloudOwner);
     if (writingSmoke.requested && !writingSmokeFinished) {
       failWritingSmoke(new Error("Writing smoke window closed before completion."));
     }

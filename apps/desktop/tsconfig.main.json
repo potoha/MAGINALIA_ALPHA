@@ -39,6 +39,11 @@
     "src/repository-git-materialize.ts",
     "src/repository-git-confirm.ts",
     "src/repository-git-validate.ts",
-    "src/repository-cloud-local-preflight.ts"
+    "src/repository-cloud-local-preflight.ts",
+    "src/repository-windows-job.ts",
+    "src/repository-materialization-worker.ts",
+    "src/repository-materialization-worker-launcher.ts",
+    "src/repository-materialization-worker-smoke.ts",
+    "src/repository-materialization-worker-test-fixture.ts"
   ]
 }
