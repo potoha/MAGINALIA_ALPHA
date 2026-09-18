@@ -23,6 +23,12 @@ import {
   type RepositoryKindOption,
   type RepositoryViewState
 } from "./repository-controller";
+import {
+  createLocalStorageLayoutStore,
+  WorkbenchCore,
+  type LayoutState,
+  type ViewRegion
+} from "./workbench-core";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -31,8 +37,8 @@ if (!app) {
 }
 
 app.innerHTML = `
-  <main class="workspace" aria-labelledby="title">
-    <header class="toolbar">
+  <main id="workbench" class="workspace workbench" aria-labelledby="title" data-editor-only="false">
+    <header class="toolbar" id="workbench-toolbar">
       <div class="brand">
         <p class="eyebrow">MAGINALIA</p>
         <h1 id="title">Before Kaldi</h1>
@@ -43,71 +49,101 @@ app.innerHTML = `
         <span id="document-name" class="document-name">No document open</span>
         <span id="document-status" class="document-status" data-state="empty" role="status" aria-live="polite">No document open</span>
       </div>
+      <div id="workbench-layout-controls" class="layout-controls" aria-label="Workbench layout controls">
+        <button id="toolbar-toggle-activity-bar" data-workbench-command="maginalia.view.toggleActivityBar" type="button" title="Toggle activity bar">Activity</button>
+        <button id="toolbar-toggle-primary-sidebar" data-workbench-command="maginalia.view.togglePrimarySidebar" type="button" title="Toggle primary sidebar">Primary</button>
+        <button id="toolbar-toggle-secondary-sidebar" data-workbench-command="maginalia.view.toggleSecondarySidebar" type="button" title="Toggle secondary sidebar">Secondary</button>
+        <button id="toolbar-toggle-editor-only" data-workbench-command="maginalia.view.toggleEditorOnly" type="button" title="Toggle editor-only mode">Editor only</button>
+      </div>
     </header>
-    <section id="repository-navigation" class="repository-navigation" aria-labelledby="repository-heading">
-      <div class="repository-heading-row">
-        <h2 id="repository-heading">Repository</h2>
-        <span id="repository-kind-label" class="repository-kind-label">No repository selected</span>
-        <strong id="repository-name">No Repository open</strong>
-      </div>
-      <div class="repository-controls">
-        <label for="repository-kind">Kind</label>
-        <select id="repository-kind">
-          <option value="project">Project</option>
-          <option value="workbench">Workbench</option>
-          <option value="shelf">Private Shelf</option>
-        </select>
-        <label for="repository-title">Title</label>
-        <input id="repository-title" type="text" maxlength="200" autocomplete="off">
-        <button id="create-repository" type="button">Create</button>
-        <button id="open-repository" type="button">Open Repository</button>
-        <button id="activate-repository" type="button" hidden>Activate</button>
-      </div>
-      <p id="repository-status" class="repository-status" role="status" aria-live="polite">Create or open a repository.</p>
-      <p id="repository-error" class="repository-error" role="alert" aria-live="assertive" hidden></p>
-      <section class="repository-history" aria-labelledby="repository-history-heading">
-        <div class="repository-history-heading-row">
-          <h3 id="repository-history-heading">History</h3>
-          <div class="repository-history-actions">
-            <button id="record-repository-history" type="button" disabled>Record History</button>
-            <button id="refresh-repository-history" type="button" disabled>Refresh</button>
-          </div>
+    <div class="workbench-body">
+      <nav id="activity-bar" class="activity-bar" data-workbench-region="activity-bar" aria-label="Workbench view containers">
+        <button id="activity-view-workspace" class="activity-button" type="button" data-workbench-view="workspace" data-workbench-view-region="primary-sidebar" aria-pressed="true" title="Documents">Documents</button>
+        <button id="activity-view-repository" class="activity-button" type="button" data-workbench-view="repository" data-workbench-view-region="primary-sidebar" aria-pressed="false" title="Repository">Repository</button>
+        <button id="activity-view-library" class="activity-button" type="button" data-workbench-view="library" data-workbench-view-region="secondary-sidebar" aria-pressed="false" title="Library">Library</button>
+        <span class="activity-spacer" aria-hidden="true"></span>
+        <button id="toggle-primary-sidebar" class="activity-command" data-workbench-command="maginalia.view.togglePrimarySidebar" type="button" title="Toggle primary sidebar" aria-label="Toggle primary sidebar">P</button>
+        <button id="toggle-secondary-sidebar" class="activity-command" data-workbench-command="maginalia.view.toggleSecondarySidebar" type="button" title="Toggle secondary sidebar" aria-label="Toggle secondary sidebar">S</button>
+        <button id="toggle-activity-bar" class="activity-command" data-workbench-command="maginalia.view.toggleActivityBar" type="button" title="Toggle activity bar" aria-label="Toggle activity bar">A</button>
+        <button id="toggle-editor-only" class="activity-command" data-workbench-command="maginalia.view.toggleEditorOnly" type="button" title="Toggle editor-only mode" aria-label="Toggle editor-only mode">E</button>
+      </nav>
+      <aside id="primary-sidebar" class="workbench-sidebar primary-sidebar" data-workbench-region="primary-sidebar" aria-label="Primary sidebar">
+        <div id="primary-sidebar-resizer" class="sidebar-resizer" data-workbench-resize="primary-sidebar" role="separator" aria-label="Resize primary sidebar" aria-orientation="vertical" tabindex="0"></div>
+        <div class="view-container primary-view-container">
+          <section id="workspace-navigation" class="workspace-navigation view-panel" data-workbench-view-panel="workspace" aria-labelledby="workspace-document-heading">
+            <h2 id="workspace-document-heading" class="visually-hidden">Document manuscripts</h2>
+            <div class="workspace-document-heading">
+              <span class="workspace-label">Document</span>
+              <strong id="workspace-document-name">No Document open</strong>
+            </div>
+            <p id="workspace-error" class="workspace-error" role="alert" aria-live="assertive" hidden></p>
+            <p id="empty-document-message" class="empty-document-message">Open a Document folder to see its Markdown manuscripts.</p>
+            <ul id="manuscript-list" class="manuscript-list" aria-label="Markdown manuscripts"></ul>
+          </section>
+          <section id="repository-navigation" class="repository-navigation view-panel" data-workbench-view-panel="repository" aria-labelledby="repository-heading">
+            <div class="repository-heading-row">
+              <h2 id="repository-heading">Repository</h2>
+              <span id="repository-kind-label" class="repository-kind-label">No repository selected</span>
+              <strong id="repository-name">No Repository open</strong>
+            </div>
+            <div class="repository-controls">
+              <label for="repository-kind">Kind</label>
+              <select id="repository-kind">
+                <option value="project">Project</option>
+                <option value="workbench">Workbench</option>
+                <option value="shelf">Private Shelf</option>
+              </select>
+              <label for="repository-title">Title</label>
+              <input id="repository-title" type="text" maxlength="200" autocomplete="off">
+              <button id="create-repository" type="button">Create</button>
+              <button id="open-repository" type="button">Open Repository</button>
+              <button id="activate-repository" type="button" hidden>Activate</button>
+            </div>
+            <p id="repository-status" class="repository-status" role="status" aria-live="polite">Create or open a repository.</p>
+            <p id="repository-error" class="repository-error" role="alert" aria-live="assertive" hidden></p>
+            <section class="repository-history" aria-labelledby="repository-history-heading">
+              <div class="repository-history-heading-row">
+                <h3 id="repository-history-heading">History</h3>
+                <div class="repository-history-actions">
+                  <button id="record-repository-history" type="button" disabled>Record History</button>
+                  <button id="refresh-repository-history" type="button" disabled>Refresh</button>
+                </div>
+              </div>
+              <label for="repository-history-entry">Saved History</label>
+              <select id="repository-history-entry" disabled>
+                <option value="">No saved History</option>
+              </select>
+              <button id="open-repository-history" type="button" disabled>Open History Copy</button>
+              <p id="repository-history-status" class="repository-history-status" role="status" aria-live="polite">Activate a repository to view History.</p>
+              <p id="repository-history-error" class="repository-history-error" role="alert" aria-live="assertive" hidden></p>
+            </section>
+          </section>
         </div>
-        <label for="repository-history-entry">Saved History</label>
-        <select id="repository-history-entry" disabled>
-          <option value="">No saved History</option>
-        </select>
-        <button id="open-repository-history" type="button" disabled>Open History Copy</button>
-        <p id="repository-history-status" class="repository-history-status" role="status" aria-live="polite">Activate a repository to view History.</p>
-        <p id="repository-history-error" class="repository-history-error" role="alert" aria-live="assertive" hidden></p>
+      </aside>
+      <section class="editor-area" aria-label="Editor Area">
+        <section id="editor" class="editor" aria-label="Markdown editor"></section>
       </section>
-    </section>
-    <section id="workspace-navigation" class="workspace-navigation" aria-labelledby="workspace-document-heading">
-      <h2 id="workspace-document-heading" class="visually-hidden">Document manuscripts</h2>
-      <div class="workspace-document-heading">
-        <span class="workspace-label">Document</span>
-        <strong id="workspace-document-name">No Document open</strong>
-      </div>
-      <p id="workspace-error" class="workspace-error" role="alert" aria-live="assertive" hidden></p>
-      <p id="empty-document-message" class="empty-document-message">Open a Document folder to see its Markdown manuscripts.</p>
-      <ul id="manuscript-list" class="manuscript-list" aria-label="Markdown manuscripts"></ul>
-    </section>
-    <section id="library-navigation" class="library-navigation" aria-labelledby="library-heading">
-      <div class="library-heading-row">
-        <h2 id="library-heading">Library</h2>
-        <button id="choose-library" type="button">Choose Library</button>
-        <strong id="library-name">No Library selected</strong>
-      </div>
-      <form id="library-search-form" class="library-search-form">
-        <label for="library-query">Search quotations</label>
-        <input id="library-query" type="search" autocomplete="off" disabled>
-        <button id="library-search" type="submit" disabled>Search</button>
-      </form>
-      <p id="library-status" class="library-status" role="status" aria-live="polite">Choose a Library to search quotations.</p>
-      <p id="library-error" class="library-error" role="alert" aria-live="assertive" hidden></p>
-      <ul id="library-results" class="library-results" aria-label="Quotation references"></ul>
-    </section>
-    <section id="editor" class="editor" aria-label="Markdown editor"></section>
+      <aside id="secondary-sidebar" class="workbench-sidebar secondary-sidebar" data-workbench-region="secondary-sidebar" aria-label="Secondary sidebar">
+        <div id="secondary-sidebar-resizer" class="sidebar-resizer" data-workbench-resize="secondary-sidebar" role="separator" aria-label="Resize secondary sidebar" aria-orientation="vertical" tabindex="0"></div>
+        <div class="view-container secondary-view-container">
+          <section id="library-navigation" class="library-navigation view-panel" data-workbench-view-panel="library" aria-labelledby="library-heading">
+            <div class="library-heading-row">
+              <h2 id="library-heading">Library</h2>
+              <button id="choose-library" type="button">Choose Library</button>
+              <strong id="library-name">No Library selected</strong>
+            </div>
+            <form id="library-search-form" class="library-search-form">
+              <label for="library-query">Search quotations</label>
+              <input id="library-query" type="search" autocomplete="off" disabled>
+              <button id="library-search" type="submit" disabled>Search</button>
+            </form>
+            <p id="library-status" class="library-status" role="status" aria-live="polite">Choose a Library to search quotations.</p>
+            <p id="library-error" class="library-error" role="alert" aria-live="assertive" hidden></p>
+            <ul id="library-results" class="library-results" aria-label="Quotation references"></ul>
+          </section>
+        </div>
+      </aside>
+    </div>
   </main>
 `;
 
@@ -117,6 +153,24 @@ function requiredElement<T extends Element>(selector: string): T {
   return element;
 }
 
+const workbenchRoot = requiredElement<HTMLElement>(".workbench");
+const workbenchToolbar = requiredElement<HTMLElement>("#workbench-toolbar");
+const activityBar = requiredElement<HTMLElement>("#activity-bar");
+const primarySidebar = requiredElement<HTMLElement>("#primary-sidebar");
+const secondarySidebar = requiredElement<HTMLElement>("#secondary-sidebar");
+const primarySidebarResizer = requiredElement<HTMLElement>("#primary-sidebar-resizer");
+const secondarySidebarResizer = requiredElement<HTMLElement>("#secondary-sidebar-resizer");
+const editorArea = requiredElement<HTMLElement>(".editor-area");
+const activityViewButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-workbench-view]")];
+const viewPanels = [...document.querySelectorAll<HTMLElement>("[data-workbench-view-panel]")];
+const togglePrimarySidebarButton = requiredElement<HTMLButtonElement>("#toggle-primary-sidebar");
+const toggleSecondarySidebarButton = requiredElement<HTMLButtonElement>("#toggle-secondary-sidebar");
+const toggleActivityBarButton = requiredElement<HTMLButtonElement>("#toggle-activity-bar");
+const toggleEditorOnlyButton = requiredElement<HTMLButtonElement>("#toggle-editor-only");
+const toolbarToggleActivityBarButton = requiredElement<HTMLButtonElement>("#toolbar-toggle-activity-bar");
+const toolbarTogglePrimarySidebarButton = requiredElement<HTMLButtonElement>("#toolbar-toggle-primary-sidebar");
+const toolbarToggleSecondarySidebarButton = requiredElement<HTMLButtonElement>("#toolbar-toggle-secondary-sidebar");
+const toolbarToggleEditorOnlyButton = requiredElement<HTMLButtonElement>("#toolbar-toggle-editor-only");
 const openButton = requiredElement<HTMLButtonElement>("#open-markdown");
 const saveButton = requiredElement<HTMLButtonElement>("#save-markdown");
 const documentName = requiredElement<HTMLElement>("#document-name");
@@ -150,6 +204,140 @@ const repositoryHistoryEntry = requiredElement<HTMLSelectElement>("#repository-h
 const openRepositoryHistoryButton = requiredElement<HTMLButtonElement>("#open-repository-history");
 const repositoryHistoryStatus = requiredElement<HTMLElement>("#repository-history-status");
 const repositoryHistoryError = requiredElement<HTMLElement>("#repository-history-error");
+
+const workbench = new WorkbenchCore(createLocalStorageLayoutStore());
+const workbenchViews = [
+  { id: "workspace", title: "Documents", defaultRegion: "primary-sidebar" },
+  { id: "repository", title: "Repository", defaultRegion: "primary-sidebar" },
+  { id: "library", title: "Library", defaultRegion: "secondary-sidebar" }
+] as const;
+for (const view of workbenchViews) workbench.registerView(view);
+
+function updateViewPanels(state: LayoutState): void {
+  for (const panel of viewPanels) {
+    const id = panel.dataset.workbenchViewPanel;
+    const region = panel.closest<HTMLElement>("[data-workbench-region]")?.dataset.workbenchRegion as ViewRegion | undefined;
+    const activeId = region === "secondary-sidebar" ? state.activeSecondaryView : state.activePrimaryView;
+    const registered = region !== undefined && id !== undefined
+      && workbench.getViews(region).some((view) => view.id === id);
+    const active = registered && id === activeId;
+    panel.classList.toggle("view-panel-active", active);
+    panel.setAttribute("aria-hidden", String(!active));
+  }
+  for (const button of activityViewButtons) {
+    const id = button.dataset.workbenchView;
+    const region = button.dataset.workbenchViewRegion;
+    const active = region === "secondary-sidebar"
+      ? id === state.activeSecondaryView
+      : id === state.activePrimaryView;
+    button.classList.toggle("active", active);
+    button.classList.toggle("active-primary", active && region === "primary-sidebar");
+    button.classList.toggle("active-secondary", active && region === "secondary-sidebar");
+    button.setAttribute("aria-pressed", String(active));
+  }
+}
+
+function updateWorkbenchLayout(state: LayoutState): void {
+  const editorOnly = workbench.isEditorOnly();
+  workbenchRoot.dataset.editorOnly = String(editorOnly);
+  workbenchRoot.style.setProperty("--primary-sidebar-width", `${state.primarySidebarWidth}px`);
+  workbenchRoot.style.setProperty("--secondary-sidebar-width", `${state.secondarySidebarWidth}px`);
+  primarySidebar.style.width = `${state.primarySidebarWidth}px`;
+  secondarySidebar.style.width = `${state.secondarySidebarWidth}px`;
+  primarySidebar.dataset.width = String(state.primarySidebarWidth);
+  secondarySidebar.dataset.width = String(state.secondarySidebarWidth);
+  primarySidebarResizer.setAttribute("aria-valuemin", "180");
+  primarySidebarResizer.setAttribute("aria-valuemax", "800");
+  primarySidebarResizer.setAttribute("aria-valuenow", String(state.primarySidebarWidth));
+  secondarySidebarResizer.setAttribute("aria-valuemin", "180");
+  secondarySidebarResizer.setAttribute("aria-valuemax", "800");
+  secondarySidebarResizer.setAttribute("aria-valuenow", String(state.secondarySidebarWidth));
+  activityBar.hidden = !state.activityBarVisible;
+  primarySidebar.hidden = !state.primarySidebarVisible;
+  secondarySidebar.hidden = !state.secondarySidebarVisible;
+  workbenchToolbar.hidden = editorOnly;
+  editorArea.dataset.editorOnly = String(editorOnly);
+  toggleActivityBarButton.setAttribute("aria-pressed", String(state.activityBarVisible));
+  togglePrimarySidebarButton.setAttribute("aria-pressed", String(state.primarySidebarVisible));
+  toggleSecondarySidebarButton.setAttribute("aria-pressed", String(state.secondarySidebarVisible));
+  toggleEditorOnlyButton.setAttribute("aria-pressed", String(editorOnly));
+  toolbarToggleActivityBarButton.setAttribute("aria-pressed", String(state.activityBarVisible));
+  toolbarTogglePrimarySidebarButton.setAttribute("aria-pressed", String(state.primarySidebarVisible));
+  toolbarToggleSecondarySidebarButton.setAttribute("aria-pressed", String(state.secondarySidebarVisible));
+  toolbarToggleEditorOnlyButton.setAttribute("aria-pressed", String(editorOnly));
+  updateViewPanels(state);
+}
+
+const removeWorkbenchListener = workbench.onDidChange(updateWorkbenchLayout);
+
+for (const button of activityViewButtons) {
+  button.addEventListener("click", () => {
+    const viewId = button.dataset.workbenchView;
+    if (!viewId) return;
+    const registered = workbench.getViews("primary-sidebar").some((view) => view.id === viewId)
+      || workbench.getViews("secondary-sidebar").some((view) => view.id === viewId);
+    if (!registered) return;
+    workbench.showView(viewId);
+  });
+}
+togglePrimarySidebarButton.addEventListener("click", () => workbench.execute("maginalia.view.togglePrimarySidebar"));
+toggleSecondarySidebarButton.addEventListener("click", () => workbench.execute("maginalia.view.toggleSecondarySidebar"));
+toggleActivityBarButton.addEventListener("click", () => workbench.execute("maginalia.view.toggleActivityBar"));
+toggleEditorOnlyButton.addEventListener("click", () => workbench.execute("maginalia.view.toggleEditorOnly"));
+toolbarTogglePrimarySidebarButton.addEventListener("click", () => workbench.execute("maginalia.view.togglePrimarySidebar"));
+toolbarToggleSecondarySidebarButton.addEventListener("click", () => workbench.execute("maginalia.view.toggleSecondarySidebar"));
+toolbarToggleActivityBarButton.addEventListener("click", () => workbench.execute("maginalia.view.toggleActivityBar"));
+toolbarToggleEditorOnlyButton.addEventListener("click", () => workbench.execute("maginalia.view.toggleEditorOnly"));
+
+type ResizeSession = {
+  region: ViewRegion;
+  startX: number;
+  startWidth: number;
+};
+
+function beginResize(region: ViewRegion, event: PointerEvent): void {
+  if (event.button !== 0) return;
+  const current = workbench.getState();
+  const session: ResizeSession = {
+    region,
+    startX: event.clientX,
+    startWidth: region === "primary-sidebar" ? current.primarySidebarWidth : current.secondarySidebarWidth
+  };
+  const onMove = (moveEvent: PointerEvent): void => {
+    const delta = moveEvent.clientX - session.startX;
+    const nextWidth = session.region === "primary-sidebar"
+      ? session.startWidth + delta
+      : session.startWidth - delta;
+    workbench.resize(session.region, nextWidth);
+  };
+  const onEnd = (): void => {
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", onEnd);
+    document.removeEventListener("pointercancel", onEnd);
+    document.body.classList.remove("resizing-sidebar");
+  };
+  document.addEventListener("pointermove", onMove);
+  document.addEventListener("pointerup", onEnd);
+  document.addEventListener("pointercancel", onEnd);
+  document.body.classList.add("resizing-sidebar");
+  event.preventDefault();
+}
+
+function resizeFromKeyboard(region: ViewRegion, event: KeyboardEvent): void {
+  const direction = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+  if (direction === 0) return;
+  const current = workbench.getState();
+  const width = region === "primary-sidebar"
+    ? current.primarySidebarWidth + direction * 16
+    : current.secondarySidebarWidth - direction * 16;
+  workbench.resize(region, width);
+  event.preventDefault();
+}
+
+primarySidebarResizer.addEventListener("pointerdown", (event) => beginResize("primary-sidebar", event));
+secondarySidebarResizer.addEventListener("pointerdown", (event) => beginResize("secondary-sidebar", event));
+primarySidebarResizer.addEventListener("keydown", (event) => resizeFromKeyboard("primary-sidebar", event));
+secondarySidebarResizer.addEventListener("keydown", (event) => resizeFromKeyboard("secondary-sidebar", event));
 
 const view: WritingView = {
   setDocumentName(name: string): void {
@@ -611,6 +799,25 @@ saveButton.addEventListener("click", () => {
 });
 
 window.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey) {
+    const commandByKey: Record<string, Parameters<WorkbenchCore["execute"]>[0]> = {
+      a: "maginalia.view.toggleActivityBar",
+      p: "maginalia.view.togglePrimarySidebar",
+      s: "maginalia.view.toggleSecondarySidebar",
+      e: "maginalia.view.toggleEditorOnly"
+    };
+    const command = commandByKey[event.key.toLowerCase()];
+    if (command) {
+      event.preventDefault();
+      workbench.execute(command);
+      return;
+    }
+  }
+  if (event.key === "Escape" && workbench.isEditorOnly()) {
+    event.preventDefault();
+    workbench.execute("maginalia.view.toggleEditorOnly");
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
     event.preventDefault();
     void controller.save();

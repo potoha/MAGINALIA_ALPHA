@@ -484,3 +484,242 @@ button:focus-visible {
   margin: 0;
   color: #5f6c76;
 }
+
+/* Slice A Workbench shell. The controller surfaces above remain ordinary
+   view panels; the shell only owns region visibility, sizing, and selection. */
+.workbench {
+  --activity-bar-width: 4.75rem;
+  --primary-sidebar-width: 300px;
+  --secondary-sidebar-width: 300px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  min-height: 20rem;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+  background: #f4f1eb;
+}
+
+.workbench .toolbar {
+  flex: 0 0 auto;
+  min-height: 3.75rem;
+  padding: 0.5rem 0.85rem;
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+
+.workbench .toolbar[hidden],
+.workbench .activity-bar[hidden],
+.workbench .workbench-sidebar[hidden] {
+  display: none !important;
+}
+
+.layout-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+
+.layout-controls button {
+  padding: 0.3rem 0.5rem;
+  border-color: #c69b86;
+  color: #5f3b2d;
+  background: #f6eee6;
+  font-size: 0.75rem;
+}
+
+.layout-controls button[aria-pressed="true"] {
+  border-color: #9b4b36;
+  color: #fffdf8;
+  background: #9b4b36;
+}
+
+.workbench-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.activity-bar {
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 var(--activity-bar-width);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+  padding: 0.5rem 0.35rem;
+  border-right: 1px solid #d5cec3;
+  background: #eee9e0;
+  overflow: auto;
+}
+
+.activity-button,
+.activity-command {
+  min-height: 2.25rem;
+  padding: 0.35rem 0.2rem;
+  border-color: transparent;
+  border-radius: 0.35rem;
+  color: #5f3b2d;
+  background: transparent;
+  font-size: 0.72rem;
+  line-height: 1.15;
+  white-space: normal;
+}
+
+.activity-button:hover,
+.activity-command:hover {
+  border-color: #c69b86;
+  background: #f6eee6;
+}
+
+.activity-button.active-primary {
+  border-color: #9b4b36;
+  color: #fffdf8;
+  background: #9b4b36;
+}
+
+.activity-button.active-secondary {
+  border-color: #d29c52;
+  color: #4e3327;
+  background: #f3d8ad;
+}
+
+.activity-command {
+  min-height: 1.9rem;
+  padding: 0.2rem;
+  font-weight: 700;
+}
+
+.activity-spacer {
+  flex: 1 1 auto;
+  min-height: 0.5rem;
+}
+
+.workbench-sidebar {
+  position: relative;
+  box-sizing: border-box;
+  flex: 0 1 var(--primary-sidebar-width);
+  width: var(--primary-sidebar-width);
+  min-width: 180px;
+  max-width: 800px;
+  min-height: 0;
+  overflow: auto;
+  background: #faf8f3;
+}
+
+.secondary-sidebar {
+  flex-basis: var(--secondary-sidebar-width);
+  width: var(--secondary-sidebar-width);
+  border-left: 1px solid #d5cec3;
+}
+
+.primary-sidebar {
+  border-right: 1px solid #d5cec3;
+}
+
+.view-container {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 100%;
+  padding: 0.65rem;
+}
+
+.view-panel {
+  min-width: 0;
+}
+
+.view-panel:not(.view-panel-active) {
+  display: none;
+}
+
+.sidebar-resizer {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  width: 0.5rem;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.primary-sidebar .sidebar-resizer {
+  right: 0;
+}
+
+.secondary-sidebar .sidebar-resizer {
+  left: 0;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:focus-visible {
+  background: #d29c52;
+  outline: none;
+}
+
+.editor-area {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 120px;
+  min-height: 0;
+  overflow: hidden;
+  background: #fff;
+}
+
+.editor-area .editor {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.workbench[data-editor-only="true"] .editor-area {
+  width: 100%;
+}
+
+body.resizing-sidebar,
+body.resizing-sidebar * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+@media (max-width: 720px) {
+  .workbench {
+    --activity-bar-width: 3.75rem;
+  }
+
+  .workbench .toolbar {
+    min-height: 3.25rem;
+  }
+
+  .activity-button {
+    font-size: 0.65rem;
+  }
+
+  .workbench-sidebar {
+    min-width: 180px;
+  }
+}
+
+@media (max-width: 600px) {
+  .workbench {
+    --activity-bar-width: 3.5rem;
+  }
+
+  .workbench-sidebar {
+    min-width: clamp(64px, calc(50vw - 76px), 160px);
+  }
+
+  .editor-area {
+    min-width: 96px;
+  }
+}
