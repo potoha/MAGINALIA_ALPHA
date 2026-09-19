@@ -20,8 +20,8 @@ const electronExecutable = path.join(
 const mainPath = path.join(desktopRoot, "dist", "main", "main.js");
 const marker = "MAGINALIA_ELECTRON_PROJECT_SMOKE_OK";
 
-function runElectron(fixtureRoot) {
-  const child = spawn(electronExecutable, [mainPath, "--smoke-project", fixtureRoot], {
+function runElectron(userDataRoot, smokeFlag, fixtureRoot) {
+  const child = spawn(electronExecutable, [`--user-data-dir=${userDataRoot}`, mainPath, smokeFlag, fixtureRoot], {
     cwd: desktopRoot,
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -34,7 +34,7 @@ function runElectron(fixtureRoot) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       child.kill();
-      reject(new Error("Electron project smoke timed out."));
+      reject(new Error(`Electron project smoke timed out.\n${stdout}${stderr}`));
     }, 60_000);
     child.once("error", (error) => { clearTimeout(timeout); reject(error); });
     child.once("exit", (code, signal) => {
@@ -45,22 +45,28 @@ function runElectron(fixtureRoot) {
 }
 
 let temporaryDirectory;
+let userDataDirectory;
 try {
   temporaryDirectory = await mkdtemp(path.join(tmpdir(), "maginalia-project-smoke-"));
-  const starter = "---\ntype: draft\ntitle: Starter\n---\n\n# Starter\n\n本文\n";
-  await writeFile(path.join(temporaryDirectory, "starter.md"), starter, "utf8");
-  const result = await runElectron(temporaryDirectory);
+  userDataDirectory = await mkdtemp(path.join(tmpdir(), "maginalia-project-userdata-"));
+  const result = await runElectron(userDataDirectory, "--smoke-project-create", temporaryDirectory);
   if (result.code !== 0 || !result.stdout.includes(marker)) {
     throw new Error(`Electron project smoke failed (exit ${result.code ?? result.signal}).\n${result.stdout}${result.stderr}`);
   }
-  const saved = await readFile(path.join(temporaryDirectory, "smoke.md"), "utf8");
-  if (!saved.includes("type: memo") || !saved.includes("追記")) {
+  const projectRoot = path.join(temporaryDirectory, "Coffee Smoke");
+  const saved = await readFile(path.join(projectRoot, "smoke.md"), "utf8");
+  if (!saved.includes("type: memo") || !saved.includes("作成")) {
     throw new Error(`Project smoke file did not retain metadata and edit: ${JSON.stringify(saved)}`);
   }
-  process.stdout.write(`${result.stdout}${result.stderr}`);
+  const restored = await runElectron(userDataDirectory, "--smoke-project-restore", projectRoot);
+  if (restored.code !== 0 || !restored.stdout.includes(marker)) {
+    throw new Error(`Electron Project restore smoke failed (exit ${restored.code ?? restored.signal}).\n${restored.stdout}${restored.stderr}`);
+  }
+  process.stdout.write(`${result.stdout}${result.stderr}${restored.stdout}${restored.stderr}`);
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 } finally {
   if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true });
+  if (userDataDirectory) await rm(userDataDirectory, { recursive: true, force: true });
 }

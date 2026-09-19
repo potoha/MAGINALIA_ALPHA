@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -84,7 +84,8 @@ describe("Project service", () => {
       );
       const result = await service.createForOwner({}, parent, "Coffee Sapling");
       expect(result).toMatchObject({ kind: "opened", project: { displayName: "Coffee Sapling" }, files: [] });
-      expect(await readFile(path.join(parent, "Coffee Sapling").replace("Coffee Sapling", "Coffee Sapling"), { encoding: "utf8" }).catch(() => null)).toBeNull();
+      const stats = await lstat(path.join(parent, "Coffee Sapling"));
+      expect(stats.isDirectory()).toBe(true);
     });
   });
 });

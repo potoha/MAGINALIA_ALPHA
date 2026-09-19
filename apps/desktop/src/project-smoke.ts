@@ -59,7 +59,7 @@ async function waitForState(
     if (last && predicate(last)) return last;
     await delay(POLL_INTERVAL_MS);
   }
-  throw new Error(`Project smoke timed out waiting for ${description}. Last state: ${last?.status ?? "unavailable"}.`);
+  throw new Error(`Project smoke timed out waiting for ${description}. Last state: ${last ? JSON.stringify(last) : "unavailable"}.`);
 }
 
 async function runScript(window: BrowserWindow, script: string): Promise<void> {
@@ -86,7 +86,7 @@ export async function runProjectSmoke(window: BrowserWindow, fixtureRoot: string
   })()`);
   await waitForState(window, (state) => state.activeFile === "smoke.md" && state.files.includes("smoke.md") && state.status === "saved", "New File open");
 
-  await runScript(window, `(() => { document.querySelector("#editor")?.dispatchEvent(new CustomEvent("maginalia-smoke-append", { detail: "\n追記" })); return true; })()`);
+  await runScript(window, `(() => { document.querySelector("#editor")?.dispatchEvent(new CustomEvent("maginalia-smoke-append", { detail: "\\n追記" })); return true; })()`);
   await waitForState(window, (state) => state.activeFile === "smoke.md" && state.status === "modified" && state.saveEnabled, "New File edit");
   await window.webContents.executeJavaScript("document.querySelector('#save-markdown')?.click();", true);
   await waitForState(window, (state) => state.activeFile === "smoke.md" && state.status === "saved" && !state.saveEnabled, "New File save");
@@ -95,4 +95,48 @@ export async function runProjectSmoke(window: BrowserWindow, fixtureRoot: string
   if (!saved.includes("type: memo") || !saved.includes("追記")) throw new Error("Project smoke saved file did not retain metadata and edit.");
   await runScript(window, `(() => { const button = [...document.querySelectorAll("#manuscript-list button[data-manuscript-id]")].find((candidate) => candidate.textContent === "starter.md"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`);
   await waitForState(window, (state) => state.activeFile === "starter.md" && state.text === initialText && state.status === "saved", "existing file reopen");
+}
+
+export async function runProjectRestoreSmoke(window: BrowserWindow, fixtureRoot: string): Promise<void> {
+  const rootName = path.basename(path.resolve(fixtureRoot));
+  const restoredFile = path.join(fixtureRoot, "smoke.md");
+  const restoredText = await readFile(restoredFile, "utf8");
+  await waitForState(
+    window,
+    (state) => state.ready
+      && state.projectName === rootName
+      && state.activeFile === "smoke.md"
+      && state.text === restoredText
+      && state.status === "saved",
+    "remembered Project and saved file after restart"
+  );
+  await runScript(window, `(() => { const button = [...document.querySelectorAll("#manuscript-list button[data-manuscript-id]")].find((candidate) => candidate.textContent === "smoke.md"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`);
+  await waitForState(window, (state) => state.activeFile === "smoke.md" && state.text === restoredText && state.status === "saved", "reopen saved file after restart");
+}
+
+export async function runProjectCreateSmoke(window: BrowserWindow, parentRoot: string): Promise<void> {
+  const projectName = "Coffee Smoke";
+  await waitForState(window, (state) => state.ready && state.status === "empty", "Project renderer readiness");
+  await runScript(window, `(() => {
+    const title = document.querySelector("#create-project-title");
+    const button = document.querySelector("#create-project");
+    if (!(title instanceof HTMLInputElement) || !(button instanceof HTMLButtonElement) || button.disabled) return false;
+    title.value = ${JSON.stringify(projectName)}; button.click(); return true;
+  })()`);
+  await waitForState(window, (state) => state.projectName === projectName && state.files.length === 0 && state.status === "empty", "new Project creation");
+  await runScript(window, `(() => {
+    const name = document.querySelector("#new-file-name");
+    const title = document.querySelector("#new-file-title");
+    const type = document.querySelector("#new-file-type");
+    const form = document.querySelector("#new-file-form");
+    if (!(name instanceof HTMLInputElement) || !(title instanceof HTMLInputElement) || !(type instanceof HTMLSelectElement) || !(form instanceof HTMLFormElement)) return false;
+    name.value = "smoke.md"; title.value = "Smoke memo"; type.value = "memo"; form.requestSubmit(); return true;
+  })()`);
+  await waitForState(window, (state) => state.activeFile === "smoke.md" && state.status === "saved", "new Project file");
+  await runScript(window, `(() => { document.querySelector("#editor")?.dispatchEvent(new CustomEvent("maginalia-smoke-append", { detail: "\\n作成" })); return true; })()`);
+  await waitForState(window, (state) => state.activeFile === "smoke.md" && state.status === "modified" && state.saveEnabled, "new Project edit");
+  await window.webContents.executeJavaScript("document.querySelector('#save-markdown')?.click();", true);
+  await waitForState(window, (state) => state.activeFile === "smoke.md" && state.status === "saved" && !state.saveEnabled, "new Project save");
+  const saved = await readFile(path.join(parentRoot, projectName, "smoke.md"), "utf8");
+  if (!saved.includes("type: memo") || !saved.includes("作成")) throw new Error("Project creation smoke did not save metadata and content.");
 }

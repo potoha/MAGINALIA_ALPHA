@@ -193,7 +193,9 @@ async function runChild(userDataPath) {
   let window = createWindow();
 
   try {
-    await window.loadFile(path.join(desktopRoot, "dist", "renderer", "index.html"));
+    await window.loadFile(path.join(desktopRoot, "dist", "renderer", "index.html"), {
+      query: { smoke: "workbench" }
+    });
     await waitFor(window, "Boolean(document.querySelector('#workbench'))", "the workbench");
 
     let state = await readState(window);
@@ -297,7 +299,9 @@ async function runChild(userDataPath) {
     await clickCommand(window, "maginalia.view.togglePrimarySidebar");
     const previousWindow = window;
     window = createWindow();
-    await window.loadFile(path.join(desktopRoot, "dist", "renderer", "index.html"));
+    await window.loadFile(path.join(desktopRoot, "dist", "renderer", "index.html"), {
+      query: { smoke: "workbench" }
+    });
     await waitFor(window, "Boolean(document.querySelector('#workbench'))", "the recreated workbench");
     previousWindow.destroy();
     state = await readState(window);

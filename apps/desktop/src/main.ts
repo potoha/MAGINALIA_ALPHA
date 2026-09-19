@@ -59,7 +59,7 @@ import {
   parseWorkspaceSmokeMode
 } from "./smoke-mode";
 import { runQuotationSmoke } from "./quotation-smoke";
-import { runProjectSmoke } from "./project-smoke";
+import { runProjectCreateSmoke, runProjectRestoreSmoke, runProjectSmoke } from "./project-smoke";
 import { runRepositorySmoke } from "./repository-smoke";
 import { runWorkspaceSmoke } from "./workspace-smoke";
 import { runWritingSmoke } from "./writing-smoke";
@@ -165,16 +165,18 @@ const documentWorkspaceHandlers = createDocumentWorkspaceHandlers({
   openMarkdown: (owner, filePath) => markdownFileService.openForOwner(owner, filePath)
 });
 const projectHandlers = createProjectHandlers({
-  pickProjectFolder: () => projectSmoke.requested
+  pickProjectFolder: () => projectSmoke.requested && !projectSmoke.restore
     ? Promise.resolve({ canceled: false, filePaths: projectSmoke.rootPath ? [projectSmoke.rootPath] : [] })
     : dialog.showOpenDialog({
       title: "Open Project",
       properties: ["openDirectory"]
     }),
-  pickProjectParent: () => dialog.showOpenDialog({
-    title: "Choose a folder for the new Project",
-    properties: ["openDirectory"]
-  }),
+  pickProjectParent: () => projectSmoke.requested && projectSmoke.create
+    ? Promise.resolve({ canceled: false, filePaths: projectSmoke.rootPath ? [projectSmoke.rootPath] : [] })
+    : dialog.showOpenDialog({
+      title: "Choose a folder for the new Project",
+      properties: ["openDirectory"]
+    }),
   openProjectRoot: (owner, rootPath) => projectService.openForOwner(owner, rootPath),
   createProject: (owner, parentPath, title) => projectService.createForOwner(owner, parentPath, title),
   restoreProject: (owner) => projectService.restoreForOwner(owner),
@@ -582,7 +584,12 @@ function createMainWindow(): BrowserWindow {
       failProjectSmoke(new Error("The project smoke fixture root was not provided."));
     } else {
       window.webContents.once("did-finish-load", () => {
-        void runProjectSmoke(window, projectSmoke.rootPath!).then(
+        const smoke = projectSmoke.restore
+          ? runProjectRestoreSmoke(window, projectSmoke.rootPath!)
+          : projectSmoke.create
+            ? runProjectCreateSmoke(window, projectSmoke.rootPath!)
+            : runProjectSmoke(window, projectSmoke.rootPath!);
+        void smoke.then(
           () => completeProjectSmoke(),
           (error: unknown) => failProjectSmoke(error)
         );
@@ -692,7 +699,7 @@ function createMainWindow(): BrowserWindow {
     : workspaceSmoke.requested
       ? { query: { smoke: "workspace" } }
       : projectSmoke.requested
-        ? { query: { smoke: "project" } }
+        ? { query: { smoke: projectSmoke.restore ? "project-restore" : projectSmoke.create ? "project-create" : "project" } }
       : quotationSmoke.requested
       ? { query: { smoke: "quotation" } }
         : repositorySmoke.requested

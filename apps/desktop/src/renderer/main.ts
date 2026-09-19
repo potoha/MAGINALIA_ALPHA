@@ -496,6 +496,7 @@ const workspaceView: WorkspaceNavigationView = {
 const projectView: ProjectNavigationView = {
   setProjectState(state: ProjectNavigationState): void {
     renderProjectState(state);
+    updateSmokeTextForSmoke?.();
     for (const button of manuscriptList.querySelectorAll<HTMLButtonElement>("button[data-manuscript-id]")) {
       button.addEventListener("click", () => {
         const fileId = button.dataset.manuscriptId;
@@ -768,16 +769,20 @@ const workspaceSmokeMode = smokeQuery === "workspace";
 const quotationSmokeMode = smokeQuery === "quotation";
 const repositorySmokeMode = smokeQuery === "repository";
 const projectSmokeMode = smokeQuery === "project";
+const projectRestoreSmokeMode = smokeQuery === "project-restore";
+const projectCreateSmokeMode = smokeQuery === "project-create";
+const workbenchSmokeMode = smokeQuery === "workbench";
 const smokeDecisionQueue: DirtySwitchDecision[] = [];
 const legacyWorkspaceMode = workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode;
+const projectLikeSmokeMode = projectSmokeMode || projectRestoreSmokeMode || projectCreateSmokeMode;
 openButton.textContent = writingSmokeMode ? "Open" : legacyWorkspaceMode ? "Open Document" : "Open Project";
 repositoryNavigation.hidden = writingSmokeMode;
-newFileForm.hidden = writingSmokeMode || legacyWorkspaceMode;
-createProjectButton.hidden = writingSmokeMode || legacyWorkspaceMode;
-createProjectTitle.hidden = writingSmokeMode || legacyWorkspaceMode;
-openProjectButton.hidden = writingSmokeMode || legacyWorkspaceMode;
+newFileForm.hidden = writingSmokeMode || legacyWorkspaceMode || projectRestoreSmokeMode;
+createProjectButton.hidden = writingSmokeMode || legacyWorkspaceMode || projectRestoreSmokeMode;
+createProjectTitle.hidden = writingSmokeMode || legacyWorkspaceMode || projectRestoreSmokeMode;
+openProjectButton.hidden = writingSmokeMode || legacyWorkspaceMode || projectRestoreSmokeMode || projectCreateSmokeMode;
 
-if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || projectSmokeMode) {
+if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || projectLikeSmokeMode) {
   const updateSmokeText = (): void => {
     editorContainer.dataset.smokeText = surface.getText();
   };
@@ -788,7 +793,7 @@ if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySm
       ? "workspace"
       : quotationSmokeMode
       ? "quotation"
-        : projectSmokeMode
+        : projectLikeSmokeMode
           ? "project"
           : "repository";
   editorContainer.addEventListener("maginalia-smoke-append", (event) => {
@@ -803,7 +808,7 @@ if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySm
   updateSmokeText();
 }
 
-if (workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || projectSmokeMode) {
+if (workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || projectLikeSmokeMode) {
   window.addEventListener("maginalia-smoke-decision", (event) => {
     const decision = (event as CustomEvent<unknown>).detail;
     if (decision === "save" || decision === "discard" || decision === "cancel") {
@@ -811,11 +816,11 @@ if (workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || projectSm
     }
   });
   window.addEventListener("error", (event) => {
-    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : projectSmokeMode ? "Project" : "Workspace";
+    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : projectLikeSmokeMode ? "Project" : "Workspace";
     console.error(`${smokeLabel} smoke page error: ${event.message}`);
   });
   window.addEventListener("unhandledrejection", (event) => {
-    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : projectSmokeMode ? "Project" : "Workspace";
+    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : projectLikeSmokeMode ? "Project" : "Workspace";
     console.error(`${smokeLabel} smoke unhandled rejection: ${String(event.reason)}`);
   });
 }
@@ -852,11 +857,13 @@ if (legacyWorkspaceMode) {
       api: projectApi,
       writing: controller,
       view: projectView,
-      decideDirtySwitch: projectSmokeMode
+      decideDirtySwitch: projectLikeSmokeMode
         ? () => smokeDecisionQueue.shift() ?? "cancel"
         : (context) => decideDirtySwitch(context, (message) => window.confirm(message))
     });
-    if (!projectSmokeMode) void projectController.restoreProject();
+    if ((!projectLikeSmokeMode && !workbenchSmokeMode) || projectRestoreSmokeMode) {
+      void projectController.restoreProject();
+    }
   }
 }
 
