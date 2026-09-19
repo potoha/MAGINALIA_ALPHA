@@ -577,6 +577,20 @@ button:disabled {
   gap: 0.15rem;
 }
 
+.shelf-quote {
+  margin: 0;
+  color: #2f3a42;
+  font-size: 0.86rem;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.shelf-comment {
+  color: #7a5d4a;
+  font-size: 0.78rem;
+  white-space: normal;
+}
+
 .library-reference strong,
 .library-reference span {
   overflow: hidden;

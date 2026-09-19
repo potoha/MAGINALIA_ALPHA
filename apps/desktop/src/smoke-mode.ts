@@ -5,6 +5,7 @@ export const REPOSITORY_SMOKE_FLAG = "--smoke-repository";
 export const PROJECT_SMOKE_FLAG = "--smoke-project";
 export const PROJECT_RESTORE_SMOKE_FLAG = "--smoke-project-restore";
 export const PROJECT_CREATE_SMOKE_FLAG = "--smoke-project-create";
+export const SHELF_SMOKE_FLAG = "--smoke-shelf";
 
 export interface WritingSmokeMode {
   readonly requested: boolean;
@@ -32,6 +33,11 @@ export interface ProjectSmokeMode {
   readonly rootPath?: string;
   readonly restore?: boolean;
   readonly create?: boolean;
+}
+
+export interface ShelfSmokeMode {
+  readonly requested: boolean;
+  readonly rootPath?: string;
 }
 
 export function parseWritingSmokeMode(args: readonly string[]): WritingSmokeMode {
@@ -89,6 +95,15 @@ export function parseProjectSmokeMode(args: readonly string[]): ProjectSmokeMode
   }
   const flagIndex = args.indexOf(PROJECT_SMOKE_FLAG);
   if (flagIndex < 0) return { requested: false };
+  const candidate = args[flagIndex + 1];
+  if (!candidate || candidate.startsWith("--")) return { requested: true };
+  return { requested: true, rootPath: candidate };
+}
+
+export function parseShelfSmokeMode(args: readonly string[]): ShelfSmokeMode {
+  const flagIndex = args.indexOf(SHELF_SMOKE_FLAG);
+  if (flagIndex < 0) return { requested: false };
+
   const candidate = args[flagIndex + 1];
   if (!candidate || candidate.startsWith("--")) return { requested: true };
   return { requested: true, rootPath: candidate };

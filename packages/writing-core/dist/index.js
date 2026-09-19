@@ -30,6 +30,81 @@ export function confirmSave(state, snapshot) {
 export function isDirty(state) {
     return state.currentText !== state.savedText;
 }
+const QUOTE_REF_PREFIX = "<!-- maginalia:quote-ref v1 ";
+const QUOTE_REF_SUFFIX = " -->";
+function isQuoteRefRecord(value) {
+    if (value === null || typeof value !== "object")
+        return false;
+    const candidate = value;
+    return typeof candidate.quoteId === "string"
+        && candidate.quoteId.length > 0
+        && candidate.mode === "normal";
+}
+/** Return true for a Slice C QuoteRef (opaque id, normal mode only). */
+export function isQuoteRef(value) {
+    return isQuoteRefRecord(value);
+}
+function escapeQuoteRefJson(value) {
+    // JSON.stringify already escapes quotes, slashes, and control characters.
+    // Escape HTML-comment-sensitive characters as fixed unicode sequences so an
+    // opaque id can never create a literal `-->` terminator in the marker.
+    return value.replace(/[<>&]/g, (character) => {
+        if (character === "<")
+            return "\\u003c";
+        if (character === ">")
+            return "\\u003e";
+        return "\\u0026";
+    });
+}
+/**
+ * Serialize a QuoteRef as the deterministic, plain-text Markdown marker used
+ * by the authoring document.  Only the stable identity and mode are emitted.
+ */
+export function serializeQuoteRef(value) {
+    if (!isQuoteRefRecord(value)) {
+        throw new TypeError("Invalid QuoteRef.");
+    }
+    const payload = escapeQuoteRefJson(JSON.stringify({
+        quoteId: value.quoteId,
+        mode: "normal"
+    }));
+    return `${QUOTE_REF_PREFIX}${payload}${QUOTE_REF_SUFFIX}`;
+}
+/**
+ * Parse one complete QuoteRef marker.  Unknown versions, modes, fields, and
+ * malformed payloads return null so callers can leave source text untouched.
+ */
+export function parseQuoteRef(marker) {
+    if (typeof marker !== "string"
+        || !marker.startsWith(QUOTE_REF_PREFIX)
+        || !marker.endsWith(QUOTE_REF_SUFFIX)) {
+        return null;
+    }
+    const payloadText = marker.slice(QUOTE_REF_PREFIX.length, -QUOTE_REF_SUFFIX.length);
+    if (payloadText.length === 0)
+        return null;
+    let payload;
+    try {
+        payload = JSON.parse(payloadText);
+    }
+    catch (_error) {
+        return null;
+    }
+    if (!isQuoteRefRecord(payload))
+        return null;
+    // Keep the v1 payload deliberately closed.  A future version can add fields
+    // without making an unknown field look like an understood authoring value.
+    const keys = Object.keys(payload);
+    if (keys.length !== 2
+        || !keys.includes("quoteId")
+        || !keys.includes("mode")) {
+        return null;
+    }
+    return {
+        quoteId: payload.quoteId,
+        mode: "normal"
+    };
+}
 const MARKDOWN_CONTROL_CHARACTERS = new Set([
     "\\", "`", "*", "_", "{", "}", "[", "]", "(", ")", "#", "+", "-", ".", "!", "|", ">", "~", "<", "&"
 ]);
@@ -158,6 +233,57 @@ export function insertQuotation(state, target, input) {
     const provenance = formatQuotationProvenance(input);
     const coreFragment = `${quote}${eol}${eol}${provenance}`;
     const insertedText = `${insertionSeparatorBefore(state.currentText, target.start, eol)}${coreFragment}${insertionSeparatorAfter(state.currentText, target.end, eol)}`;
+    const currentText = `${state.currentText.slice(0, target.start)}${insertedText}${state.currentText.slice(target.end)}`;
+    const selection = target.start + insertedText.length;
+    return {
+        kind: "inserted",
+        state: editDocument(state, currentText),
+        insertedText,
+        selectionStart: selection,
+        selectionEnd: selection,
+    };
+}
+/**
+ * Replace a UTF-16 selection with a stable QuoteRef marker.
+ *
+ * This is the Slice C Normal authoring path.  It intentionally does not read
+ * or embed quotation text, title, authors, page metadata, or a Source id.  The
+ * existing insertQuotation function above remains available for legacy flows.
+ */
+export function insertQuoteRef(state, target, input) {
+    if (target === null || typeof target !== "object")
+        return {
+            kind: "error",
+            code: "invalid-range",
+            message: "The QuoteRef selection is outside the current document.",
+        };
+    if (target.documentId !== state.documentId)
+        return {
+            kind: "error",
+            code: "document-mismatch",
+            message: "The QuoteRef target belongs to another document.",
+        };
+    if (!Number.isInteger(target.start)
+        || !Number.isInteger(target.end)
+        || target.start < 0
+        || target.end < target.start
+        || target.end > state.currentText.length) {
+        return {
+            kind: "error",
+            code: "invalid-range",
+            message: "The QuoteRef selection is outside the current document.",
+        };
+    }
+    if (!isQuoteRefRecord(input))
+        return {
+            kind: "error",
+            code: "invalid-quote-ref",
+            message: "The QuoteRef data is invalid.",
+        };
+    const eolMatch = state.currentText.match(/\r\n|\r|\n/);
+    const eol = eolMatch?.[0] ?? "\n";
+    const marker = serializeQuoteRef(input);
+    const insertedText = `${insertionSeparatorBefore(state.currentText, target.start, eol)}${marker}${insertionSeparatorAfter(state.currentText, target.end, eol)}`;
     const currentText = `${state.currentText.slice(0, target.start)}${insertedText}${state.currentText.slice(target.end)}`;
     const selection = target.start + insertedText.length;
     return {

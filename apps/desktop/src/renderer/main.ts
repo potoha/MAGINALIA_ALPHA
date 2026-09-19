@@ -7,6 +7,12 @@ import {
   type LibraryControllerView,
   type LibraryViewState
 } from "./library-controller";
+import {
+  ShelfController,
+  type ShelfControllerApi,
+  type ShelfControllerView,
+  type ShelfViewState
+} from "./shelf-controller";
 import { MonacoMarkdownSurface } from "./monaco-surface";
 import {
   ProjectNavigationController,
@@ -172,18 +178,18 @@ app.innerHTML = `
         <div class="view-container secondary-view-container">
           <section id="library-navigation" class="library-navigation view-panel" aria-labelledby="library-heading">
             <div class="library-heading-row">
-              <h2 id="library-heading">Library</h2>
-              <button id="choose-library" type="button">Choose Library</button>
-              <strong id="library-name">No Library selected</strong>
+              <h2 id="library-heading">Shelf</h2>
+              <strong id="library-name">Reviewer Shelf</strong>
+              <button id="choose-library" type="button" hidden aria-hidden="true">Choose local Library</button>
             </div>
             <form id="library-search-form" class="library-search-form">
-              <label for="library-query">Search quotations</label>
-              <input id="library-query" type="search" autocomplete="off" disabled>
-              <button id="library-search" type="submit" disabled>Search</button>
+              <label class="visually-hidden" for="library-query">Search quotations</label>
+              <input id="library-query" type="search" autocomplete="off" placeholder="Search quotations...">
+              <button id="library-search" type="submit">Search</button>
             </form>
-            <p id="library-status" class="library-status" role="status" aria-live="polite">Choose a Library to search quotations.</p>
+            <p id="library-status" class="library-status" role="status" aria-live="polite">Search approved Reviewer quotations.</p>
             <p id="library-error" class="library-error" role="alert" aria-live="assertive" hidden></p>
-            <ul id="library-results" class="library-results" aria-label="Quotation references"></ul>
+            <ul id="library-results" class="library-results" aria-label="Shelf quotations"></ul>
           </section>
         </div>
       </aside>
@@ -798,7 +804,76 @@ const repositoryView: RepositoryControllerView = {
   }
 };
 
-function renderLibraryState(state: LibraryViewState): void {
+function renderShelfState(state: ShelfViewState): void {
+  libraryName.textContent = "Reviewer Shelf";
+  libraryQuery.value = state.query;
+  libraryQuery.disabled = state.status === "searching";
+  librarySearchButton.disabled = state.status === "searching";
+
+  const statusMessage = state.status === "searching"
+    ? "Searching Reviewer…"
+    : state.status === "ready"
+      ? `${state.results.length} quotation${state.results.length === 1 ? "" : "s"}`
+      : "Search approved Reviewer quotations.";
+  libraryStatus.dataset.state = state.status;
+  libraryStatus.textContent = statusMessage;
+  libraryError.textContent = state.error ?? "";
+  libraryError.hidden = state.error === null;
+
+  libraryResults.replaceChildren();
+  for (const reference of state.results) {
+    const item = document.createElement("li");
+    item.className = "library-result";
+
+    const details = document.createElement("div");
+    details.className = "library-reference";
+    const quote = document.createElement("blockquote");
+    quote.className = "shelf-quote";
+    quote.textContent = `「${reference.quote}」`;
+    details.append(quote);
+    const title = document.createElement("strong");
+    title.textContent = reference.title ?? reference.isbn13 ?? "Untitled work";
+    details.append(title);
+    const metadata = document.createElement("span");
+    const authors = reference.authors.join("、");
+    metadata.textContent = [
+      authors,
+      reference.pageLabel.length > 0 ? `p. ${reference.pageLabel}` : ""
+    ].filter((part) => part.length > 0).join(" / ");
+    details.append(metadata);
+    if (reference.comment.length > 0) {
+      const comment = document.createElement("span");
+      comment.className = "shelf-comment";
+      comment.textContent = reference.comment;
+      details.append(comment);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "library-result-actions";
+    const select = document.createElement("button");
+    select.type = "button";
+    select.textContent = state.selectedAnnotationId === reference.annotationId ? "Selected" : "Select";
+    select.setAttribute("aria-pressed", String(state.selectedAnnotationId === reference.annotationId));
+    select.addEventListener("click", () => shelfController?.selectResult(reference.annotationId));
+    const insert = document.createElement("button");
+    insert.type = "button";
+    insert.textContent = "Insert";
+    insert.addEventListener("click", () => void shelfController?.insertResult(reference.annotationId));
+    actions.append(select, insert);
+    item.append(details, actions);
+    libraryResults.append(item);
+  }
+}
+
+/**
+ * Keep the owner-bound local Library port usable for repository/legacy flows.
+ * Normal Shelf search never calls this renderer; repository handoff and the
+ * existing quotation smoke deliberately use the old local backend.
+ */
+let legacyLibraryActive = false;
+
+function renderLegacyLibraryState(state: LibraryViewState): void {
+  legacyLibraryActive = state.library !== null;
   libraryName.textContent = state.library?.displayName ?? "No Library selected";
   libraryQuery.value = state.query;
   libraryQuery.disabled = state.library === null;
@@ -835,9 +910,8 @@ function renderLibraryState(state: LibraryViewState): void {
     title.textContent = reference.title;
     details.append(title);
     const metadata = document.createElement("span");
-    const authors = reference.authors.join("、");
     metadata.textContent = [
-      authors,
+      reference.authors.join("、"),
       reference.sourceId,
       reference.page === undefined ? "" : `p. ${reference.page}`
     ].filter((part) => part.length > 0).join(" / ");
@@ -860,9 +934,17 @@ function renderLibraryState(state: LibraryViewState): void {
   }
 }
 
-const libraryView: LibraryControllerView = {
+const shelfView: ShelfControllerView = {
+  setShelfState(state: ShelfViewState): void {
+    renderShelfState(state);
+  }
+};
+
+// LibraryController remains a local-backend compatibility port for explicit
+// repository Shelf handoffs. It never owns the Normal Shelf DOM.
+const legacyLibraryView: LibraryControllerView = {
   setLibraryState(state: LibraryViewState): void {
-    renderLibraryState(state);
+    renderLegacyLibraryState(state);
   }
 };
 
@@ -921,6 +1003,15 @@ function getLibraryApi(): LibraryControllerApi | null {
   };
 }
 
+function getShelfApi(): ShelfControllerApi | null {
+  const api = window.maginalia;
+  if (!api || typeof api.searchShelf !== "function") return null;
+  const searchShelf = api.searchShelf;
+  return {
+    searchShelf: (request) => searchShelf(request)
+  };
+}
+
 function getRepositoryApi(): RepositoryControllerApi | null {
   const api = window.maginalia;
   if (!api
@@ -957,13 +1048,14 @@ const writingSmokeMode = smokeQuery === "writing";
 const workspaceSmokeMode = smokeQuery === "workspace";
 const quotationSmokeMode = smokeQuery === "quotation";
 const repositorySmokeMode = smokeQuery === "repository";
+const shelfSmokeMode = smokeQuery === "shelf";
 const projectSmokeMode = smokeQuery === "project";
 const projectRestoreSmokeMode = smokeQuery === "project-restore";
 const projectCreateSmokeMode = smokeQuery === "project-create";
 const workbenchSmokeMode = smokeQuery === "workbench";
 const smokeDecisionQueue: DirtySwitchDecision[] = [];
 const legacyWorkspaceMode = workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode;
-const projectLikeSmokeMode = projectSmokeMode || projectRestoreSmokeMode || projectCreateSmokeMode;
+const projectLikeSmokeMode = projectSmokeMode || projectRestoreSmokeMode || projectCreateSmokeMode || shelfSmokeMode;
 openButton.textContent = writingSmokeMode ? "Open" : legacyWorkspaceMode ? "Open Document" : "Open Project";
 repositoryNavigation.hidden = writingSmokeMode;
 projectHeaderActions.hidden = writingSmokeMode || legacyWorkspaceMode;
@@ -1041,7 +1133,7 @@ document.addEventListener("pointerdown", (event) => {
   setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
 });
 
-if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || projectLikeSmokeMode) {
+if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || shelfSmokeMode || projectLikeSmokeMode) {
   const updateSmokeText = (): void => {
     editorContainer.dataset.smokeText = surface.getText();
   };
@@ -1051,23 +1143,25 @@ if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySm
     : workspaceSmokeMode
       ? "workspace"
       : quotationSmokeMode
-      ? "quotation"
-        : projectLikeSmokeMode
-          ? "project"
-          : "repository";
+        ? "quotation"
+        : shelfSmokeMode
+          ? "shelf"
+          : projectLikeSmokeMode
+            ? "project"
+            : "repository";
   editorContainer.addEventListener("maginalia-smoke-append", (event) => {
     const text = (event as CustomEvent<string>).detail;
     if (typeof text === "string") surface.appendTextForSmoke(text);
   });
   editorContainer.addEventListener("maginalia-smoke-focus", () => surface.focus());
-  if (quotationSmokeMode) {
+  if (quotationSmokeMode || shelfSmokeMode) {
     editorContainer.addEventListener("maginalia-smoke-cursor-end", () => surface.setCursorToEndForSmoke());
   }
   surface.onTextChange(updateSmokeText);
   updateSmokeText();
 }
 
-if (workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || projectLikeSmokeMode) {
+if (workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || shelfSmokeMode || projectLikeSmokeMode) {
   window.addEventListener("maginalia-smoke-decision", (event) => {
     const decision = (event as CustomEvent<unknown>).detail;
     if (decision === "save" || decision === "discard" || decision === "cancel") {
@@ -1075,11 +1169,11 @@ if (workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || projectLi
     }
   });
   window.addEventListener("error", (event) => {
-    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : projectLikeSmokeMode ? "Project" : "Workspace";
+    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : shelfSmokeMode ? "Shelf" : projectLikeSmokeMode ? "Project" : "Workspace";
     console.error(`${smokeLabel} smoke page error: ${event.message}`);
   });
   window.addEventListener("unhandledrejection", (event) => {
-    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : projectLikeSmokeMode ? "Project" : "Workspace";
+    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : shelfSmokeMode ? "Shelf" : projectLikeSmokeMode ? "Project" : "Workspace";
     console.error(`${smokeLabel} smoke unhandled rejection: ${String(event.reason)}`);
   });
 }
@@ -1131,28 +1225,49 @@ if (legacyWorkspaceMode) {
 
 let libraryController: LibraryController | undefined;
 const libraryApi = getLibraryApi();
-if (!libraryApi) {
-  chooseLibraryButton.disabled = true;
-  libraryQuery.disabled = true;
-  librarySearchButton.disabled = true;
-  libraryStatus.textContent = "Library is unavailable.";
-  libraryError.textContent = "The Library bridge is unavailable. Reload MAGINALIA to try again.";
-  libraryError.hidden = false;
-} else {
+if (libraryApi) {
+  // Keep the local LibraryService path alive for repository-owned Shelf
+  // activation and its privacy/legacy tests. Normal UI search is below.
   libraryController = new LibraryController({
     api: libraryApi,
     writing: controller,
-    view: libraryView
+    view: legacyLibraryView
   });
   chooseLibraryButton.addEventListener("click", () => {
     void libraryController?.openLibrary();
   });
+} else {
+  chooseLibraryButton.disabled = true;
+}
+
+let shelfController: ShelfController | undefined;
+const shelfApi = getShelfApi();
+if (!shelfApi) {
+  libraryQuery.disabled = true;
+  librarySearchButton.disabled = true;
+  libraryStatus.textContent = "Shelf is unavailable.";
+  libraryError.textContent = "Reviewer unavailable. Set MAGINALIA_REVIEWER_BASE_URL and start Reviewer.";
+  libraryError.hidden = false;
+} else {
+  shelfController = new ShelfController({
+    api: shelfApi,
+    writing: controller,
+    view: shelfView
+  });
   libraryQuery.addEventListener("input", () => {
-    libraryController?.setQuery(libraryQuery.value);
+    if (legacyLibraryActive) {
+      libraryController?.setQuery(libraryQuery.value);
+    } else {
+      shelfController?.setQuery(libraryQuery.value);
+    }
   });
   librarySearchForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    void libraryController?.search();
+    if (legacyLibraryActive) {
+      void libraryController?.search();
+    } else {
+      void shelfController?.search();
+    }
   });
 }
 

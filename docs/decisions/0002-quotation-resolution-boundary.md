@@ -33,3 +33,27 @@ reference into authored Markdown explicit and auditable.
 Source location.path, attribution/comment projection, raw OCR/capture
 workflows, semantic or fuzzy search, caching, and broader Library UI remain
 deferred until a concrete workflow requires them.
+
+## Slice C amendment: QuoteRef authoring
+
+Date: 2026-09-20
+
+For coffee Sapling Slice C Normal flow, the explicit Shelf Insert action writes
+only a stable `QuoteRef` marker into the Markdown authoring document:
+
+```text
+<!-- maginalia:quote-ref v1 {"quoteId":"<opaque>","mode":"normal"} -->
+```
+
+`quoteId` is the opaque Reviewer `annotationId`; it is not required to use the
+legacy `ann:ULID` shape.  The marker contains no quote text, `sourceId`, title,
+authors, or page metadata.  The serializer emits the keys in deterministic
+order and escapes comment-sensitive JSON characters.  The parser is
+versioned, accepts only the `normal` mode and known payload fields, and leaves
+unknown or malformed markers untouched.  If the Reviewer record later cannot
+be resolved, the marker remains valid authoring text; repair and export are
+deferred.
+
+The existing literal `insertQuotation` API and its tests remain as a legacy
+compatibility path.  They are not used by the Slice C Normal Shelf flow and
+are retained until a separately approved migration removes them.

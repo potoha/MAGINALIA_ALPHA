@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { isDirty, type DocumentState, type QuotationInsertionInput } from "@maginalia/writing-core";
+import {
+  isDirty,
+  parseQuoteRef,
+  type DocumentState,
+  type QuotationInsertionInput,
+  type QuoteRef
+} from "@maginalia/writing-core";
 import type {
   OpenMarkdownSuccess,
   OpenMarkdownResult,
@@ -132,6 +138,11 @@ const quotation: QuotationInsertionInput = {
   authors: ["An author"],
   page: 3,
   quote: "**literal** [brackets]"
+};
+
+const quoteRef: QuoteRef = {
+  quoteId: "reviewer-annotation-1",
+  mode: "normal"
 };
 
 describe("WritingController", () => {
@@ -357,6 +368,40 @@ describe("WritingController", () => {
       end: (result as Extract<typeof result, { kind: "inserted" }>).selectionEnd
     });
     expect(surface.text).toContain("\\*\\*literal\\*\\* \\[brackets\\]");
+    expect(controller.hasUnsavedChanges()).toBe(true);
+    expect(view.status).toEqual({ kind: "modified", message: "Modified" });
+    expect(view.saveEnabled).toBe(true);
+
+    await controller.save();
+
+    expect(save).toHaveBeenCalledWith({ sessionId: "session-1", text: surface.text });
+    expect(controller.hasUnsavedChanges()).toBe(false);
+    expect(view.status).toEqual({ kind: "saved", message: "Saved" });
+  });
+
+  it("captures a cursor and inserts a QuoteRef through one surface edit", async () => {
+    const save = vi.fn((request: SaveMarkdownRequest) => Promise.resolve({
+      kind: "saved",
+      sessionId: request.sessionId,
+      displayName: "notes.md",
+      text: request.text
+    } as const));
+    const { controller, surface, view } = makeHarness({ save });
+    await openDefault(controller);
+    surface.selection = { start: 2, end: 2 };
+
+    const target = controller.captureInsertionTarget();
+    const result = controller.insertQuoteRef(target as NonNullable<typeof target>, quoteRef);
+
+    expect(result.kind).toBe("inserted");
+    expect(surface.appliedEdits).toHaveLength(1);
+    expect(surface.text).toContain(
+      '<!-- maginalia:quote-ref v1 {"quoteId":"reviewer-annotation-1","mode":"normal"} -->'
+    );
+    expect(surface.text).not.toContain("literal");
+    expect(parseQuoteRef(
+      '<!-- maginalia:quote-ref v1 {"quoteId":"reviewer-annotation-1","mode":"normal"} -->'
+    )).toEqual(quoteRef);
     expect(controller.hasUnsavedChanges()).toBe(true);
     expect(view.status).toEqual({ kind: "modified", message: "Modified" });
     expect(view.saveEnabled).toBe(true);

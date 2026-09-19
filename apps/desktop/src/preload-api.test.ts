@@ -13,6 +13,7 @@ import {
   OPEN_LIBRARY_CHANNEL,
   SEARCH_LIBRARY_CHANNEL,
   RESOLVE_QUOTATION_FOR_INSERT_CHANNEL,
+  SEARCH_SHELF_CHANNEL,
   CREATE_REPOSITORY_CHANNEL,
   CREATE_REPOSITORY_HISTORY_CHANNEL,
   LIST_REPOSITORY_HISTORY_CHANNEL,
@@ -47,6 +48,7 @@ describe("preload boundary", () => {
       "openLibrary",
       "searchLibrary",
       "resolveQuotationForInsert",
+      "searchShelf",
       "createRepository",
       "createRepositoryHistory",
       "listRepositoryHistory",
@@ -87,6 +89,7 @@ describe("preload boundary", () => {
       libraryId: "22222222-2222-4222-8222-222222222222",
       annotationId: "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV"
     });
+    await api.searchShelf({ query: "日本語" });
     await api.createRepository({ kind: "project", title: "Project" });
     await api.createRepositoryHistory({ repositoryId: "55555555-5555-4555-8555-555555555555" });
     await api.listRepositoryHistory({ repositoryId: "55555555-5555-4555-8555-555555555555" });
@@ -146,6 +149,7 @@ describe("preload boundary", () => {
           annotationId: "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV"
         }]
       },
+      { channel: SEARCH_SHELF_CHANNEL, args: [{ query: "日本語" }] },
       {
         channel: CREATE_REPOSITORY_CHANNEL,
         args: [{ kind: "project", title: "Project" }]

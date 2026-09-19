@@ -2,11 +2,14 @@ import {
   confirmSave,
   createSaveSnapshot,
   editDocument,
+  insertQuoteRef as createQuoteRefInsertion,
   insertQuotation as createQuotationInsertion,
   isDirty,
   openDocument,
   type DocumentId,
   type DocumentState,
+  type QuoteRef,
+  type QuoteRefInsertionResult,
   type QuotationInsertionInput,
   type QuotationInsertionResult
 } from "@maginalia/writing-core";
@@ -53,6 +56,7 @@ export interface WritingInsertionSurfaceFailure {
 
 export type WritingInsertionResult =
   | QuotationInsertionResult
+  | QuoteRefInsertionResult
   | WritingInsertionStaleFailure
   | WritingInsertionSurfaceFailure;
 
@@ -139,6 +143,37 @@ export class WritingController {
     target: CapturedInsertionTarget,
     input: QuotationInsertionInput
   ): WritingInsertionResult {
+    return this.applyInsertion(
+      target,
+      (current, targetRange) => createQuotationInsertion(current, targetRange, input),
+      "The quotation could not be inserted into the editor."
+    );
+  }
+
+  /**
+   * Insert a stable QuoteRef through the same captured-target and Writing
+   * Surface boundary as legacy literal quotations.  The Shelf never receives
+   * or manipulates the Monaco surface directly.
+   */
+  public insertQuoteRef(
+    target: CapturedInsertionTarget,
+    input: QuoteRef
+  ): WritingInsertionResult {
+    return this.applyInsertion(
+      target,
+      (current, targetRange) => createQuoteRefInsertion(current, targetRange, input),
+      "The QuoteRef could not be inserted into the editor."
+    );
+  }
+
+  private applyInsertion(
+    target: CapturedInsertionTarget,
+    createInsertion: (
+      current: DocumentState,
+      target: { readonly documentId: DocumentId; readonly start: number; readonly end: number }
+    ) => QuotationInsertionResult | QuoteRefInsertionResult,
+    surfaceFailureMessage: string
+  ): WritingInsertionResult {
     const current = this.document;
     if (current === null
       || target === null
@@ -161,11 +196,11 @@ export class WritingController {
       };
     }
 
-    const result = createQuotationInsertion(current, {
+    const result = createInsertion(current, {
       documentId: target.documentId,
       start: targetRange.start,
       end: targetRange.end
-    }, input);
+    });
     if (result.kind !== "inserted") return result;
 
     const revisionBeforeEdit = this.revision;
@@ -179,7 +214,7 @@ export class WritingController {
       return {
         kind: "error",
         code: "surface-failed",
-        message: "The quotation could not be inserted into the editor."
+        message: surfaceFailureMessage
       };
     }
 

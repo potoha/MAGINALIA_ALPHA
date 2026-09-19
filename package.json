@@ -16,6 +16,7 @@
     "smoke:workspace": "npm run smoke:workspace --workspace @maginalia/desktop",
     "smoke:quotation": "npm run smoke:quotation --workspace @maginalia/desktop",
     "smoke:repository": "npm run smoke:repository --workspace @maginalia/desktop",
+    "smoke:shelf": "npm run smoke:shelf --workspace @maginalia/desktop",
     "start": "npm run start --workspace @maginalia/desktop"
   }
 }

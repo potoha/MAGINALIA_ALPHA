@@ -29,7 +29,8 @@ import {
   OPEN_MARKDOWN_CHANNEL,
   RESOLVE_QUOTATION_FOR_INSERT_CHANNEL,
   SAVE_MARKDOWN_CHANNEL,
-  SEARCH_LIBRARY_CHANNEL
+  SEARCH_LIBRARY_CHANNEL,
+  SEARCH_SHELF_CHANNEL
 } from "./preload-api";
 import {
   isSaveMarkdownRequest,
@@ -39,6 +40,7 @@ import {
 } from "./markdown-ipc";
 import { LibraryService } from "./library-service";
 import { createLibraryHandlers } from "./library-ipc";
+import { createReviewerHandlers, createReviewerSearchAdapter } from "./reviewer-ipc";
 import {
   CREATE_REPOSITORY_CHANNEL,
   CREATE_REPOSITORY_HISTORY_CHANNEL,
@@ -55,12 +57,14 @@ import {
   parseQuotationSmokeMode,
   parseProjectSmokeMode,
   parseRepositorySmokeMode,
+  parseShelfSmokeMode,
   parseWritingSmokeMode,
   parseWorkspaceSmokeMode
 } from "./smoke-mode";
 import { runQuotationSmoke } from "./quotation-smoke";
 import { runProjectCreateSmoke, runProjectRestoreSmoke, runProjectSmoke } from "./project-smoke";
 import { runRepositorySmoke } from "./repository-smoke";
+import { runShelfSmoke } from "./shelf-smoke";
 import { runWorkspaceSmoke } from "./workspace-smoke";
 import { runWritingSmoke } from "./writing-smoke";
 import {
@@ -89,12 +93,14 @@ const workspaceSmoke = parseWorkspaceSmokeMode(process.argv);
 const quotationSmoke = parseQuotationSmokeMode(process.argv);
 const projectSmoke = parseProjectSmokeMode(process.argv);
 const repositorySmoke = parseRepositorySmokeMode(process.argv);
+const shelfSmoke = parseShelfSmokeMode(process.argv);
 const smokeMode = quickSmokeMode
   || writingSmoke.requested
   || workspaceSmoke.requested
   || quotationSmoke.requested
   || projectSmoke.requested
-  || repositorySmoke.requested;
+  || repositorySmoke.requested
+  || shelfSmoke.requested;
 const markdownFileService = new MarkdownFileService();
 const documentWorkspaceService = new DocumentWorkspaceService();
 const projectService = new ProjectService(
@@ -147,8 +153,12 @@ async function seedRepositorySmokeShelf(owner: object, repositoryId: string): Pr
 }
 const documentWorkspaceHandlers = createDocumentWorkspaceHandlers({
   pickDocumentFolder: async () => {
-    if (workspaceSmoke.requested || quotationSmoke.requested) {
-      const rootPath = workspaceSmoke.requested ? workspaceSmoke.rootPath : quotationSmoke.documentRoot;
+    if (workspaceSmoke.requested || quotationSmoke.requested || shelfSmoke.requested) {
+      const rootPath = workspaceSmoke.requested
+        ? workspaceSmoke.rootPath
+        : quotationSmoke.requested
+          ? quotationSmoke.documentRoot
+          : shelfSmoke.rootPath;
       return {
         canceled: false,
         filePaths: rootPath ? [rootPath] : []
@@ -165,8 +175,13 @@ const documentWorkspaceHandlers = createDocumentWorkspaceHandlers({
   openMarkdown: (owner, filePath) => markdownFileService.openForOwner(owner, filePath)
 });
 const projectHandlers = createProjectHandlers({
-  pickProjectFolder: () => projectSmoke.requested && !projectSmoke.restore
-    ? Promise.resolve({ canceled: false, filePaths: projectSmoke.rootPath ? [projectSmoke.rootPath] : [] })
+  pickProjectFolder: () => ((projectSmoke.requested && !projectSmoke.restore) || shelfSmoke.requested)
+    ? Promise.resolve({
+      canceled: false,
+      filePaths: projectSmoke.requested && !projectSmoke.restore
+        ? projectSmoke.rootPath ? [projectSmoke.rootPath] : []
+        : shelfSmoke.rootPath ? [shelfSmoke.rootPath] : []
+    })
     : dialog.showOpenDialog({
       title: "Open Project",
       properties: ["openDirectory"]
@@ -206,6 +221,12 @@ const libraryHandlers = createLibraryHandlers({
     return libraryService.resolveQuotationForInsertForOwner(owner, libraryId, annotationId);
   }
 });
+const reviewerSearch = createReviewerSearchAdapter({
+  // This value is main-process configuration. The renderer can provide only
+  // the search string and can never select a destination URL or DB path.
+  baseUrl: process.env.MAGINALIA_REVIEWER_BASE_URL
+});
+const reviewerHandlers = createReviewerHandlers({ search: reviewerSearch });
 const repositoryHandlers = createRepositoryHandlers({
   pickParentFolder: () => repositorySmoke.requested
     ? Promise.resolve({
@@ -263,6 +284,7 @@ let workspaceSmokeFinished = false;
 let projectSmokeFinished = false;
 let quotationSmokeFinished = false;
 let repositorySmokeFinished = false;
+let shelfSmokeFinished = false;
 
 const CLOUD_USER_CODE_PATTERN = /^[A-Za-z0-9-]+$/u;
 const MAX_CLOUD_USER_CODE_LENGTH = 64;
@@ -422,6 +444,21 @@ function completeRepositorySmoke(): void {
   app.quit();
 }
 
+function failShelfSmoke(error: unknown): void {
+  if (shelfSmokeFinished) return;
+  shelfSmokeFinished = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`MAGINALIA_ELECTRON_SHELF_SMOKE_FAILED ${message}`);
+  app.exit(1);
+}
+
+function completeShelfSmoke(): void {
+  if (shelfSmokeFinished) return;
+  shelfSmokeFinished = true;
+  console.log("MAGINALIA_ELECTRON_SHELF_SMOKE_OK");
+  app.quit();
+}
+
 async function handleOpenMarkdown(event: IpcMainInvokeEvent): Promise<OpenMarkdownResult> {
   if (writingSmoke.requested) {
     if (!writingSmoke.filePath) {
@@ -461,6 +498,7 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(OPEN_LIBRARY_CHANNEL, libraryHandlers.openLibrary);
   ipcMain.handle(SEARCH_LIBRARY_CHANNEL, libraryHandlers.searchLibrary);
   ipcMain.handle(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL, libraryHandlers.resolveQuotationForInsert);
+  ipcMain.handle(SEARCH_SHELF_CHANNEL, reviewerHandlers.searchShelf);
   ipcMain.handle(CREATE_REPOSITORY_CHANNEL, repositoryHandlers.createRepository);
   ipcMain.handle(CREATE_REPOSITORY_HISTORY_CHANNEL, repositoryHandlers.createRepositoryHistory);
   ipcMain.handle(LIST_REPOSITORY_HISTORY_CHANNEL, repositoryHandlers.listRepositoryHistory);
@@ -487,6 +525,7 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(OPEN_LIBRARY_CHANNEL);
   ipcMain.removeHandler(SEARCH_LIBRARY_CHANNEL);
   ipcMain.removeHandler(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL);
+  ipcMain.removeHandler(SEARCH_SHELF_CHANNEL);
   ipcMain.removeHandler(CREATE_REPOSITORY_CHANNEL);
   ipcMain.removeHandler(CREATE_REPOSITORY_HISTORY_CHANNEL);
   ipcMain.removeHandler(LIST_REPOSITORY_HISTORY_CHANNEL);
@@ -512,6 +551,7 @@ function createMainWindow(): BrowserWindow {
       || projectSmoke.requested
       || quotationSmoke.requested
       || repositorySmoke.requested
+      || shelfSmoke.requested
       || !smokeMode,
     webPreferences: createSecureWebPreferences(path.join(__dirname, "preload.js"))
   });
@@ -683,6 +723,36 @@ function createMainWindow(): BrowserWindow {
         }
       });
     }
+  } else if (shelfSmoke.requested) {
+    if (!shelfSmoke.rootPath) {
+      failShelfSmoke(new Error("The Shelf smoke fixture root was not provided."));
+    } else {
+      window.webContents.once("did-finish-load", () => {
+        void runShelfSmoke(window, shelfSmoke.rootPath!).then(
+          () => completeShelfSmoke(),
+          (error: unknown) => failShelfSmoke(error)
+        );
+      });
+      window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) failShelfSmoke(new Error(`Renderer load failed (${errorCode}): ${errorDescription}`));
+      });
+      window.webContents.on("preload-error", (_event, preloadPath, error) => {
+        failShelfSmoke(new Error(`Preload failed (${preloadPath}): ${error.message}`));
+      });
+      window.webContents.on("render-process-gone", (_event, details) => {
+        failShelfSmoke(new Error(`Renderer process exited: ${details.reason}`));
+      });
+      window.webContents.on("unresponsive", () => {
+        failShelfSmoke(new Error("Renderer became unresponsive."));
+      });
+      window.webContents.on("console-message", (event) => {
+        if (event.level === "error") {
+          failShelfSmoke(new Error(
+            `Renderer console error at ${event.sourceId}:${event.lineNumber}: ${event.message}`
+          ));
+        }
+      });
+    }
   } else if (quickSmokeMode) {
     window.webContents.once("did-finish-load", () => {
       console.log("MAGINALIA_ELECTRON_SMOKE_OK");
@@ -704,7 +774,9 @@ function createMainWindow(): BrowserWindow {
       ? { query: { smoke: "quotation" } }
         : repositorySmoke.requested
           ? { query: { smoke: "repository" } }
-        : undefined;
+          : shelfSmoke.requested
+            ? { query: { smoke: "shelf" } }
+            : undefined;
   void window.loadFile(rendererPath, loadOptions).catch((error: unknown) => {
     console.error("MAGINALIA renderer failed to load", error);
     if (writingSmoke.requested) {
@@ -717,6 +789,8 @@ function createMainWindow(): BrowserWindow {
       failQuotationSmoke(error);
     } else if (repositorySmoke.requested) {
       failRepositorySmoke(error);
+    } else if (shelfSmoke.requested) {
+      failShelfSmoke(error);
     } else if (quickSmokeMode) {
       app.exit(1);
     }
@@ -738,6 +812,9 @@ function createMainWindow(): BrowserWindow {
     }
     if (repositorySmoke.requested && !repositorySmokeFinished) {
       failRepositorySmoke(new Error("Repository smoke window closed before completion."));
+    }
+    if (shelfSmoke.requested && !shelfSmokeFinished) {
+      failShelfSmoke(new Error("Shelf smoke window closed before completion."));
     }
     if (mainWindow === window) {
       mainWindow = null;

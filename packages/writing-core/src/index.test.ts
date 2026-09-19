@@ -4,9 +4,12 @@ import {
   createSaveSnapshot,
   editDocument,
   formatQuotationProvenance,
+  insertQuoteRef,
   insertQuotation,
   isDirty,
-  openDocument
+  openDocument,
+  parseQuoteRef,
+  serializeQuoteRef
 } from "./index";
 
 describe("Writing Core document state", () => {
@@ -215,5 +218,81 @@ describe("Writing Core document state", () => {
     expect(result.state.currentText).toContain("\r\n");
     expect(result.state.currentText).toContain("quoted");
     expect(result.selectionStart).toBeGreaterThan(start);
+  });
+
+  it("serializes a deterministic normal QuoteRef and round-trips an opaque id", () => {
+    const quoteRef = { quoteId: "reviewer-annotation-1", mode: "normal" } as const;
+    const marker = serializeQuoteRef(quoteRef);
+
+    expect(marker).toBe(
+      '<!-- maginalia:quote-ref v1 {"quoteId":"reviewer-annotation-1","mode":"normal"} -->'
+    );
+    expect(parseQuoteRef(marker)).toEqual(quoteRef);
+    expect(serializeQuoteRef(quoteRef)).toBe(marker);
+  });
+
+  it("escapes HTML-comment terminators while preserving the opaque id", () => {
+    const quoteRef = { quoteId: 'a<-->b"&', mode: "normal" } as const;
+    const marker = serializeQuoteRef(quoteRef);
+
+    expect(marker).toContain("\\u003c");
+    expect(marker).toContain("\\u003e");
+    expect(marker).toContain("\\u0026");
+    expect(marker.match(/-->/g)).toHaveLength(1);
+    expect(parseQuoteRef(marker)).toEqual(quoteRef);
+  });
+
+  it.each([
+    "",
+    "<!-- maginalia:quote-ref v2 {\"quoteId\":\"id\",\"mode\":\"normal\"} -->",
+    "<!-- maginalia:quote-ref v1 not-json -->",
+    "<!-- maginalia:quote-ref v1 {\"quoteId\":\"id\"} -->",
+    "<!-- maginalia:quote-ref v1 {\"quoteId\":\"id\",\"mode\":\"embedded\"} -->",
+    "<!-- maginalia:quote-ref v1 {\"quoteId\":\"\",\"mode\":\"normal\"} -->",
+    "<!-- maginalia:quote-ref v1 {\"quoteId\":\"id\",\"mode\":\"normal\",\"extra\":true} -->"
+  ])("leaves malformed or unknown QuoteRef markers unparsed: %s", (marker) => {
+    expect(parseQuoteRef(marker)).toBeNull();
+  });
+
+  it("inserts only the QuoteRef marker and preserves it through save/reopen", () => {
+    const quoteRef = { quoteId: "reviewer-uuid", mode: "normal" } as const;
+    const original = openDocument({ documentId: "doc-1", displayName: "notes.md", text: "Before\nAfter" });
+    const inserted = insertQuoteRef(original, {
+      documentId: "doc-1",
+      start: "Before\n".length,
+      end: "Before\n".length
+    }, quoteRef);
+
+    expect(inserted.kind).toBe("inserted");
+    if (inserted.kind !== "inserted") return;
+    const marker = serializeQuoteRef(quoteRef);
+    expect(inserted.state.currentText).toBe(`Before\n\n${marker}\n\nAfter`);
+    expect(inserted.state.currentText).not.toContain("引用本文");
+    expect(isDirty(inserted.state)).toBe(true);
+
+    const saved = confirmSave(inserted.state, createSaveSnapshot(inserted.state));
+    const reopened = openDocument({
+      documentId: "doc-1",
+      displayName: "notes.md",
+      text: saved.savedText
+    });
+    expect(reopened.currentText).toBe(inserted.state.currentText);
+    expect(parseQuoteRef(marker)).toEqual(quoteRef);
+  });
+
+  it("rejects an invalid QuoteRef without changing the document", () => {
+    const state = openDocument({ documentId: "doc-1", displayName: "notes.md", text: "draft" });
+    const result = insertQuoteRef(state, { documentId: "doc-1", start: 0, end: 0 }, {
+      quoteId: "",
+      mode: "normal"
+    } as const);
+
+    expect(result).toEqual({
+      kind: "error",
+      code: "invalid-quote-ref",
+      message: "The QuoteRef data is invalid."
+    });
+    expect(state.currentText).toBe("draft");
+    expect(isDirty(state)).toBe(false);
   });
 });

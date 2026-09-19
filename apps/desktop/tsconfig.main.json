@@ -15,6 +15,7 @@
   },
   "include": [
     "src/main.ts",
+    "src/shelf-smoke.ts",
     "src/preload.ts",
     "src/security.ts",
     "src/document-workspace.ts",
@@ -22,6 +23,7 @@
     "src/project-service.ts",
     "src/project-ipc.ts",
     "src/library-service.ts",
+    "src/reviewer-ipc.ts",
     "src/repository-filesystem.ts",
     "src/repository-local-history.ts",
     "src/repository-service.ts",

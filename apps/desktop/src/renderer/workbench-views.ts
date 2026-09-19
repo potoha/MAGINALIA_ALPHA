@@ -20,7 +20,7 @@ export const WORKBENCH_VIEW_MANIFEST = [
   },
   {
     id: "library",
-    title: "Library",
+    title: "Shelf",
     defaultRegion: "secondary-sidebar",
     activityButtonId: "activity-view-library",
     panelId: "library-navigation"
