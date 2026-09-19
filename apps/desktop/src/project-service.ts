@@ -11,7 +11,8 @@ import { MarkdownFileService } from "./markdown-file-service";
 import {
   createProjectMarkdown,
   normalizeProjectFileName,
-  normalizeProjectTitle,
+  normalizeDocumentTitle,
+  normalizeProjectFolderName,
   parseProjectMetadata,
   PROJECT_DOCUMENT_TYPES,
   type ProjectDocumentType,
@@ -162,7 +163,7 @@ export class ProjectService {
   }
 
   public async createForOwner(owner: object, parentPath: string, title: string): Promise<ProjectCreateResult> {
-    const normalizedTitle = normalizeProjectTitle(title);
+    const normalizedTitle = normalizeProjectFolderName(title);
     if (!normalizedTitle || !path.isAbsolute(parentPath)) return PROJECT_NAME_INVALID;
 
     let parentRoot: string;
@@ -217,7 +218,7 @@ export class ProjectService {
     documentType: ProjectDocumentType,
   ): Promise<ProjectFileCreateResult> {
     const normalizedName = normalizeProjectFileName(fileName);
-    const normalizedTitle = normalizeProjectTitle(title);
+    const normalizedTitle = normalizeDocumentTitle(title);
     if (!normalizedName || !normalizedTitle || !isDocumentType(documentType)) return PROJECT_FILE_INVALID;
 
     const created: CreateManuscriptResult = await this.workspace.createManuscriptForOwner(

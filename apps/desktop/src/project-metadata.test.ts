@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   createProjectMarkdown,
+  normalizeDocumentTitle,
   normalizeProjectFileName,
+  normalizeProjectFolderName,
   parseProjectMetadata
 } from "./project-metadata";
 
@@ -37,5 +39,30 @@ describe("Project Markdown metadata", () => {
     expect(text).toContain("type: memo");
     expect(text).toContain("title: A note");
     expect(text).toContain("# A note");
+  });
+
+  it("keeps Project folder validation separate from document title validation", () => {
+    for (const name of ["../project", "foo/bar", "CON", "bad:name", ".", "..", "folder."]) {
+      expect(normalizeProjectFolderName(name)).toBeUndefined();
+    }
+    expect(normalizeProjectFolderName(" Coffee Sapling ")).toBe("Coffee Sapling");
+
+    for (const title of [
+      "エーコ: 「開かれた作品」について",
+      "俳句／読者／テクスト",
+      "「空所」とは何か？",
+      "A/B testingではない「開かれ」"
+    ]) {
+      expect(normalizeDocumentTitle(title)).toBe(title);
+      const text = createProjectMarkdown(title, "memo", new Date("2026-09-19T00:00:00Z"));
+      expect(parseProjectMetadata(text, "memo.md")).toEqual({
+        documentType: "memo",
+        title,
+        valid: true
+      });
+    }
+    expect(normalizeDocumentTitle("  readable title  ")).toBe("readable title");
+    expect(normalizeDocumentTitle("   ")).toBeUndefined();
+    expect(normalizeDocumentTitle("x".repeat(241))).toBeUndefined();
   });
 });

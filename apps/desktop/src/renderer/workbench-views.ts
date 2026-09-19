@@ -19,13 +19,6 @@ export const WORKBENCH_VIEW_MANIFEST = [
     panelId: "workspace-navigation"
   },
   {
-    id: "repository",
-    title: "Repository",
-    defaultRegion: "primary-sidebar",
-    activityButtonId: "activity-view-repository",
-    panelId: "repository-navigation"
-  },
-  {
     id: "library",
     title: "Library",
     defaultRegion: "secondary-sidebar",

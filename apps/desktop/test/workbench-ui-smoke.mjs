@@ -117,7 +117,8 @@ async function readState(window) {
     const secondary = region('#secondary-sidebar');
     const secondaryResizer = region('#secondary-sidebar-resizer');
     const editor = region('.editor-area');
-    if (!root || !toolbar || !activity || !primary || !secondary || !secondaryResizer || !editor) return null;
+    const repositoryPanel = region('#repository-navigation');
+    if (!root || !toolbar || !activity || !primary || !secondary || !secondaryResizer || !editor || !repositoryPanel) return null;
     return {
       preloadBridge: typeof window.maginalia?.openMarkdown === 'function',
       editorOnly: root.dataset.editorOnly,
@@ -132,6 +133,9 @@ async function readState(window) {
       secondary: visual(secondary),
       secondaryResizer: visual(secondaryResizer),
       editor: visual(editor),
+      activityViewIds: [...document.querySelectorAll('[data-workbench-view]')].map((button) => button.dataset.workbenchView),
+      repositoryActivityButton: Boolean(document.querySelector('[data-workbench-view="repository"]')),
+      repositoryPanelVisible: visual(repositoryPanel).visible,
       activePrimaryPanel: primary.querySelector('.view-panel-active')?.dataset.workbenchViewPanel ?? null,
       activeSecondaryPanel: secondary.querySelector('.view-panel-active')?.dataset.workbenchViewPanel ?? null,
       viewportWidth: window.innerWidth,
@@ -207,6 +211,9 @@ async function runChild(userDataPath) {
     assertEqual(state.primary.visible, true, "Initial primary sidebar visibility");
     assertEqual(state.secondary.visible, true, "Initial secondary sidebar visibility");
     assertTrue(state.editor.visible && state.editor.width > 0, "Initial editor area must have visible width.");
+    assertEqual(JSON.stringify(state.activityViewIds), JSON.stringify(["workspace", "library"]), "Normal Activity Bar views");
+    assertEqual(state.repositoryActivityButton, false, "Repository must not have a normal Activity Bar button");
+    assertEqual(state.repositoryPanelVisible, false, "Repository panel must be hidden from normal UI");
 
     await setStoredLayout(window, {
       activityBarVisible: true,
@@ -214,13 +221,13 @@ async function runChild(userDataPath) {
       primarySidebarWidth: 300,
       secondarySidebarVisible: true,
       secondarySidebarWidth: 300,
-      activePrimaryView: "removed-primary-view",
+      activePrimaryView: "repository",
       activeSecondaryView: "removed-secondary-view"
     });
     await reload(window);
     state = await readState(window);
     const normalizedUnknownViews = JSON.parse(state.storedLayout ?? "null");
-    assertEqual(normalizedUnknownViews.activePrimaryView, "workspace", "Unknown persisted primary view fallback");
+    assertEqual(normalizedUnknownViews.activePrimaryView, "workspace", "Repository view fallback after manifest removal");
     assertEqual(normalizedUnknownViews.activeSecondaryView, "library", "Unknown persisted secondary view fallback");
     assertEqual(state.activePrimaryPanel, "workspace", "Unknown primary view must show the fallback panel");
     assertEqual(state.activeSecondaryPanel, "library", "Unknown secondary view must show the fallback panel");

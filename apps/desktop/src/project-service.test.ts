@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DocumentWorkspaceService } from "./document-workspace";
 import { MarkdownFileService } from "./markdown-file-service";
+import { parseProjectMetadata } from "./project-metadata";
 import { MemoryProjectPathStore, ProjectService } from "./project-service";
 
 async function withTempDirectory<T>(run: (directory: string) => Promise<T>): Promise<T> {
@@ -42,12 +43,18 @@ describe("Project service", () => {
       ]);
       expect(JSON.stringify(project)).not.toContain(root);
 
-      const created = await service.createFileForOwner(owner, project.project.projectId, "memo", "A Memo", "memo");
+      const documentTitle = "エーコ: 「開かれた作品」について";
+      const created = await service.createFileForOwner(owner, project.project.projectId, "memo", documentTitle, "memo");
       expect(created.kind).toBe("created");
       if (created.kind !== "created") throw new Error("Expected a created file");
       expect(created.file.displayName).toBe("memo.md");
       expect(created.file.documentType).toBe("memo");
-      expect(await readFile(path.join(root, "memo.md"), "utf8")).toContain("type: memo");
+      expect(created.file.title).toBe(documentTitle);
+      expect(parseProjectMetadata(await readFile(path.join(root, "memo.md"), "utf8"), "memo.md")).toEqual({
+        documentType: "memo",
+        title: documentTitle,
+        valid: true
+      });
 
       const duplicate = await service.createFileForOwner(owner, project.project.projectId, "memo.md", "Again", "memo");
       expect(duplicate).toMatchObject({ kind: "error", code: "manuscript-exists" });

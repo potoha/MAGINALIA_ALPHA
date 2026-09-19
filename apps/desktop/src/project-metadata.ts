@@ -72,11 +72,17 @@ export function normalizeProjectFileName(value: string): string | undefined {
   return name;
 }
 
-export function normalizeProjectTitle(value: string): string | undefined {
+export function normalizeProjectFolderName(value: string): string | undefined {
+  const name = value.trim();
+  if (!name || name === "." || name === "..") return undefined;
+  if (/[<>:"/\\|?*\u0000-\u001f]/u.test(name) || /[. ]$/u.test(name)) return undefined;
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu.test(name)) return undefined;
+  return name;
+}
+
+export function normalizeDocumentTitle(value: string): string | undefined {
   const title = value.trim();
-  if (!title || title === "." || title === "..") return undefined;
-  if (/[<>:"/\\|?*\u0000-\u001f]/u.test(title) || /[. ]$/u.test(title)) return undefined;
-  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu.test(title)) return undefined;
+  if (!title || title.length > 240) return undefined;
   return title;
 }
 
