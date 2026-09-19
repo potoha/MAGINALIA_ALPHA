@@ -118,6 +118,155 @@ button:disabled {
   background: #fffdf8;
 }
 
+.project-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.project-header .workspace-document-heading {
+  flex: 1 1 auto;
+}
+
+.project-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.project-header-action {
+  width: 2rem;
+  min-width: 2rem;
+  min-height: 2rem;
+  padding: 0;
+  border-color: transparent;
+  color: #5f3b2d;
+  background: transparent;
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.project-header-action:hover,
+.project-header-action:focus-visible,
+.project-header-action[aria-expanded="true"] {
+  border-color: transparent;
+  color: #fffdf8;
+  background: #9b4b36;
+}
+
+.project-action-menu,
+.project-create-form,
+.project-inline-create {
+  min-width: 0;
+  border-top: 1px solid #e1d9ce;
+}
+
+.project-action-menu[hidden],
+.project-create-form[hidden],
+.project-inline-create[hidden] {
+  display: none;
+}
+
+.project-action-menu {
+  display: flex;
+  align-self: flex-end;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.3rem;
+  width: min(100%, 14rem);
+  padding-top: 0.45rem;
+}
+
+.project-action-menu-label {
+  color: #5f6c76;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.project-action-menu button {
+  flex: 0 0 auto;
+  min-width: 0;
+  width: 100%;
+  padding: 0.3rem 0.45rem;
+  border-color: #c69b86;
+  color: #5f3b2d;
+  background: #f6eee6;
+  font-size: 0.8rem;
+}
+
+.project-action-menu button:hover,
+.project-action-menu button:focus-visible {
+  border-color: #9b4b36;
+  color: #fffdf8;
+  background: #9b4b36;
+}
+
+.project-create-form,
+.project-inline-create {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-top: 0.45rem;
+}
+
+.project-create-form {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.project-create-form input,
+.project-inline-create input {
+  box-sizing: border-box;
+  min-width: 0;
+  flex: 1 1 10rem;
+  border: 1px solid #c8beb1;
+  border-radius: 0.35rem;
+  padding: 0.35rem 0.45rem;
+  color: inherit;
+  background: #fff;
+  font: inherit;
+}
+
+.project-create-form button,
+.project-inline-create button {
+  flex: 0 0 auto;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.8rem;
+}
+
+.project-inline-create-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 0;
+  color: #5f6c76;
+  font-size: 0.8rem;
+}
+
+.project-inline-create-heading span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.project-inline-create-heading strong {
+  color: #9b4b36;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.project-inline-create .new-file-form {
+  padding-top: 0;
+  border-top: 0;
+}
+
 .project-controls,
 .new-file-form {
   display: flex;
@@ -161,6 +310,10 @@ button:disabled {
 .new-file-form label {
   color: #5f6c76;
   font-size: 0.78rem;
+}
+
+.project-inline-create .new-file-form input {
+  min-width: 0;
 }
 
 .project-file-type {
@@ -477,6 +630,15 @@ button:disabled {
   list-style: none;
 }
 
+.manuscript-list[data-navigation-mode="project"] {
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.project-file-row {
+  min-width: 0;
+}
+
 .manuscript-button {
   max-width: min(24rem, 75vw);
   overflow: hidden;
@@ -487,9 +649,54 @@ button:disabled {
   border-color: #c69b86;
 }
 
-.manuscript-button.active {
+.project-file-row .manuscript-button {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 100%;
+  min-height: 1.75rem;
+  padding: 0.2rem 0.35rem;
+  border-color: transparent;
+  border-radius: 0.25rem;
+  text-align: left;
+  background: transparent;
+}
+
+.project-file-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-file-row .project-file-type {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: #7f6b5f;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.project-file-row:hover .manuscript-button,
+.project-file-row .manuscript-button:focus-visible {
+  border-color: transparent;
+  background: #f3dfd1;
+}
+
+.project-file-row .manuscript-button[aria-selected="true"] {
+  background: #f3dfd1;
+}
+
+.project-file-row .manuscript-button.active {
   color: #fffdf8;
   background: #9b4b36;
+}
+
+.project-file-row .manuscript-button.active .project-file-type {
+  color: #f9e4d8;
 }
 
 .empty-document-message,

@@ -54,7 +54,7 @@ try {
     throw new Error(`Electron project smoke failed (exit ${result.code ?? result.signal}).\n${result.stdout}${result.stderr}`);
   }
   const projectRoot = path.join(temporaryDirectory, "Coffee Smoke");
-  const saved = await readFile(path.join(projectRoot, "smoke.md"), "utf8");
+  const saved = await readFile(path.join(projectRoot, "Smoke memo.md"), "utf8");
   if (!saved.includes("type: memo") || !saved.includes("作成")) {
     throw new Error(`Project smoke file did not retain metadata and edit: ${JSON.stringify(saved)}`);
   }

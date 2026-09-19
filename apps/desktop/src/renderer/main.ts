@@ -15,6 +15,7 @@ import {
   type ProjectNavigationView
 } from "./project-controller";
 import { PROJECT_DOCUMENT_TYPES, type ProjectDocumentType } from "../project-metadata";
+import { createProjectFileName } from "./project-ui";
 import {
   WorkspaceNavigationController,
   type WorkspaceNavigationApi,
@@ -78,30 +79,50 @@ app.innerHTML = `
         <div class="view-container primary-view-container">
           <section id="workspace-navigation" class="workspace-navigation view-panel" aria-labelledby="workspace-document-heading">
             <h2 id="workspace-document-heading" class="visually-hidden">Project Registry</h2>
-            <div class="workspace-document-heading">
-              <span id="workspace-label" class="workspace-label">Project</span>
-              <strong id="workspace-document-name">No Project open</strong>
+            <div class="project-header">
+              <div class="workspace-document-heading">
+                <span id="workspace-label" class="workspace-label">Project</span>
+                <strong id="workspace-document-name">No Project open</strong>
+              </div>
+              <div id="project-header-actions" class="project-header-actions">
+                <button id="project-new" class="project-header-action" type="button" aria-label="New Markdown file" title="New Markdown file" aria-haspopup="menu" aria-controls="project-new-menu" aria-expanded="false">+</button>
+                <button id="project-overflow" class="project-header-action" type="button" aria-label="Project actions" title="Project actions" aria-haspopup="menu" aria-controls="project-overflow-menu" aria-expanded="false">…</button>
+              </div>
             </div>
-            <div class="project-controls">
-              <button id="open-project" type="button">Open Project</button>
+            <div id="project-new-menu" class="project-action-menu" role="menu" aria-label="New Markdown file" hidden>
+              <span class="project-action-menu-label">New Markdown</span>
+              ${PROJECT_DOCUMENT_TYPES.map((type) => `<button type="button" role="menuitem" data-document-type="${type}">${type}</button>`).join("")}
+            </div>
+            <div id="project-overflow-menu" class="project-action-menu" role="menu" aria-label="Project actions" hidden>
+              <button id="open-project" type="button" role="menuitem">Open Project</button>
+              <button id="project-create" type="button" role="menuitem">Create Project</button>
+            </div>
+            <form id="project-create-form" class="project-create-form" hidden>
+              <label class="visually-hidden" for="create-project-title">New Project name</label>
               <input id="create-project-title" type="text" maxlength="200" autocomplete="off" placeholder="New Project name">
-              <button id="create-project" type="button">Create Project</button>
-            </div>
-            <p id="workspace-error" class="workspace-error" role="alert" aria-live="assertive" hidden></p>
-            <form id="new-file-form" class="new-file-form">
-              <strong>Registry</strong>
-              <label for="new-file-name">Filename</label>
-              <input id="new-file-name" type="text" maxlength="240" autocomplete="off" placeholder="idea.md">
-              <label for="new-file-title">Title</label>
-              <input id="new-file-title" type="text" maxlength="240" autocomplete="off" placeholder="Untitled note">
-              <label for="new-file-type">Type</label>
-              <select id="new-file-type">
-                ${PROJECT_DOCUMENT_TYPES.map((type) => `<option value="${type}">${type}</option>`).join("")}
-              </select>
-              <button id="new-file" type="submit">New File (.md)</button>
+              <button id="create-project" type="submit">Create</button>
+              <button id="project-create-cancel" type="button">Cancel</button>
             </form>
+            <p id="workspace-error" class="workspace-error" role="alert" aria-live="assertive" hidden></p>
+            <div id="project-inline-create" class="project-inline-create" hidden>
+              <div class="project-inline-create-heading">
+                <span>New Markdown</span>
+                <strong id="project-inline-document-type"></strong>
+              </div>
+              <form id="new-file-form" class="new-file-form">
+                <input id="new-file-name" type="hidden" maxlength="240" autocomplete="off">
+                <label class="visually-hidden" for="new-file-title">Title</label>
+                <input id="new-file-title" type="text" maxlength="240" autocomplete="off" placeholder="Title">
+                <select id="new-file-type" hidden aria-hidden="true" tabindex="-1">
+                ${PROJECT_DOCUMENT_TYPES.map((type) => `<option value="${type}">${type}</option>`).join("")}
+                </select>
+                <button id="new-file" type="submit" hidden aria-hidden="true">Create</button>
+                <button id="project-create-file-submit" type="submit">Create</button>
+                <button id="project-create-file-cancel" type="button">Cancel</button>
+              </form>
+            </div>
             <p id="empty-document-message" class="empty-document-message">Open a Project folder to see its Markdown files.</p>
-            <ul id="manuscript-list" class="manuscript-list" aria-label="Markdown manuscripts"></ul>
+            <ul id="manuscript-list" class="manuscript-list" role="listbox" aria-label="Markdown manuscripts"></ul>
           </section>
           <section id="repository-navigation" class="repository-navigation view-panel" aria-labelledby="repository-heading">
             <div class="repository-heading-row">
@@ -236,6 +257,17 @@ const libraryStatus = requiredElement<HTMLElement>("#library-status");
 const libraryError = requiredElement<HTMLElement>("#library-error");
 const libraryResults = requiredElement<HTMLUListElement>("#library-results");
 const editorContainer = requiredElement<HTMLElement>("#editor");
+const projectHeaderActions = requiredElement<HTMLElement>("#project-header-actions");
+const projectNewButton = requiredElement<HTMLButtonElement>("#project-new");
+const projectNewMenu = requiredElement<HTMLElement>("#project-new-menu");
+const projectOverflowButton = requiredElement<HTMLButtonElement>("#project-overflow");
+const projectOverflowMenu = requiredElement<HTMLElement>("#project-overflow-menu");
+const projectCreateButton = requiredElement<HTMLButtonElement>("#project-create");
+const projectCreateForm = requiredElement<HTMLFormElement>("#project-create-form");
+const projectCreateCancelButton = requiredElement<HTMLButtonElement>("#project-create-cancel");
+const projectInlineCreate = requiredElement<HTMLElement>("#project-inline-create");
+const projectInlineDocumentType = requiredElement<HTMLElement>("#project-inline-document-type");
+const projectCreateFileCancelButton = requiredElement<HTMLButtonElement>("#project-create-file-cancel");
 const repositoryNavigation = requiredElement<HTMLElement>("#repository-navigation");
 const repositoryKindLabel = requiredElement<HTMLElement>("#repository-kind-label");
 const repositoryName = requiredElement<HTMLElement>("#repository-name");
@@ -406,6 +438,8 @@ const controller = new WritingController({
 function renderWorkspaceState(state: WorkspaceNavigationState): void {
   workspaceLabel.textContent = "Document";
   workspaceDocumentName.textContent = state.document?.displayName ?? "No Document open";
+  manuscriptList.removeAttribute("role");
+  manuscriptList.dataset.navigationMode = "workspace";
   manuscriptList.replaceChildren();
 
   if (!state.document) {
@@ -436,18 +470,27 @@ function renderWorkspaceState(state: WorkspaceNavigationState): void {
   }
 }
 
+let selectedProjectDocumentType: ProjectDocumentType | null = null;
+let selectedProjectFileId: string | null = null;
+
 function renderProjectState(state: ProjectNavigationState): void {
   workspaceLabel.textContent = "Project";
   workspaceDocumentName.textContent = state.project?.displayName ?? "No Project open";
+  manuscriptList.setAttribute("role", "listbox");
+  manuscriptList.dataset.navigationMode = "project";
   manuscriptList.replaceChildren();
+  updateProjectActionAvailability(state.project !== null);
 
   if (!state.project) {
+    selectedProjectFileId = null;
     emptyDocumentMessage.textContent = "Open or create a Project folder to see its Markdown files.";
     emptyDocumentMessage.hidden = false;
     return;
   }
+  const selectedFileStillExists = state.files.some((file) => file.fileId === selectedProjectFileId);
+  if (!selectedFileStillExists) selectedProjectFileId = state.activeFileId ?? state.files[0]?.fileId ?? null;
   if (state.files.length === 0) {
-    emptyDocumentMessage.textContent = "This Project has no Markdown files yet. Create one from Registry.";
+    emptyDocumentMessage.textContent = "This Project has no Markdown files yet. Use + to create one.";
     emptyDocumentMessage.hidden = false;
     return;
   }
@@ -455,22 +498,161 @@ function renderProjectState(state: ProjectNavigationState): void {
   emptyDocumentMessage.hidden = true;
   for (const file of state.files) {
     const item = document.createElement("li");
+    item.className = "project-file-row";
+    item.dataset.projectFileId = file.fileId;
     const button = document.createElement("button");
     button.type = "button";
     button.className = "manuscript-button";
-    button.textContent = file.displayName;
+    button.setAttribute("role", "option");
     button.dataset.manuscriptId = file.fileId;
+    button.dataset.manuscriptName = file.displayName;
     button.dataset.projectFileType = file.documentType;
+    button.title = file.displayName;
+    button.tabIndex = selectedProjectFileId === file.fileId ? 0 : -1;
+    const title = document.createElement("span");
+    title.className = "project-file-title";
+    title.textContent = file.title;
+    const type = document.createElement("small");
+    type.className = "project-file-type";
+    type.textContent = file.documentType;
+    button.append(title, type);
+    button.setAttribute("aria-selected", String(selectedProjectFileId === file.fileId));
     if (state.activeFileId === file.fileId) {
       button.classList.add("active");
       button.setAttribute("aria-current", "page");
     }
-    const type = document.createElement("small");
-    type.className = "project-file-type";
-    type.textContent = file.documentType;
-    item.append(button, type);
+    item.setAttribute("role", "none");
+    item.append(button);
     manuscriptList.append(item);
   }
+}
+
+function updateProjectActionAvailability(hasProject: boolean): void {
+  projectNewButton.disabled = !hasProject || selectedProjectDocumentType !== null;
+  projectOverflowButton.disabled = selectedProjectDocumentType !== null;
+}
+
+function updateSelectedProjectFile(buttons: readonly HTMLButtonElement[], fileId: string | null): void {
+  selectedProjectFileId = fileId;
+  for (const candidate of buttons) {
+    candidate.setAttribute("aria-selected", String(candidate.dataset.manuscriptId === fileId));
+  }
+}
+
+function menuItems(menu: HTMLElement): HTMLButtonElement[] {
+  return [...menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')];
+}
+
+function focusMenuItem(menu: HTMLElement, index: number): void {
+  const items = menuItems(menu);
+  if (items.length === 0) return;
+  const bounded = (index + items.length) % items.length;
+  items[bounded]?.focus();
+}
+
+function setProjectMenuOpen(menu: HTMLElement, trigger: HTMLButtonElement, open: boolean): void {
+  menu.hidden = !open;
+  trigger.setAttribute("aria-expanded", String(open));
+}
+
+function cancelProjectFileCreation(restoreFocus = true): void {
+  projectInlineCreate.hidden = true;
+  selectedProjectDocumentType = null;
+  updateProjectActionAvailability(projectController?.getState().project !== null);
+  newFileForm.reset();
+  if (restoreFocus) projectNewButton.focus();
+}
+
+function cancelProjectCreation(restoreFocus = true): void {
+  projectCreateForm.hidden = true;
+  createProjectTitle.value = "";
+  if (restoreFocus) projectOverflowButton.focus();
+}
+
+function beginProjectFileCreation(documentType: ProjectDocumentType): void {
+  selectedProjectDocumentType = documentType;
+  newFileType.value = documentType;
+  newFileTitle.value = "";
+  newFileName.value = "";
+  projectInlineDocumentType.textContent = documentType;
+  projectInlineCreate.hidden = false;
+  updateProjectActionAvailability(projectController?.getState().project !== null);
+  setProjectMenuOpen(projectNewMenu, projectNewButton, false);
+  setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
+  newFileTitle.focus();
+}
+
+function bindProjectFileKeyboard(): void {
+  const buttons = [...manuscriptList.querySelectorAll<HTMLButtonElement>("button[data-manuscript-id]")];
+  buttons.forEach((button, index) => {
+    button.addEventListener("focus", () => {
+      updateSelectedProjectFile(buttons, button.dataset.manuscriptId ?? null);
+      buttons.forEach((candidate) => { candidate.tabIndex = candidate === button ? 0 : -1; });
+    });
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const selected = buttons.find((candidate) => candidate.dataset.manuscriptId === selectedProjectFileId) ?? button;
+        selected.click();
+        return;
+      }
+      const nextIndex = event.key === "ArrowDown"
+        ? index + 1
+        : event.key === "ArrowUp"
+          ? index - 1
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? buttons.length - 1
+              : undefined;
+      if (nextIndex === undefined) return;
+      event.preventDefault();
+      buttons.forEach((candidate) => { candidate.tabIndex = -1; });
+      const next = buttons[Math.max(0, Math.min(buttons.length - 1, nextIndex))];
+      if (next) {
+        updateSelectedProjectFile(buttons, next.dataset.manuscriptId ?? null);
+        next.tabIndex = 0;
+        next.focus();
+      }
+    });
+  });
+}
+
+function bindProjectMenuKeyboard(menu: HTMLElement, trigger: HTMLButtonElement): void {
+  menu.addEventListener("keydown", (event) => {
+    const items = menuItems(menu);
+    const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusMenuItem(menu, currentIndex + 1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      focusMenuItem(menu, currentIndex - 1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      focusMenuItem(menu, 0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      focusMenuItem(menu, items.length - 1);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setProjectMenuOpen(menu, trigger, false);
+      trigger.focus();
+    } else if (event.key === "Tab") {
+      setProjectMenuOpen(menu, trigger, false);
+    }
+  });
+}
+
+function bindProjectMenuTriggerKeyboard(menu: HTMLElement, trigger: HTMLButtonElement): void {
+  trigger.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    setProjectMenuOpen(menu, trigger, true);
+    const items = menuItems(menu);
+    queueMicrotask(() => focusMenuItem(menu, event.key === "ArrowDown" ? 0 : items.length - 1));
+  });
 }
 
 let projectController: ProjectNavigationController | undefined;
@@ -496,11 +678,18 @@ const workspaceView: WorkspaceNavigationView = {
 const projectView: ProjectNavigationView = {
   setProjectState(state: ProjectNavigationState): void {
     renderProjectState(state);
+    bindProjectFileKeyboard();
     updateSmokeTextForSmoke?.();
     for (const button of manuscriptList.querySelectorAll<HTMLButtonElement>("button[data-manuscript-id]")) {
       button.addEventListener("click", () => {
         const fileId = button.dataset.manuscriptId;
-        if (fileId) void projectController?.openFile(fileId);
+        if (fileId) {
+          updateSelectedProjectFile(
+            [...manuscriptList.querySelectorAll<HTMLButtonElement>("button[data-manuscript-id]")],
+            fileId
+          );
+          void projectController?.openFile(fileId);
+        }
       });
     }
   },
@@ -777,10 +966,80 @@ const legacyWorkspaceMode = workspaceSmokeMode || quotationSmokeMode || reposito
 const projectLikeSmokeMode = projectSmokeMode || projectRestoreSmokeMode || projectCreateSmokeMode;
 openButton.textContent = writingSmokeMode ? "Open" : legacyWorkspaceMode ? "Open Document" : "Open Project";
 repositoryNavigation.hidden = writingSmokeMode;
-newFileForm.hidden = writingSmokeMode || legacyWorkspaceMode || projectRestoreSmokeMode;
-createProjectButton.hidden = writingSmokeMode || legacyWorkspaceMode || projectRestoreSmokeMode;
-createProjectTitle.hidden = writingSmokeMode || legacyWorkspaceMode || projectRestoreSmokeMode;
-openProjectButton.hidden = writingSmokeMode || legacyWorkspaceMode || projectRestoreSmokeMode || projectCreateSmokeMode;
+projectHeaderActions.hidden = writingSmokeMode || legacyWorkspaceMode;
+projectNewMenu.hidden = true;
+projectOverflowMenu.hidden = true;
+projectInlineCreate.hidden = true;
+projectCreateForm.hidden = true;
+
+bindProjectMenuKeyboard(projectNewMenu, projectNewButton);
+bindProjectMenuKeyboard(projectOverflowMenu, projectOverflowButton);
+bindProjectMenuTriggerKeyboard(projectNewMenu, projectNewButton);
+bindProjectMenuTriggerKeyboard(projectOverflowMenu, projectOverflowButton);
+
+projectNewButton.addEventListener("click", () => {
+  const open = Boolean(projectNewMenu.hidden);
+  setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
+  setProjectMenuOpen(projectNewMenu, projectNewButton, open);
+  if (open) queueMicrotask(() => focusMenuItem(projectNewMenu, 0));
+});
+
+projectOverflowButton.addEventListener("click", () => {
+  const open = Boolean(projectOverflowMenu.hidden);
+  setProjectMenuOpen(projectNewMenu, projectNewButton, false);
+  setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, open);
+  if (open) queueMicrotask(() => focusMenuItem(projectOverflowMenu, 0));
+});
+
+for (const button of projectNewMenu.querySelectorAll<HTMLButtonElement>("button[data-document-type]")) {
+  button.addEventListener("click", () => {
+    const value = button.dataset.documentType;
+    if ((PROJECT_DOCUMENT_TYPES as readonly string[]).includes(value ?? "")) {
+      beginProjectFileCreation(value as ProjectDocumentType);
+    }
+  });
+}
+
+projectCreateButton.addEventListener("click", () => {
+  cancelProjectFileCreation(false);
+  setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
+  projectCreateForm.hidden = false;
+  createProjectTitle.focus();
+});
+
+projectCreateCancelButton.addEventListener("click", () => cancelProjectCreation());
+projectCreateFileCancelButton.addEventListener("click", () => cancelProjectFileCreation());
+
+projectInlineCreate.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  event.stopPropagation();
+  cancelProjectFileCreation();
+});
+
+projectCreateForm.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  event.stopPropagation();
+  cancelProjectCreation();
+});
+
+projectNewMenu.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") event.stopPropagation();
+});
+
+projectOverflowMenu.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") event.stopPropagation();
+});
+
+document.addEventListener("pointerdown", (event) => {
+  const target = event.target;
+  if (!(target instanceof Node)) return;
+  if (projectNewMenu.contains(target) || projectOverflowMenu.contains(target)
+    || projectNewButton.contains(target) || projectOverflowButton.contains(target)) return;
+  setProjectMenuOpen(projectNewMenu, projectNewButton, false);
+  setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
+});
 
 if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || projectLikeSmokeMode) {
   const updateSmokeText = (): void => {
@@ -848,6 +1107,9 @@ if (legacyWorkspaceMode) {
     projectView.setProjectError("Project is unavailable. Reload MAGINALIA to try again.");
     openButton.disabled = true;
     openProjectButton.disabled = true;
+    projectNewButton.disabled = true;
+    projectOverflowButton.disabled = true;
+    projectCreateButton.disabled = true;
     createProjectButton.disabled = true;
     newFileForm.querySelectorAll("input, select, button").forEach((element) => {
       (element as HTMLInputElement | HTMLSelectElement | HTMLButtonElement).disabled = true;
@@ -957,22 +1219,49 @@ if (writingSmokeMode) {
     void projectController?.openProject();
   });
   openProjectButton.addEventListener("click", () => {
+    setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
     void projectController?.openProject();
   });
 }
 
-createProjectButton.addEventListener("click", () => {
+newFileTitle.addEventListener("input", () => {
+  if (!selectedProjectDocumentType) return;
+  const names = projectController?.getState().files.map((file) => file.displayName) ?? [];
+  newFileName.value = createProjectFileName(newFileTitle.value, selectedProjectDocumentType, names);
+});
+
+newFileTitle.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || !selectedProjectDocumentType) return;
+  event.preventDefault();
+  newFileForm.requestSubmit();
+});
+
+projectCreateForm.addEventListener("submit", (event) => {
+  event.preventDefault();
   if (!projectController) return;
-  void projectController.createProject(createProjectTitle.value);
+  const previousProjectId = projectController.getState().project?.projectId;
+  void projectController.createProject(createProjectTitle.value).then(() => {
+    const project = projectController?.getState().project;
+    if (project && project.projectId !== previousProjectId) cancelProjectCreation(false);
+  });
 });
 
 newFileForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (!projectController) return;
-  void projectController.createFile({
-    fileName: newFileName.value,
-    title: newFileTitle.value,
-    documentType: newFileType.value as ProjectDocumentType
+  const documentType = selectedProjectDocumentType ?? newFileType.value as ProjectDocumentType;
+  const fileName = selectedProjectDocumentType
+    ? createProjectFileName(
+      newFileTitle.value,
+      selectedProjectDocumentType,
+      projectController.getState().files.map((file) => file.displayName)
+    )
+    : newFileName.value;
+  newFileName.value = fileName;
+  void projectController.createFile({ fileName, title: newFileTitle.value, documentType }).then(() => {
+    if (selectedProjectDocumentType && projectController?.getState().files.some((file) => file.displayName === fileName)) {
+      cancelProjectFileCreation(false);
+    }
   });
 });
 
