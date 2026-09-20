@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseQuotationSmokeMode,
   parseD5SmokeMode,
+  parseExportSmokeMode,
   parseRepositorySmokeMode,
   parseShelfSmokeMode,
   parseWritingSmokeMode,
@@ -167,6 +168,26 @@ describe("D.5 smoke mode", () => {
       requested: true,
       restore: true,
       rootPath: "C:\\Temp\\d5-smoke"
+    });
+  });
+});
+
+describe("Export smoke mode", () => {
+  it("accepts the fixture root following the explicit flag", () => {
+    expect(parseExportSmokeMode([
+      "electron",
+      "dist/main/main.js",
+      "--smoke-export",
+      "C:\\Temp\\export-smoke"
+    ])).toEqual({
+      requested: true,
+      rootPath: "C:\\Temp\\export-smoke"
+    });
+  });
+
+  it("keeps an incomplete flag in smoke mode without inventing a root", () => {
+    expect(parseExportSmokeMode(["--smoke-export", "--other"])).toEqual({
+      requested: true
     });
   });
 });

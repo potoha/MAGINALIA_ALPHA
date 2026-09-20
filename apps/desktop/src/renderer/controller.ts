@@ -123,7 +123,7 @@ export class WritingController {
     this.render();
   }
 
-  public getDocumentState(): DocumentState | null {
+  public getDocumentState(): DocumentSession | null {
     return this.getActiveSession();
   }
 

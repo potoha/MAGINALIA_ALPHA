@@ -24,6 +24,12 @@ import {
   type ReferencesViewState
 } from "./references-controller";
 import {
+  ExportController,
+  type ExportControllerApi,
+  type ExportControllerView,
+  type ExportViewState
+} from "./export-controller";
+import {
   ProjectNavigationController,
   type ProjectNavigationApi,
   type ProjectNavigationState,
@@ -70,8 +76,10 @@ app.innerHTML = `
       <div class="document-controls">
         <button id="open-markdown" type="button">Open</button>
         <button id="save-markdown" type="button" disabled>Save</button>
+        <button id="export-markdown" type="button" disabled>Export Markdown</button>
         <span id="document-name" class="document-name">No document open</span>
         <span id="document-status" class="document-status" data-state="empty" role="status" aria-live="polite">No document open</span>
+        <span id="export-status" class="export-status" data-state="empty" role="status" aria-live="polite">Open a document to export.</span>
       </div>
       <div id="workbench-layout-controls" class="layout-controls" aria-label="Workbench layout controls">
         <button id="toolbar-toggle-activity-bar" data-workbench-command="maginalia.view.toggleActivityBar" type="button" title="Toggle activity bar">Activity</button>
@@ -265,8 +273,10 @@ const modsStatus = requiredElement<HTMLElement>("#mods-status");
 const openButton = requiredElement<HTMLButtonElement>("#open-markdown");
 const openProjectButton = requiredElement<HTMLButtonElement>("#open-project");
 const saveButton = requiredElement<HTMLButtonElement>("#save-markdown");
+const exportButton = requiredElement<HTMLButtonElement>("#export-markdown");
 const documentName = requiredElement<HTMLElement>("#document-name");
 const documentStatus = requiredElement<HTMLElement>("#document-status");
+const exportStatus = requiredElement<HTMLElement>("#export-status");
 const workspaceLabel = requiredElement<HTMLElement>("#workspace-label");
 const workspaceDocumentName = requiredElement<HTMLElement>("#workspace-document-name");
 const workspaceError = requiredElement<HTMLElement>("#workspace-error");
@@ -1202,6 +1212,17 @@ function getReferencesApi(): ReferencesControllerApi | null {
   };
 }
 
+function getExportApi(): ExportControllerApi | null {
+  const api = window.maginalia;
+  if (!api || typeof api.resolveExport !== "function" || typeof api.writeExport !== "function") return null;
+  const resolveExport = api.resolveExport;
+  const writeExport = api.writeExport;
+  return {
+    resolveExport: (request) => resolveExport(request),
+    writeExport: (request) => writeExport(request)
+  };
+}
+
 function getModApi(): ConstructorParameters<typeof ModController>[0]["api"] | null {
   const api = window.maginalia;
   if (!api
@@ -1280,6 +1301,7 @@ const quotationSmokeMode = smokeQuery === "quotation";
 const repositorySmokeMode = smokeQuery === "repository";
 const shelfSmokeMode = smokeQuery === "shelf";
 const d5SmokeMode = smokeQuery === "d5" || smokeQuery === "d5-restore";
+const exportSmokeMode = smokeQuery === "export";
 const projectSmokeMode = smokeQuery === "project";
 const projectRestoreSmokeMode = smokeQuery === "project-restore" || smokeQuery === "d5-restore";
 const projectCreateSmokeMode = smokeQuery === "project-create";
@@ -1290,7 +1312,8 @@ const projectLikeSmokeMode = projectSmokeMode
   || projectRestoreSmokeMode
   || projectCreateSmokeMode
   || shelfSmokeMode
-  || d5SmokeMode;
+  || d5SmokeMode
+  || exportSmokeMode;
 openButton.textContent = writingSmokeMode ? "Open" : legacyWorkspaceMode ? "Open Document" : "Open Project";
 repositoryNavigation.hidden = writingSmokeMode;
 projectHeaderActions.hidden = writingSmokeMode || legacyWorkspaceMode;
@@ -1380,9 +1403,9 @@ if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySm
       : quotationSmokeMode
         ? "quotation"
         : shelfSmokeMode
-          ? "shelf"
-          : projectLikeSmokeMode
-            ? "project"
+            ? "shelf"
+            : projectLikeSmokeMode
+              ? "project"
             : "repository";
   editorContainer.addEventListener("maginalia-smoke-append", (event) => {
     const text = (event as CustomEvent<string>).detail;
@@ -1408,11 +1431,11 @@ if (workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode || shelfSmok
     }
   });
   window.addEventListener("error", (event) => {
-    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : shelfSmokeMode ? "Shelf" : projectLikeSmokeMode ? "Project" : "Workspace";
+    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : shelfSmokeMode ? "Shelf" : exportSmokeMode ? "Export" : projectLikeSmokeMode ? "Project" : "Workspace";
     console.error(`${smokeLabel} smoke page error: ${event.message}`);
   });
   window.addEventListener("unhandledrejection", (event) => {
-    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : shelfSmokeMode ? "Shelf" : projectLikeSmokeMode ? "Project" : "Workspace";
+    const smokeLabel = quotationSmokeMode ? "Quotation" : repositorySmokeMode ? "Repository" : shelfSmokeMode ? "Shelf" : exportSmokeMode ? "Export" : projectLikeSmokeMode ? "Project" : "Workspace";
     console.error(`${smokeLabel} smoke unhandled rejection: ${String(event.reason)}`);
   });
 }
@@ -1553,6 +1576,31 @@ if (referencesApi) {
   refreshReferencesButton.disabled = true;
   referencesStatus.dataset.state = "error";
   referencesStatus.textContent = "Reference refresh is unavailable.";
+}
+
+const exportView: ExportControllerView = {
+  setExportState(state: ExportViewState): void {
+    exportButton.disabled = !state.enabled;
+    exportStatus.dataset.state = state.status;
+    exportStatus.textContent = state.message;
+  }
+};
+
+let exportController: ExportController | undefined;
+const exportApi = getExportApi();
+if (exportApi) {
+  exportController = new ExportController({
+    api: exportApi,
+    writing: controller,
+    view: exportView
+  });
+  exportButton.addEventListener("click", () => {
+    void exportController?.exportMarkdown();
+  });
+} else {
+  exportButton.disabled = true;
+  exportStatus.dataset.state = "error";
+  exportStatus.textContent = "Markdown export is unavailable.";
 }
 
 let repositoryController: RepositoryController | undefined;

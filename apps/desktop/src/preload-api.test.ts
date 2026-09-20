@@ -15,6 +15,8 @@ import {
   RESOLVE_QUOTATION_FOR_INSERT_CHANNEL,
   SEARCH_SHELF_CHANNEL,
   RESOLVE_REFERENCES_CHANNEL,
+  RESOLVE_EXPORT_CHANNEL,
+  WRITE_EXPORT_CHANNEL,
   LOAD_MODS_CHANNEL,
   RELOAD_MODS_CHANNEL,
   OPEN_MODS_FOLDER_CHANNEL,
@@ -57,6 +59,8 @@ describe("preload boundary", () => {
       "resolveQuotationForInsert",
       "searchShelf",
       "resolveReferences",
+      "resolveExport",
+      "writeExport",
       "loadMods",
       "reloadMods",
       "openModsFolder",
@@ -106,6 +110,8 @@ describe("preload boundary", () => {
     });
     await api.searchShelf({ query: "日本語" });
     await api.resolveReferences({ text: "# Draft" });
+    await api.resolveExport({ documentId: "opaque-session", revision: 1, currentText: "# Draft" });
+    await api.writeExport({ exportId: "opaque-export", documentId: "opaque-session", revision: 1, text: "# Output" });
     await api.loadMods();
     await api.reloadMods();
     await api.openModsFolder();
@@ -183,6 +189,14 @@ describe("preload boundary", () => {
       },
       { channel: SEARCH_SHELF_CHANNEL, args: [{ query: "日本語" }] },
       { channel: RESOLVE_REFERENCES_CHANNEL, args: [{ text: "# Draft" }] },
+      {
+        channel: RESOLVE_EXPORT_CHANNEL,
+        args: [{ documentId: "opaque-session", revision: 1, currentText: "# Draft" }]
+      },
+      {
+        channel: WRITE_EXPORT_CHANNEL,
+        args: [{ exportId: "opaque-export", documentId: "opaque-session", revision: 1, text: "# Output" }]
+      },
       { channel: LOAD_MODS_CHANNEL, args: [] },
       { channel: RELOAD_MODS_CHANNEL, args: [] },
       { channel: OPEN_MODS_FOLDER_CHANNEL, args: [] },

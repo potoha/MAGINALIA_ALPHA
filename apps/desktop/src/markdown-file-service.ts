@@ -18,6 +18,13 @@ interface MarkdownSession {
   savedText: string;
 }
 
+/** Main-process-only identity and path for an owner-bound Markdown session. */
+export interface MarkdownSessionInfo {
+  readonly sessionId: string;
+  readonly displayName: string;
+  readonly filePath: string;
+}
+
 interface ReadMarkdownSuccess {
   readonly kind: "read";
   readonly text: string;
@@ -171,6 +178,21 @@ export class MarkdownFileService {
     });
     this.saveQueues.set(session.sessionId, tracked);
     return tracked;
+  }
+
+  /**
+   * Resolve an opaque renderer session to its main-process-owned file path.
+   * This method is intentionally not exposed through preload; it exists only
+   * for other main-process services such as resolved Markdown export.
+   */
+  public getSessionInfoForOwner(owner: object, sessionId: string): MarkdownSessionInfo | null {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined || session.owner !== owner) return null;
+    return Object.freeze({
+      sessionId: session.sessionId,
+      displayName: session.displayName,
+      filePath: session.filePath
+    });
   }
 
   public dispose(): void {

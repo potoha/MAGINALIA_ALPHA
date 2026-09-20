@@ -45,6 +45,11 @@ import { createReviewerHandlers, createReviewerSearchAdapter } from "./reviewer-
 import { createReferenceHandlers } from "./reference-ipc";
 import { createReviewerResolutionAdapter } from "./reviewer-resolution";
 import {
+  RESOLVE_EXPORT_CHANNEL,
+  WRITE_EXPORT_CHANNEL,
+  createExportHandlers
+} from "./export-ipc";
+import {
   INVOKE_MOD_COMMAND_CHANNEL,
   LOAD_MODS_CHANNEL,
   MOD_CAPABILITY_REQUEST_CHANNEL,
@@ -72,6 +77,7 @@ import { createSecureWebPreferences } from "./security";
 import {
   parseQuotationSmokeMode,
   parseD5SmokeMode,
+  parseExportSmokeMode,
   parseProjectSmokeMode,
   parseRepositorySmokeMode,
   parseShelfSmokeMode,
@@ -85,6 +91,7 @@ import { runShelfSmoke } from "./shelf-smoke";
 import { runWorkspaceSmoke } from "./workspace-smoke";
 import { runWritingSmoke } from "./writing-smoke";
 import { runD5Smoke, runD5RestoreSmoke } from "./d5-smoke";
+import { runExportSmoke } from "./export-smoke";
 import {
   LOAD_WORKSPACE_STATE_CHANNEL,
   SAVE_WORKSPACE_STATE_CHANNEL,
@@ -119,6 +126,7 @@ const projectSmoke = parseProjectSmokeMode(process.argv);
 const repositorySmoke = parseRepositorySmokeMode(process.argv);
 const shelfSmoke = parseShelfSmokeMode(process.argv);
 const d5Smoke = parseD5SmokeMode(process.argv);
+const exportSmoke = parseExportSmokeMode(process.argv);
 const smokeMode = quickSmokeMode
   || writingSmoke.requested
   || workspaceSmoke.requested
@@ -126,7 +134,8 @@ const smokeMode = quickSmokeMode
   || projectSmoke.requested
   || repositorySmoke.requested
   || shelfSmoke.requested
-  || d5Smoke.requested;
+  || d5Smoke.requested
+  || exportSmoke.requested;
 const markdownFileService = new MarkdownFileService();
 const workspaceStateStore = new FileWorkspaceStateStore(path.join(app.getPath("userData"), "workspace-state.json"));
 const workspaceStateHandlers = createWorkspaceStateHandlers({
@@ -209,15 +218,18 @@ const documentWorkspaceHandlers = createDocumentWorkspaceHandlers({
 });
 const projectHandlers = createProjectHandlers({
   pickProjectFolder: () => ((projectSmoke.requested && !projectSmoke.restore)
-    || shelfSmoke.requested
-    || (d5Smoke.requested && !d5Smoke.restore))
+      || shelfSmoke.requested
+      || (d5Smoke.requested && !d5Smoke.restore)
+      || exportSmoke.requested)
     ? Promise.resolve({
       canceled: false,
       filePaths: projectSmoke.requested && !projectSmoke.restore
         ? projectSmoke.rootPath ? [projectSmoke.rootPath] : []
         : shelfSmoke.requested
           ? shelfSmoke.rootPath ? [shelfSmoke.rootPath] : []
-          : d5Smoke.rootPath ? [d5Smoke.rootPath] : []
+          : d5Smoke.requested
+            ? d5Smoke.rootPath ? [d5Smoke.rootPath] : []
+            : exportSmoke.rootPath ? [exportSmoke.rootPath] : []
     })
     : dialog.showOpenDialog({
       title: "Open Project",
@@ -270,6 +282,29 @@ const referenceResolution = createReviewerResolutionAdapter({
   baseUrl: process.env.MAGINALIA_REVIEWER_BASE_URL
 });
 const referenceHandlers = createReferenceHandlers({ resolve: referenceResolution });
+let exportDialogSequence = 0;
+const exportHandlers = createExportHandlers({
+  sessions: markdownFileService,
+  resolve: referenceResolution,
+  showSaveDialog: (defaultPath, event) => {
+    if (exportSmoke.requested && exportSmoke.rootPath) {
+      exportDialogSequence += 1;
+      return Promise.resolve({
+        canceled: false,
+        filePath: path.join(exportSmoke.rootPath, `export-${exportDialogSequence}.resolved.md`)
+      });
+    }
+    const ownerWindow = BrowserWindow.fromWebContents(event.sender as WebContents);
+    const options = {
+      title: "Export Markdown",
+      defaultPath,
+      filters: [{ name: "Markdown", extensions: ["md"] }]
+    };
+    return ownerWindow === null
+      ? dialog.showSaveDialog(options)
+      : dialog.showSaveDialog(ownerWindow, options);
+  }
+});
 const repositoryHandlers = createRepositoryHandlers({
   pickParentFolder: () => repositorySmoke.requested
     ? Promise.resolve({
@@ -390,6 +425,7 @@ let quotationSmokeFinished = false;
 let repositorySmokeFinished = false;
 let shelfSmokeFinished = false;
 let d5SmokeFinished = false;
+let exportSmokeFinished = false;
 
 const CLOUD_USER_CODE_PATTERN = /^[A-Za-z0-9-]+$/u;
 const MAX_CLOUD_USER_CODE_LENGTH = 64;
@@ -579,6 +615,21 @@ function completeD5Smoke(): void {
   app.quit();
 }
 
+function failExportSmoke(error: unknown): void {
+  if (exportSmokeFinished) return;
+  exportSmokeFinished = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`MAGINALIA_ELECTRON_EXPORT_SMOKE_FAILED ${message}`);
+  app.exit(1);
+}
+
+function completeExportSmoke(): void {
+  if (exportSmokeFinished) return;
+  exportSmokeFinished = true;
+  console.log("MAGINALIA_ELECTRON_EXPORT_SMOKE_OK");
+  app.quit();
+}
+
 async function handleOpenMarkdown(event: IpcMainInvokeEvent): Promise<OpenMarkdownResult> {
   if (writingSmoke.requested) {
     if (!writingSmoke.filePath) {
@@ -676,6 +727,8 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL, libraryHandlers.resolveQuotationForInsert);
   ipcMain.handle(SEARCH_SHELF_CHANNEL, reviewerHandlers.searchShelf);
   ipcMain.handle(RESOLVE_REFERENCES_CHANNEL, referenceHandlers.resolveReferences);
+  ipcMain.handle(RESOLVE_EXPORT_CHANNEL, exportHandlers.resolveExport);
+  ipcMain.handle(WRITE_EXPORT_CHANNEL, exportHandlers.writeExport);
   ipcMain.handle(LOAD_MODS_CHANNEL, handleLoadMods);
   ipcMain.handle(RELOAD_MODS_CHANNEL, handleReloadMods);
   ipcMain.handle(OPEN_MODS_FOLDER_CHANNEL, handleOpenModsFolder);
@@ -711,6 +764,8 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL);
   ipcMain.removeHandler(SEARCH_SHELF_CHANNEL);
   ipcMain.removeHandler(RESOLVE_REFERENCES_CHANNEL);
+  ipcMain.removeHandler(RESOLVE_EXPORT_CHANNEL);
+  ipcMain.removeHandler(WRITE_EXPORT_CHANNEL);
   ipcMain.removeHandler(LOAD_MODS_CHANNEL);
   ipcMain.removeHandler(RELOAD_MODS_CHANNEL);
   ipcMain.removeHandler(OPEN_MODS_FOLDER_CHANNEL);
@@ -745,6 +800,7 @@ function createMainWindow(): BrowserWindow {
       || repositorySmoke.requested
       || shelfSmoke.requested
       || d5Smoke.requested
+      || exportSmoke.requested
       || !smokeMode,
     webPreferences: createSecureWebPreferences(path.join(__dirname, "preload.js"))
   });
@@ -979,6 +1035,36 @@ function createMainWindow(): BrowserWindow {
         }
       });
     }
+  } else if (exportSmoke.requested) {
+    if (!exportSmoke.rootPath) {
+      failExportSmoke(new Error("The Export smoke fixture root was not provided."));
+    } else {
+      window.webContents.once("did-finish-load", () => {
+        void runExportSmoke(window, exportSmoke.rootPath!).then(
+          () => completeExportSmoke(),
+          (error: unknown) => failExportSmoke(error)
+        );
+      });
+      window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) failExportSmoke(new Error(`Renderer load failed (${errorCode}): ${errorDescription}`));
+      });
+      window.webContents.on("preload-error", (_event, preloadPath, error) => {
+        failExportSmoke(new Error(`Preload failed (${preloadPath}): ${error.message}`));
+      });
+      window.webContents.on("render-process-gone", (_event, details) => {
+        failExportSmoke(new Error(`Renderer process exited: ${details.reason}`));
+      });
+      window.webContents.on("unresponsive", () => {
+        failExportSmoke(new Error("Renderer became unresponsive."));
+      });
+      window.webContents.on("console-message", (event) => {
+        if (event.level === "error") {
+          failExportSmoke(new Error(
+            `Renderer console error at ${event.sourceId}:${event.lineNumber}: ${event.message}`
+          ));
+        }
+      });
+    }
   } else if (quickSmokeMode) {
     window.webContents.once("did-finish-load", () => {
       console.log("MAGINALIA_ELECTRON_SMOKE_OK");
@@ -1004,7 +1090,9 @@ function createMainWindow(): BrowserWindow {
             ? { query: { smoke: "shelf" } }
             : d5Smoke.requested
               ? { query: { smoke: d5Smoke.restore ? "d5-restore" : "d5" } }
-            : undefined;
+              : exportSmoke.requested
+                ? { query: { smoke: "export" } }
+                : undefined;
   void window.loadFile(rendererPath, loadOptions).catch((error: unknown) => {
     console.error("MAGINALIA renderer failed to load", error);
     if (writingSmoke.requested) {
@@ -1021,6 +1109,8 @@ function createMainWindow(): BrowserWindow {
       failShelfSmoke(error);
     } else if (d5Smoke.requested) {
       failD5Smoke(error);
+    } else if (exportSmoke.requested) {
+      failExportSmoke(error);
     } else if (quickSmokeMode) {
       app.exit(1);
     }
@@ -1048,6 +1138,9 @@ function createMainWindow(): BrowserWindow {
     }
     if (d5Smoke.requested && !d5SmokeFinished) {
       failD5Smoke(new Error("D.5 smoke window closed before completion."));
+    }
+    if (exportSmoke.requested && !exportSmokeFinished) {
+      failExportSmoke(new Error("Export smoke window closed before completion."));
     }
     if (mainWindow === window) {
       mainWindow = null;

@@ -30,6 +30,7 @@
     "src/library-service.ts",
     "src/reviewer-ipc.ts",
     "src/reference-ipc.ts",
+    "src/export-ipc.ts",
     "src/mod-host.ts",
     "src/mod-bootstrap.ts",
     "src/workspace-state-ipc.ts",

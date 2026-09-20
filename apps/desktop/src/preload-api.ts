@@ -31,6 +31,13 @@ import {
   type ResolveReferencesResult
 } from "./reference-ipc";
 import {
+  type ResolveExportRequest,
+  type ResolveExportResult,
+  type WriteExportRequest,
+  type WriteExportResult
+} from "./export-ipc";
+import { RESOLVE_EXPORT_CHANNEL, WRITE_EXPORT_CHANNEL } from "./export-contract";
+import {
   INVOKE_MOD_COMMAND_CHANNEL,
   LOAD_MODS_CHANNEL,
   MOD_CAPABILITY_REQUEST_CHANNEL,
@@ -115,6 +122,7 @@ export {
 } from "./library-ipc";
 export { SEARCH_SHELF_CHANNEL } from "./reviewer-ipc";
 export { RESOLVE_REFERENCES_CHANNEL } from "./reference-ipc";
+export { RESOLVE_EXPORT_CHANNEL, WRITE_EXPORT_CHANNEL } from "./export-contract";
 export {
   INVOKE_MOD_COMMAND_CHANNEL,
   LOAD_MODS_CHANNEL,
@@ -157,6 +165,12 @@ export type {
   ResolveReferencesRequest,
   ResolveReferencesResult
 } from "./reference-ipc";
+export type {
+  ResolveExportRequest,
+  ResolveExportResult,
+  WriteExportRequest,
+  WriteExportResult
+} from "./export-ipc";
 export type {
   InvokeModCommandResult,
   ModCapabilityRequestEvent,
@@ -220,6 +234,8 @@ export interface MarkdownPreloadApi {
   resolveQuotationForInsert?(request: ResolveQuotationForInsertRequest): Promise<ResolveQuotationForInsertResult>;
   searchShelf?(request: SearchShelfRequest): Promise<SearchShelfResult>;
   resolveReferences?(request: ResolveReferencesRequest): Promise<ResolveReferencesResult>;
+  resolveExport?(request: ResolveExportRequest): Promise<ResolveExportResult>;
+  writeExport?(request: WriteExportRequest): Promise<WriteExportResult>;
   loadMods?(): Promise<ModSnapshotResult>;
   reloadMods?(): Promise<ModSnapshotResult>;
   openModsFolder?(): Promise<OpenModsFolderResult>;
@@ -252,6 +268,8 @@ export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   resolveQuotationForInsert(request: ResolveQuotationForInsertRequest): Promise<ResolveQuotationForInsertResult>;
   searchShelf(request: SearchShelfRequest): Promise<SearchShelfResult>;
   resolveReferences(request: ResolveReferencesRequest): Promise<ResolveReferencesResult>;
+  resolveExport(request: ResolveExportRequest): Promise<ResolveExportResult>;
+  writeExport(request: WriteExportRequest): Promise<WriteExportResult>;
   loadMods(): Promise<ModSnapshotResult>;
   reloadMods(): Promise<ModSnapshotResult>;
   openModsFolder(): Promise<OpenModsFolderResult>;
@@ -346,6 +364,10 @@ export function createMarkdownPreloadApi(
     searchShelf: (request) => invoke(SEARCH_SHELF_CHANNEL, request) as Promise<SearchShelfResult>,
     resolveReferences: (request) =>
       invoke(RESOLVE_REFERENCES_CHANNEL, request) as Promise<ResolveReferencesResult>,
+    resolveExport: (request) =>
+      invoke(RESOLVE_EXPORT_CHANNEL, request) as Promise<ResolveExportResult>,
+    writeExport: (request) =>
+      invoke(WRITE_EXPORT_CHANNEL, request) as Promise<WriteExportResult>,
     loadMods: () => invoke(LOAD_MODS_CHANNEL) as Promise<ModSnapshotResult>,
     reloadMods: () => invoke(RELOAD_MODS_CHANNEL) as Promise<ModSnapshotResult>,
     openModsFolder: () => invoke(OPEN_MODS_FOLDER_CHANNEL) as Promise<OpenModsFolderResult>,

@@ -77,7 +77,8 @@ button:disabled {
 }
 
 .document-name,
-.document-status {
+.document-status,
+.export-status {
   padding: 0.35rem 0.55rem;
   border-radius: 0.35rem;
   font-size: 0.85rem;
@@ -103,6 +104,31 @@ button:disabled {
 }
 
 .document-status[data-state="error"] {
+  color: #8d2929;
+  background: #f8dddd;
+}
+
+.export-status {
+  color: #5f6c76;
+  background: #eee9e0;
+}
+
+.export-status[data-state="exporting"] {
+  color: #8a431f;
+  background: #fae6d8;
+}
+
+.export-status[data-state="success"] {
+  color: #2f6d4a;
+  background: #e1f0e5;
+}
+
+.export-status[data-state="cancelled"] {
+  color: #7a5d4a;
+  background: #f2e8dc;
+}
+
+.export-status[data-state="error"] {
   color: #8d2929;
   background: #f8dddd;
 }
