@@ -26,6 +26,11 @@ import {
   type SearchShelfResult
 } from "./reviewer-ipc";
 import {
+  RESOLVE_REFERENCES_CHANNEL,
+  type ResolveReferencesRequest,
+  type ResolveReferencesResult
+} from "./reference-ipc";
+import {
   CREATE_REPOSITORY_CHANNEL,
   CREATE_REPOSITORY_HISTORY_CHANNEL,
   LIST_REPOSITORY_HISTORY_CHANNEL,
@@ -86,6 +91,7 @@ export {
   RESOLVE_QUOTATION_FOR_INSERT_CHANNEL
 } from "./library-ipc";
 export { SEARCH_SHELF_CHANNEL } from "./reviewer-ipc";
+export { RESOLVE_REFERENCES_CHANNEL } from "./reference-ipc";
 export {
   CREATE_REPOSITORY_CHANNEL,
   CREATE_REPOSITORY_HISTORY_CHANNEL,
@@ -115,6 +121,10 @@ export type {
   SearchShelfRequest,
   SearchShelfResult
 } from "./reviewer-ipc";
+export type {
+  ResolveReferencesRequest,
+  ResolveReferencesResult
+} from "./reference-ipc";
 export type {
   CreateRepositoryRequest,
   CreateRepositoryResult,
@@ -161,6 +171,7 @@ export interface MarkdownPreloadApi {
   searchLibrary?(request: SearchLibraryRequest): Promise<SearchLibraryResult>;
   resolveQuotationForInsert?(request: ResolveQuotationForInsertRequest): Promise<ResolveQuotationForInsertResult>;
   searchShelf?(request: SearchShelfRequest): Promise<SearchShelfResult>;
+  resolveReferences?(request: ResolveReferencesRequest): Promise<ResolveReferencesResult>;
   createRepository?(request: CreateRepositoryRequest): Promise<CreateRepositoryResult>;
   createRepositoryHistory?(request: RepositoryHistoryRequest): Promise<CreateRepositoryHistoryResult>;
   listRepositoryHistory?(request: RepositoryHistoryRequest): Promise<ListRepositoryHistoryResult>;
@@ -185,6 +196,7 @@ export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   searchLibrary(request: SearchLibraryRequest): Promise<SearchLibraryResult>;
   resolveQuotationForInsert(request: ResolveQuotationForInsertRequest): Promise<ResolveQuotationForInsertResult>;
   searchShelf(request: SearchShelfRequest): Promise<SearchShelfResult>;
+  resolveReferences(request: ResolveReferencesRequest): Promise<ResolveReferencesResult>;
   createRepository(request: CreateRepositoryRequest): Promise<CreateRepositoryResult>;
   createRepositoryHistory(request: RepositoryHistoryRequest): Promise<CreateRepositoryHistoryResult>;
   listRepositoryHistory(request: RepositoryHistoryRequest): Promise<ListRepositoryHistoryResult>;
@@ -270,6 +282,8 @@ export function createMarkdownPreloadApi(
     resolveQuotationForInsert: (request) =>
       invoke(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL, request) as Promise<ResolveQuotationForInsertResult>,
     searchShelf: (request) => invoke(SEARCH_SHELF_CHANNEL, request) as Promise<SearchShelfResult>,
+    resolveReferences: (request) =>
+      invoke(RESOLVE_REFERENCES_CHANNEL, request) as Promise<ResolveReferencesResult>,
     createRepository: (request) =>
       invoke(CREATE_REPOSITORY_CHANNEL, request) as Promise<CreateRepositoryResult>,
     createRepositoryHistory: (request) =>

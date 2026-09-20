@@ -15,6 +15,12 @@ import {
 } from "./shelf-controller";
 import { MonacoMarkdownSurface } from "./monaco-surface";
 import {
+  ReferencesController,
+  type ReferencesControllerApi,
+  type ReferencesControllerView,
+  type ReferencesViewState
+} from "./references-controller";
+import {
   ProjectNavigationController,
   type ProjectNavigationApi,
   type ProjectNavigationState,
@@ -181,6 +187,7 @@ app.innerHTML = `
               <h2 id="library-heading">Shelf</h2>
               <strong id="library-name">Reviewer Shelf</strong>
               <button id="choose-library" type="button" hidden aria-hidden="true">Choose local Library</button>
+              <button id="refresh-references" type="button" disabled>Refresh References</button>
             </div>
             <form id="library-search-form" class="library-search-form">
               <label class="visually-hidden" for="library-query">Search quotations</label>
@@ -189,6 +196,8 @@ app.innerHTML = `
             </form>
             <p id="library-status" class="library-status" role="status" aria-live="polite">Search approved Reviewer quotations.</p>
             <p id="library-error" class="library-error" role="alert" aria-live="assertive" hidden></p>
+            <p id="references-status" class="references-status" data-state="empty" role="status" aria-live="polite">Open a document to refresh References.</p>
+            <p id="references-unresolved" class="references-unresolved">Unresolved: 0</p>
             <ul id="library-results" class="library-results" aria-label="Shelf quotations"></ul>
           </section>
         </div>
@@ -256,11 +265,14 @@ const newFileTitle = requiredElement<HTMLInputElement>("#new-file-title");
 const newFileType = requiredElement<HTMLSelectElement>("#new-file-type");
 const chooseLibraryButton = requiredElement<HTMLButtonElement>("#choose-library");
 const libraryName = requiredElement<HTMLElement>("#library-name");
+const refreshReferencesButton = requiredElement<HTMLButtonElement>("#refresh-references");
 const librarySearchForm = requiredElement<HTMLFormElement>("#library-search-form");
 const libraryQuery = requiredElement<HTMLInputElement>("#library-query");
 const librarySearchButton = requiredElement<HTMLButtonElement>("#library-search");
 const libraryStatus = requiredElement<HTMLElement>("#library-status");
 const libraryError = requiredElement<HTMLElement>("#library-error");
+const referencesStatus = requiredElement<HTMLElement>("#references-status");
+const referencesUnresolved = requiredElement<HTMLElement>("#references-unresolved");
 const libraryResults = requiredElement<HTMLUListElement>("#library-results");
 const editorContainer = requiredElement<HTMLElement>("#editor");
 const projectHeaderActions = requiredElement<HTMLElement>("#project-header-actions");
@@ -865,6 +877,13 @@ function renderShelfState(state: ShelfViewState): void {
   }
 }
 
+function renderReferencesState(state: ReferencesViewState): void {
+  referencesStatus.dataset.state = state.status;
+  referencesStatus.textContent = state.message;
+  referencesUnresolved.textContent = `Unresolved: ${state.unresolvedCount}`;
+  refreshReferencesButton.disabled = state.status === "empty" || state.status === "refreshing";
+}
+
 /**
  * Keep the owner-bound local Library port usable for repository/legacy flows.
  * Normal Shelf search never calls this renderer; repository handoff and the
@@ -1012,6 +1031,15 @@ function getShelfApi(): ShelfControllerApi | null {
   };
 }
 
+function getReferencesApi(): ReferencesControllerApi | null {
+  const api = window.maginalia;
+  if (!api || typeof api.resolveReferences !== "function") return null;
+  const resolveReferences = api.resolveReferences;
+  return {
+    resolveReferences: (request) => resolveReferences(request)
+  };
+}
+
 function getRepositoryApi(): RepositoryControllerApi | null {
   const api = window.maginalia;
   if (!api
@@ -1153,6 +1181,10 @@ if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySm
     const text = (event as CustomEvent<string>).detail;
     if (typeof text === "string") surface.appendTextForSmoke(text);
   });
+  editorContainer.addEventListener("maginalia-smoke-replace", (event) => {
+    const text = (event as CustomEvent<string>).detail;
+    if (typeof text === "string") controller.replaceText(text);
+  });
   editorContainer.addEventListener("maginalia-smoke-focus", () => surface.focus());
   if (quotationSmokeMode || shelfSmokeMode) {
     editorContainer.addEventListener("maginalia-smoke-cursor-end", () => surface.setCursorToEndForSmoke());
@@ -1269,6 +1301,29 @@ if (!shelfApi) {
       void shelfController?.search();
     }
   });
+}
+
+const referencesView: ReferencesControllerView = {
+  setReferencesState(state: ReferencesViewState): void {
+    renderReferencesState(state);
+  }
+};
+
+let referencesController: ReferencesController | undefined;
+const referencesApi = getReferencesApi();
+if (referencesApi) {
+  referencesController = new ReferencesController({
+    api: referencesApi,
+    writing: controller,
+    view: referencesView
+  });
+  refreshReferencesButton.addEventListener("click", () => {
+    void referencesController?.refresh();
+  });
+} else {
+  refreshReferencesButton.disabled = true;
+  referencesStatus.dataset.state = "error";
+  referencesStatus.textContent = "Reference refresh is unavailable.";
 }
 
 let repositoryController: RepositoryController | undefined;

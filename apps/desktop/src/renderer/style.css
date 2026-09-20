@@ -537,7 +537,9 @@ button:disabled {
 }
 
 .library-status,
-.library-error {
+.library-error,
+.references-status,
+.references-unresolved {
   margin: 0;
   font-size: 0.85rem;
 }
@@ -548,6 +550,22 @@ button:disabled {
 
 .library-error {
   color: #8d2929;
+}
+
+.references-status {
+  color: #5f6c76;
+}
+
+.references-status[data-state="refreshing"] {
+  color: #8a431f;
+}
+
+.references-status[data-state="error"] {
+  color: #8d2929;
+}
+
+.references-unresolved {
+  color: #7a5d4a;
 }
 
 .library-results {

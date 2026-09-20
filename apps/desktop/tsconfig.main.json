@@ -6,6 +6,10 @@
     "rootDir": "src",
     "outDir": "dist/main",
     "noEmit": false,
+    "paths": {
+      "@maginalia/writing-core": ["../../packages/writing-core/dist/index.d.ts"],
+      "@maginalia/source-core": ["../../packages/source-core/dist/index.d.ts"]
+    },
     "types": [
       "node"
     ],
@@ -24,6 +28,8 @@
     "src/project-ipc.ts",
     "src/library-service.ts",
     "src/reviewer-ipc.ts",
+    "src/reference-ipc.ts",
+    "src/reviewer-resolution.ts",
     "src/repository-filesystem.ts",
     "src/repository-local-history.ts",
     "src/repository-service.ts",

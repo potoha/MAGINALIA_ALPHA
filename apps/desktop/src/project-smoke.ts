@@ -80,10 +80,11 @@ async function assertProjectPanelFits(window: BrowserWindow): Promise<void> {
 
 async function setProjectSmokeViewport(window: BrowserWindow): Promise<void> {
   window.setSize(420, 640);
-  await window.webContents.executeJavaScript(
-    "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
-    true
-  );
+  // A hidden/minimized Electron window may never service a renderer
+  // requestAnimationFrame. Force one synchronous layout read, then yield to
+  // the host so the resize styles settle without making the smoke hang.
+  await window.webContents.executeJavaScript("document.body?.offsetWidth ?? 0", true);
+  await delay(50);
 }
 
 async function createProjectFileThroughHeader(

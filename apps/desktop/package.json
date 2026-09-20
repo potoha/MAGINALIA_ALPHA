@@ -6,6 +6,7 @@
   "dependencies": {
     "@maginalia/format": "0.1.0-alpha.0",
     "@maginalia/repository-core": "0.0.0",
+    "@maginalia/source-core": "0.0.0",
     "@maginalia/writing-core": "0.0.0",
     "isomorphic-git": "1.41.9",
     "koffi": "3.3.0",

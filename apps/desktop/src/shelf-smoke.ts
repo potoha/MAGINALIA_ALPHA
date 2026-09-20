@@ -23,9 +23,14 @@ interface ShelfRendererState {
   readonly saveEnabled: boolean;
   readonly libraryStatusKind: string;
   readonly libraryStatusMessage: string;
+  readonly libraryErrorMessage: string;
   readonly libraryResultText: string;
   readonly libraryResultHtml: string;
   readonly resultCount: number;
+  readonly referencesStatusKind: string;
+  readonly referencesStatusMessage: string;
+  readonly referencesUnresolved: string;
+  readonly referencesRefreshEnabled: boolean;
 }
 
 const READ_STATE_SCRIPT = `(() => {
@@ -35,9 +40,14 @@ const READ_STATE_SCRIPT = `(() => {
   const status = document.querySelector("#document-status");
   const save = document.querySelector("#save-markdown");
   const libraryStatus = document.querySelector("#library-status");
+  const libraryError = document.querySelector("#library-error");
   const results = document.querySelector("#library-results");
+  const referencesStatus = document.querySelector("#references-status");
+  const referencesUnresolved = document.querySelector("#references-unresolved");
+  const referencesRefresh = document.querySelector("#refresh-references");
   if (!editor || editor.dataset.smokeReady !== "shelf" || !documentName || !manuscriptList
-    || !status || !save || !libraryStatus || !results) return null;
+    || !status || !save || !libraryStatus || !libraryError || !results || !referencesStatus
+    || !referencesUnresolved || !referencesRefresh) return null;
   const manuscriptButtons = [...manuscriptList.querySelectorAll("button[data-manuscript-id]")];
   const active = manuscriptButtons.find((button) => button.getAttribute("aria-current") === "page");
   return {
@@ -51,9 +61,14 @@ const READ_STATE_SCRIPT = `(() => {
     saveEnabled: !save.disabled,
     libraryStatusKind: libraryStatus.dataset.state ?? "",
     libraryStatusMessage: libraryStatus.textContent ?? "",
+    libraryErrorMessage: libraryError.textContent ?? "",
     libraryResultText: results.textContent ?? "",
     libraryResultHtml: results.innerHTML ?? "",
-    resultCount: results.querySelectorAll(".library-result").length
+    resultCount: results.querySelectorAll(".library-result").length,
+    referencesStatusKind: referencesStatus.dataset.state ?? "",
+    referencesStatusMessage: referencesStatus.textContent ?? "",
+    referencesUnresolved: referencesUnresolved.textContent ?? "",
+    referencesRefreshEnabled: !referencesRefresh.disabled
   };
 })()`;
 
@@ -82,7 +97,7 @@ async function waitForState(
     await delay(POLL_INTERVAL_MS);
   }
   const details = lastState
-    ? ` Last state: document ${lastState.statusKind} (${lastState.statusMessage}), Shelf ${lastState.libraryStatusKind} (${lastState.libraryStatusMessage}), text ${JSON.stringify(lastState.text)}.`
+    ? ` Last state: document ${lastState.statusKind} (${lastState.statusMessage}), Shelf ${lastState.libraryStatusKind} (${lastState.libraryStatusMessage}; ${lastState.libraryErrorMessage}), References ${lastState.referencesStatusKind} (${lastState.referencesStatusMessage}; ${lastState.referencesUnresolved}), text ${JSON.stringify(lastState.text)}.`
     : " Renderer probe was not available.";
   throw new Error(`Shelf smoke timed out while waiting for ${description}.${details}`);
 }
@@ -137,6 +152,13 @@ async function dispatchEditorEvent(window: BrowserWindow, name: string): Promise
   );
 }
 
+async function replaceEditorText(window: BrowserWindow, text: string): Promise<void> {
+  await window.webContents.executeJavaScript(
+    `document.querySelector("#editor")?.dispatchEvent(new CustomEvent("maginalia-smoke-replace", { detail: ${JSON.stringify(text)} }));`,
+    true
+  );
+}
+
 async function reloadRenderer(window: BrowserWindow): Promise<void> {
   const finished = new Promise<void>((resolve) => {
     window.webContents.once("did-finish-load", () => resolve());
@@ -161,10 +183,21 @@ export async function runShelfSmoke(window: BrowserWindow, smokeRoot: string): P
   const initialText = await readFile(manuscriptPath, "utf8");
   const expectedDocumentName = path.basename(root);
   const marker = `<!-- maginalia:quote-ref v1 {"quoteId":"${SHELF_SMOKE_ANNOTATION_ID}","mode":"normal"} -->`;
+  const sameBookMarker = "<!-- maginalia:quote-ref v1 {\"quoteId\":\"8ad9f3d2-2a9a-4f14-a2f6-6f7f3dd8a9c1\",\"mode\":\"normal\"} -->";
+  const secondBookMarker = "<!-- maginalia:quote-ref v1 {\"quoteId\":\"b1d8f4c7-6a1e-4fd1-8c22-2d8b7e5a4f30\",\"mode\":\"normal\"} -->";
+  const referenceStart = "<!-- maginalia:reference-list-start v1 -->";
+  const referenceEnd = "<!-- maginalia:reference-list-end v1 -->";
+  const firstBookTitle = "Shelf Smoke Book";
+  const secondBookTitle = "Shelf Smoke Second Book";
+  const manualReferenceText = "手書きの参考メモは保持されます。";
 
   await waitForState(
     window,
-    (state) => state.smokeReady && state.statusKind === "empty" && !state.saveEnabled,
+    (state) => state.smokeReady
+      && state.statusKind === "empty"
+      && !state.saveEnabled
+      && state.referencesStatusKind === "empty"
+      && !state.referencesRefreshEnabled,
     "the Shelf renderer to be ready"
   );
   await clickButton(window, "#open-markdown", "Open Project");
@@ -208,34 +241,142 @@ export async function runShelfSmoke(window: BrowserWindow, smokeRoot: string): P
   assertTrue(!inserted.text.includes(SHELF_SMOKE_TITLE), "Shelf insertion embedded the title");
   assertTrue(!inserted.text.includes(SHELF_SMOKE_AUTHOR), "Shelf insertion embedded the author");
 
-  await clickButton(window, "#save-markdown", "Save");
+  await dispatchEditorEvent(window, "maginalia-smoke-cursor-end");
+  await search(window, "二つ目");
+  const sameBookResult = await waitForState(
+    window,
+    (state) => state.libraryStatusKind === "ready" && state.resultCount === 1,
+    "the same-book Reviewer result"
+  );
+  assertTrue(sameBookResult.libraryResultText.includes("同じ本からの二つ目の引用です。"), "Shelf omitted the same-book quote");
+  await clickInsert(window);
+  const sameBookInserted = await waitForState(
+    window,
+    (state) => state.statusKind === "modified"
+      && state.text.includes(sameBookMarker)
+      && state.referencesStatusKind === "needs-refresh",
+    "the second same-book QuoteRef insertion"
+  );
+  assertEqual(sameBookInserted.text.split(marker).length - 1, 1, "first same-book QuoteRef marker count");
+  assertEqual(sameBookInserted.text.split(sameBookMarker).length - 1, 1, "second same-book QuoteRef marker count");
+
+  await clickButton(window, "#refresh-references", "Refresh References");
+  const oneSource = await waitForState(
+    window,
+    (state) => state.referencesStatusKind === "ready"
+      && state.referencesUnresolved === "Unresolved: 0"
+      && state.text.includes(referenceStart)
+      && state.text.includes(referenceEnd)
+      && state.text.includes(firstBookTitle),
+    "the derived Reference List for one source"
+  );
+  assertEqual(oneSource.text.split(firstBookTitle).length - 1, 1, "same-book source deduplication");
+  assertTrue(oneSource.text.includes(manualReferenceText), "Reference refresh removed manual text");
+
+  await dispatchEditorEvent(window, "maginalia-smoke-cursor-end");
+  await search(window, "別の本");
+  const secondBookResult = await waitForState(
+    window,
+    (state) => state.libraryStatusKind === "ready" && state.resultCount === 1,
+    "the second-book Reviewer result"
+  );
+  assertTrue(secondBookResult.libraryResultText.includes(secondBookTitle), "Shelf omitted the second-book title");
+  await clickInsert(window);
+  await waitForState(
+    window,
+    (state) => state.statusKind === "modified"
+      && state.text.includes(secondBookMarker)
+      && state.referencesStatusKind === "needs-refresh",
+    "the second-book QuoteRef insertion"
+  );
+  await clickButton(window, "#refresh-references", "Refresh References for two sources");
+  const twoSources = await waitForState(
+    window,
+    (state) => state.referencesStatusKind === "ready"
+      && state.referencesUnresolved === "Unresolved: 0"
+      && state.text.includes(firstBookTitle)
+      && state.text.includes(secondBookTitle),
+    "the derived Reference List for two sources"
+  );
+  assertEqual(twoSources.text.split(firstBookTitle).length - 1, 1, "first source remains deduplicated");
+  assertEqual(twoSources.text.split(secondBookTitle).length - 1, 1, "second source appears once");
+  const twoSourceText = twoSources.text;
+
+  await clickButton(window, "#save-markdown", "Save with derived References");
   const saved = await waitForState(
     window,
-    (state) => state.statusKind === "saved" && !state.saveEnabled && state.text.includes(marker),
-    "the QuoteRef Markdown save"
+    (state) => state.statusKind === "saved" && !state.saveEnabled && state.text === twoSourceText,
+    "the derived Reference List save"
   );
-  assertEqual(saved.text, await readFile(manuscriptPath, "utf8"), "saved Markdown text");
-  const savedText = await readFile(manuscriptPath, "utf8");
-  assertEqual(savedText.split(marker).length - 1, 1, "saved QuoteRef marker count");
-  assertTrue(!savedText.includes(SHELF_SMOKE_QUOTE), "saved Markdown embedded the quotation text");
-  assertTrue(!savedText.includes(SHELF_SMOKE_TITLE), "saved Markdown embedded the title");
-  assertTrue(!savedText.includes(SHELF_SMOKE_AUTHOR), "saved Markdown embedded the author");
+  assertEqual(saved.text, await readFile(manuscriptPath, "utf8"), "saved derived Reference List text");
 
   await reloadRenderer(window);
   await waitForState(
     window,
-    (state) => state.statusKind === "empty" && !state.saveEnabled,
-    "the reloaded Shelf renderer"
+    (state) => state.statusKind === "empty" && !state.saveEnabled && state.referencesStatusKind === "empty",
+    "the reloaded Shelf renderer before reopening"
   );
-  await clickButton(window, "#open-markdown", "Open Project after reload");
+  await clickButton(window, "#open-markdown", "Open Project after derived Reference save");
   const reopened = await waitForState(
     window,
     (state) => state.statusKind === "saved"
       && !state.saveEnabled
       && state.activeManuscript === "manuscript.md"
-      && state.text === savedText,
-    "the saved QuoteRef after reopening the Project"
+      && state.text === twoSourceText
+      && state.referencesStatusKind === "needs-refresh",
+    "the saved two-source Reference List after reopening"
   );
-  assertEqual(reopened.text.split(marker).length - 1, 1, "reopened QuoteRef marker count");
-  assertTrue(!reopened.text.includes(SHELF_SMOKE_QUOTE), "reopened Markdown embedded the quotation text");
+  assertEqual(reopened.text, twoSourceText, "reopened derived Reference List text");
+  await clickButton(window, "#refresh-references", "Repeat Refresh References after reopen");
+  const repeated = await waitForState(
+    window,
+    (state) => state.referencesStatusKind === "ready" && state.text === twoSourceText,
+    "the byte-identical Reference List refresh"
+  );
+  assertEqual(repeated.text, twoSourceText, "repeated Reference List refresh");
+
+  const withoutSecondBook = repeated.text.replace(secondBookMarker, "");
+  assertTrue(withoutSecondBook !== repeated.text, "second-book QuoteRef was not present for removal");
+  await replaceEditorText(window, withoutSecondBook);
+  const deleted = await waitForState(
+    window,
+    (state) => state.statusKind === "modified"
+      && state.referencesStatusKind === "needs-refresh"
+      && !state.text.includes(secondBookMarker),
+    "the final second-book QuoteRef removal"
+  );
+  assertTrue(deleted.text.includes(firstBookTitle), "deleting a QuoteRef removed the first source too early");
+  await clickButton(window, "#refresh-references", "Refresh References after deleting a source");
+  const removedSource = await waitForState(
+    window,
+    (state) => state.referencesStatusKind === "ready"
+      && state.text.includes(firstBookTitle)
+      && !state.text.includes(secondBookTitle)
+      && state.text.includes(manualReferenceText),
+    "the Reference List after removing the final second-book QuoteRef"
+  );
+  assertEqual(removedSource.text.split(firstBookTitle).length - 1, 1, "remaining source count after deletion");
+  assertTrue(!removedSource.text.includes(secondBookTitle), "deleted source remained in generated References");
+  await clickButton(window, "#save-markdown", "Save after deleting a source");
+  const finalSaved = await waitForState(
+    window,
+    (state) => state.statusKind === "saved" && !state.saveEnabled,
+    "the final derived Reference List save"
+  );
+  assertEqual(finalSaved.text, await readFile(manuscriptPath, "utf8"), "final saved Reference List text");
+
+  assertTrue(finalSaved.text.includes(marker), "final Markdown lost the first QuoteRef");
+  assertTrue(finalSaved.text.includes(sameBookMarker), "final Markdown lost the same-book QuoteRef");
+  assertTrue(finalSaved.text.includes(referenceStart) && finalSaved.text.includes(referenceEnd), "final Markdown lost Reference markers");
+  assertTrue(finalSaved.text.includes(manualReferenceText), "final Markdown lost manual reference text");
+  assertTrue(!finalSaved.text.includes(SHELF_SMOKE_QUOTE), "final Markdown embedded resolved quotation text");
+  assertTrue(!finalSaved.text.includes("同じ本からの二つ目の引用です。"), "final Markdown embedded same-book quotation text");
+  assertTrue(!finalSaved.text.includes("別の本からの引用です。"), "final Markdown embedded second-book quotation text");
+
+  /*
+   * Keep the original Slice C assertions explicit: the authoring document
+   * contains stable QuoteRefs, never resolved quotation metadata.
+   */
+  assertTrue(finalSaved.text.split(marker).length - 1 === 1, "final first QuoteRef marker count");
+  assertTrue(finalSaved.text.split(sameBookMarker).length - 1 === 1, "final same-book QuoteRef marker count");
 }

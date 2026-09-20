@@ -73,6 +73,8 @@ export interface WritingView {
   setSaveEnabled(enabled: boolean): void;
 }
 
+export type WritingDocumentChangeListener = (document: DocumentState | null) => void;
+
 export interface WritingControllerOptions {
   readonly api: MarkdownPreloadApi;
   readonly surface: WritingSurface;
@@ -101,6 +103,7 @@ export class WritingController {
   private revision = 0;
   private replacingSurface = false;
   private errorMessage: string | undefined;
+  private readonly documentChangeListeners = new Set<WritingDocumentChangeListener>();
 
   public constructor(options: WritingControllerOptions) {
     this.api = options.api;
@@ -117,6 +120,12 @@ export class WritingController {
 
   public hasUnsavedChanges(): boolean {
     return this.document !== null && isDirty(this.document);
+  }
+
+  /** Subscribe to document changes without exposing the editor surface. */
+  public onDocumentChange(listener: WritingDocumentChangeListener): () => void {
+    this.documentChangeListeners.add(listener);
+    return () => this.documentChangeListeners.delete(listener);
   }
 
   public captureInsertionTarget(): CapturedInsertionTarget | null {
@@ -225,10 +234,57 @@ export class WritingController {
       && this.document.currentText !== result.state.currentText) {
       this.document = result.state;
     }
-    if (this.revision === revisionBeforeEdit) this.revision += 1;
+    const surfaceEmittedChange = this.revision !== revisionBeforeEdit;
+    if (!surfaceEmittedChange) this.revision += 1;
     this.errorMessage = undefined;
     this.render();
+    if (!surfaceEmittedChange) this.notifyDocumentChange();
     return result;
+  }
+
+  /**
+   * Apply one complete-document edit through the WritingSurface boundary.
+   * Consumers such as derived-reference refresh must not touch Monaco.
+   */
+  public replaceText(nextText: string): boolean {
+    const current = this.document;
+    if (current === null || typeof nextText !== "string" || nextText === current.currentText) {
+      return false;
+    }
+
+    const currentSelection = this.surface.getSelection();
+    const clamp = (offset: number): number => Math.max(0, Math.min(nextText.length, offset));
+    const revisionBeforeEdit = this.revision;
+    // Monaco stores a UTF-8 BOM as model metadata. `getText()` exposes that
+    // character to Writing Core, but inserting it through executeEdits would
+    // create a second BOM. Keep the authoring text unchanged while passing
+    // only the model payload through the surface boundary.
+    const surfaceText = current.currentText.startsWith("\uFEFF") && nextText.startsWith("\uFEFF")
+      ? nextText.slice(1)
+      : nextText;
+    try {
+      this.surface.applyEdit(
+        { start: 0, end: current.currentText.length },
+        surfaceText,
+        { start: clamp(currentSelection.start), end: clamp(currentSelection.end) }
+      );
+    } catch (_error: unknown) {
+      return false;
+    }
+
+    // Monaco emits the normal text-change event synchronously. A small test
+    // surface may not, so keep the Core state correct in either case.
+    if (this.document !== null
+      && this.document.documentId === current.documentId
+      && this.document.currentText !== nextText) {
+      this.document = editDocument(this.document, nextText);
+    }
+    const surfaceEmittedChange = this.revision !== revisionBeforeEdit;
+    if (!surfaceEmittedChange) this.revision += 1;
+    this.errorMessage = undefined;
+    this.render();
+    if (!surfaceEmittedChange) this.notifyDocumentChange();
+    return true;
   }
 
   public async open(): Promise<void> {
@@ -276,6 +332,7 @@ export class WritingController {
       this.replacingSurface = false;
     }
     this.render();
+    this.notifyDocumentChange();
     this.surface.focus();
   }
 
@@ -293,6 +350,7 @@ export class WritingController {
       this.replacingSurface = false;
     }
     this.render();
+    this.notifyDocumentChange();
   }
 
   public save(): Promise<void> {
@@ -341,6 +399,17 @@ export class WritingController {
     this.revision += 1;
     this.errorMessage = undefined;
     this.render();
+    this.notifyDocumentChange();
+  }
+
+  private notifyDocumentChange(): void {
+    for (const listener of this.documentChangeListeners) {
+      try {
+        listener(this.document);
+      } catch {
+        // A view listener must not interrupt editor state transitions.
+      }
+    }
   }
 
   private async executeSave(operation: SaveOperation): Promise<void> {

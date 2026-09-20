@@ -413,6 +413,34 @@ describe("WritingController", () => {
     expect(view.status).toEqual({ kind: "saved", message: "Saved" });
   });
 
+  it("replaces derived text through one surface edit and saves the result", async () => {
+    const save = vi.fn((request: SaveMarkdownRequest) => Promise.resolve({
+      kind: "saved",
+      sessionId: request.sessionId,
+      displayName: "notes.md",
+      text: request.text
+    } as const));
+    const { controller, surface, view } = makeHarness({ save });
+    await openDefault(controller);
+    surface.selection = { start: 2, end: 2 };
+    const changes: Array<string | null> = [];
+    controller.onDocumentChange((document) => changes.push(document?.currentText ?? null));
+
+    expect(controller.replaceText("base\n## 参考文献\nentry")).toBe(true);
+    expect(surface.appliedEdits).toHaveLength(1);
+    expect(surface.appliedEdits[0]).toMatchObject({ range: { start: 0, end: 4 } });
+    expect(controller.hasUnsavedChanges()).toBe(true);
+    expect(view.saveEnabled).toBe(true);
+    expect(changes.at(-1)).toBe("base\n## 参考文献\nentry");
+
+    await controller.save();
+    expect(save).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      text: "base\n## 参考文献\nentry"
+    });
+    expect(controller.hasUnsavedChanges()).toBe(false);
+  });
+
   it("replaces a captured selection and keeps an invalid insertion non-destructive", async () => {
     const { controller, surface } = makeHarness();
     await openDefault(controller);

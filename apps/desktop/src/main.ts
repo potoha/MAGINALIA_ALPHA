@@ -28,6 +28,7 @@ import {
   OPEN_LIBRARY_CHANNEL,
   OPEN_MARKDOWN_CHANNEL,
   RESOLVE_QUOTATION_FOR_INSERT_CHANNEL,
+  RESOLVE_REFERENCES_CHANNEL,
   SAVE_MARKDOWN_CHANNEL,
   SEARCH_LIBRARY_CHANNEL,
   SEARCH_SHELF_CHANNEL
@@ -41,6 +42,8 @@ import {
 import { LibraryService } from "./library-service";
 import { createLibraryHandlers } from "./library-ipc";
 import { createReviewerHandlers, createReviewerSearchAdapter } from "./reviewer-ipc";
+import { createReferenceHandlers } from "./reference-ipc";
+import { createReviewerResolutionAdapter } from "./reviewer-resolution";
 import {
   CREATE_REPOSITORY_CHANNEL,
   CREATE_REPOSITORY_HISTORY_CHANNEL,
@@ -227,6 +230,12 @@ const reviewerSearch = createReviewerSearchAdapter({
   baseUrl: process.env.MAGINALIA_REVIEWER_BASE_URL
 });
 const reviewerHandlers = createReviewerHandlers({ search: reviewerSearch });
+const referenceResolution = createReviewerResolutionAdapter({
+  // This value is main-process configuration. The renderer supplies document
+  // text only and cannot select a URL, port, or Reviewer database path.
+  baseUrl: process.env.MAGINALIA_REVIEWER_BASE_URL
+});
+const referenceHandlers = createReferenceHandlers({ resolve: referenceResolution });
 const repositoryHandlers = createRepositoryHandlers({
   pickParentFolder: () => repositorySmoke.requested
     ? Promise.resolve({
@@ -499,6 +508,7 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(SEARCH_LIBRARY_CHANNEL, libraryHandlers.searchLibrary);
   ipcMain.handle(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL, libraryHandlers.resolveQuotationForInsert);
   ipcMain.handle(SEARCH_SHELF_CHANNEL, reviewerHandlers.searchShelf);
+  ipcMain.handle(RESOLVE_REFERENCES_CHANNEL, referenceHandlers.resolveReferences);
   ipcMain.handle(CREATE_REPOSITORY_CHANNEL, repositoryHandlers.createRepository);
   ipcMain.handle(CREATE_REPOSITORY_HISTORY_CHANNEL, repositoryHandlers.createRepositoryHistory);
   ipcMain.handle(LIST_REPOSITORY_HISTORY_CHANNEL, repositoryHandlers.listRepositoryHistory);
@@ -526,6 +536,7 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(SEARCH_LIBRARY_CHANNEL);
   ipcMain.removeHandler(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL);
   ipcMain.removeHandler(SEARCH_SHELF_CHANNEL);
+  ipcMain.removeHandler(RESOLVE_REFERENCES_CHANNEL);
   ipcMain.removeHandler(CREATE_REPOSITORY_CHANNEL);
   ipcMain.removeHandler(CREATE_REPOSITORY_HISTORY_CHANNEL);
   ipcMain.removeHandler(LIST_REPOSITORY_HISTORY_CHANNEL);

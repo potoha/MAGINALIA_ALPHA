@@ -4,6 +4,7 @@
   "workspaces": [
     "packages/format",
     "packages/repository-core",
+    "packages/source-core",
     "packages/writing-core",
     "apps/desktop"
   ],
