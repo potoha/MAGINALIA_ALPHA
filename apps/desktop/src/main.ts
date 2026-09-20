@@ -45,6 +45,19 @@ import { createReviewerHandlers, createReviewerSearchAdapter } from "./reviewer-
 import { createReferenceHandlers } from "./reference-ipc";
 import { createReviewerResolutionAdapter } from "./reviewer-resolution";
 import {
+  INVOKE_MOD_COMMAND_CHANNEL,
+  LOAD_MODS_CHANNEL,
+  MOD_CAPABILITY_REQUEST_CHANNEL,
+  OPEN_MODS_FOLDER_CHANNEL,
+  RELOAD_MODS_CHANNEL,
+  RESPOND_MOD_CAPABILITY_CHANNEL,
+  isModCapabilityResponseRequest,
+  isModCommandRequest,
+  type ModCapabilityResponse,
+  type ModCapabilityResponseRequest
+} from "./mod-ipc";
+import { ModHost } from "./mod-host";
+import {
   CREATE_REPOSITORY_CHANNEL,
   CREATE_REPOSITORY_HISTORY_CHANNEL,
   LIST_REPOSITORY_HISTORY_CHANNEL,
@@ -58,6 +71,7 @@ import { LocalRepositoryService } from "./repository-service";
 import { createSecureWebPreferences } from "./security";
 import {
   parseQuotationSmokeMode,
+  parseD5SmokeMode,
   parseProjectSmokeMode,
   parseRepositorySmokeMode,
   parseShelfSmokeMode,
@@ -70,6 +84,13 @@ import { runRepositorySmoke } from "./repository-smoke";
 import { runShelfSmoke } from "./shelf-smoke";
 import { runWorkspaceSmoke } from "./workspace-smoke";
 import { runWritingSmoke } from "./writing-smoke";
+import { runD5Smoke, runD5RestoreSmoke } from "./d5-smoke";
+import {
+  LOAD_WORKSPACE_STATE_CHANNEL,
+  SAVE_WORKSPACE_STATE_CHANNEL,
+  createWorkspaceStateHandlers
+} from "./workspace-state-ipc";
+import { FileWorkspaceStateStore } from "./workspace-state-service";
 import {
   createRepositoryCloudDiscoveryCancellationHandlers,
   createRepositoryCloudDiscoveryHandlers,
@@ -97,14 +118,21 @@ const quotationSmoke = parseQuotationSmokeMode(process.argv);
 const projectSmoke = parseProjectSmokeMode(process.argv);
 const repositorySmoke = parseRepositorySmokeMode(process.argv);
 const shelfSmoke = parseShelfSmokeMode(process.argv);
+const d5Smoke = parseD5SmokeMode(process.argv);
 const smokeMode = quickSmokeMode
   || writingSmoke.requested
   || workspaceSmoke.requested
   || quotationSmoke.requested
   || projectSmoke.requested
   || repositorySmoke.requested
-  || shelfSmoke.requested;
+  || shelfSmoke.requested
+  || d5Smoke.requested;
 const markdownFileService = new MarkdownFileService();
+const workspaceStateStore = new FileWorkspaceStateStore(path.join(app.getPath("userData"), "workspace-state.json"));
+const workspaceStateHandlers = createWorkspaceStateHandlers({
+  load: () => workspaceStateStore.load(),
+  save: (state) => workspaceStateStore.save(state)
+});
 const documentWorkspaceService = new DocumentWorkspaceService();
 const projectService = new ProjectService(
   documentWorkspaceService,
@@ -156,12 +184,14 @@ async function seedRepositorySmokeShelf(owner: object, repositoryId: string): Pr
 }
 const documentWorkspaceHandlers = createDocumentWorkspaceHandlers({
   pickDocumentFolder: async () => {
-    if (workspaceSmoke.requested || quotationSmoke.requested || shelfSmoke.requested) {
+    if (workspaceSmoke.requested || quotationSmoke.requested || shelfSmoke.requested || d5Smoke.requested) {
       const rootPath = workspaceSmoke.requested
         ? workspaceSmoke.rootPath
         : quotationSmoke.requested
           ? quotationSmoke.documentRoot
-          : shelfSmoke.rootPath;
+          : shelfSmoke.requested
+            ? shelfSmoke.rootPath
+            : d5Smoke.rootPath;
       return {
         canceled: false,
         filePaths: rootPath ? [rootPath] : []
@@ -178,12 +208,16 @@ const documentWorkspaceHandlers = createDocumentWorkspaceHandlers({
   openMarkdown: (owner, filePath) => markdownFileService.openForOwner(owner, filePath)
 });
 const projectHandlers = createProjectHandlers({
-  pickProjectFolder: () => ((projectSmoke.requested && !projectSmoke.restore) || shelfSmoke.requested)
+  pickProjectFolder: () => ((projectSmoke.requested && !projectSmoke.restore)
+    || shelfSmoke.requested
+    || (d5Smoke.requested && !d5Smoke.restore))
     ? Promise.resolve({
       canceled: false,
       filePaths: projectSmoke.requested && !projectSmoke.restore
         ? projectSmoke.rootPath ? [projectSmoke.rootPath] : []
-        : shelfSmoke.rootPath ? [shelfSmoke.rootPath] : []
+        : shelfSmoke.requested
+          ? shelfSmoke.rootPath ? [shelfSmoke.rootPath] : []
+          : d5Smoke.rootPath ? [d5Smoke.rootPath] : []
     })
     : dialog.showOpenDialog({
       title: "Open Project",
@@ -288,12 +322,74 @@ const INVALID_REQUEST: MarkdownFailure = {
   message: "The Markdown save request was invalid."
 };
 let mainWindow: BrowserWindow | null = null;
+type PendingModCapability = {
+  readonly modId: string;
+  readonly resolve: (response: ModCapabilityResponse) => void;
+  readonly timer: NodeJS.Timeout;
+};
+
+const pendingModCapabilities = new Map<string, PendingModCapability>();
+let modCapabilitySequence = 0;
+
+function resolveModCapability(requestId: string, response: ModCapabilityResponse): boolean {
+  const pending = pendingModCapabilities.get(requestId);
+  if (pending === undefined) return false;
+  pendingModCapabilities.delete(requestId);
+  clearTimeout(pending.timer);
+  pending.resolve(response);
+  return true;
+}
+
+function requestRendererModCapability(
+  modId: string,
+  request: { readonly kind: "open-document-view" | "close-view" | "get-active-document"; readonly requestId: string; readonly value: unknown }
+): Promise<ModCapabilityResponse> {
+  const window = mainWindow;
+  if (window === null || window.isDestroyed()) {
+    return Promise.resolve({ kind: "error", message: "The editor window is unavailable." });
+  }
+  const requestId = `renderer-${Date.now()}-${modCapabilitySequence++}`;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingModCapabilities.delete(requestId);
+      resolve({ kind: "error", message: "The Mod capability request timed out." });
+    }, 5_000);
+    pendingModCapabilities.set(requestId, { modId, resolve, timer });
+    try {
+      window.webContents.send(MOD_CAPABILITY_REQUEST_CHANNEL, {
+        modId,
+        kind: request.kind,
+        requestId,
+        value: request.value
+      });
+    } catch {
+      clearTimeout(timer);
+      pendingModCapabilities.delete(requestId);
+      resolve({ kind: "error", message: "The editor window is unavailable." });
+    }
+  });
+}
+
+const modHost = new ModHost({
+  userDataPath: app.getPath("userData"),
+  onCapabilityRequest: (modId, request) => requestRendererModCapability(modId, request),
+  onError: (message, error) => console.error(
+    `MAGINALIA_MOD_ERROR ${message}${error instanceof Error ? ` ${error.message}` : error === undefined ? "" : ` ${JSON.stringify(error)}`}`
+  )
+});
+// The renderer may request the initial snapshot as soon as its preload is
+// ready. Keep that request behind the one startup discovery pass so a valid
+// first-party Mod cannot appear to be missing merely because utility-process
+// activation is still in flight.
+let modHostReady: Promise<unknown> | undefined;
+
 let writingSmokeFinished = false;
 let workspaceSmokeFinished = false;
 let projectSmokeFinished = false;
 let quotationSmokeFinished = false;
 let repositorySmokeFinished = false;
 let shelfSmokeFinished = false;
+let d5SmokeFinished = false;
 
 const CLOUD_USER_CODE_PATTERN = /^[A-Za-z0-9-]+$/u;
 const MAX_CLOUD_USER_CODE_LENGTH = 64;
@@ -468,6 +564,21 @@ function completeShelfSmoke(): void {
   app.quit();
 }
 
+function failD5Smoke(error: unknown): void {
+  if (d5SmokeFinished) return;
+  d5SmokeFinished = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`MAGINALIA_ELECTRON_D5_SMOKE_FAILED ${message}`);
+  app.exit(1);
+}
+
+function completeD5Smoke(): void {
+  if (d5SmokeFinished) return;
+  d5SmokeFinished = true;
+  console.log("MAGINALIA_ELECTRON_D5_SMOKE_OK");
+  app.quit();
+}
+
 async function handleOpenMarkdown(event: IpcMainInvokeEvent): Promise<OpenMarkdownResult> {
   if (writingSmoke.requested) {
     if (!writingSmoke.filePath) {
@@ -494,6 +605,62 @@ function handleSaveMarkdown(event: IpcMainInvokeEvent, value: unknown): Promise<
   return markdownFileService.saveForOwner(event.sender, value);
 }
 
+async function handleLoadMods(event: IpcMainInvokeEvent, ...args: readonly unknown[]) {
+  if (args.length !== 0 || !isLiveMainWindowSender(event.sender)) {
+    return modHost.snapshot();
+  }
+  await modHostReady;
+  return modHost.snapshot();
+}
+
+async function handleReloadMods(event: IpcMainInvokeEvent, ...args: readonly unknown[]) {
+  if (args.length !== 0 || !isLiveMainWindowSender(event.sender)) {
+    return modHost.snapshot();
+  }
+  await modHostReady;
+  return modHost.reload();
+}
+
+async function handleOpenModsFolder(event: IpcMainInvokeEvent, ...args: readonly unknown[]) {
+  if (args.length !== 0 || !isLiveMainWindowSender(event.sender)) {
+    return { kind: "error" as const, message: "The Mods request was invalid." };
+  }
+  try {
+    await modHost.openModsFolder();
+    return { kind: "opened" as const };
+  } catch {
+    return { kind: "error" as const, message: "The Mods folder could not be opened." };
+  }
+}
+
+async function handleInvokeModCommand(event: IpcMainInvokeEvent, value: unknown, ...args: readonly unknown[]) {
+  if (args.length !== 0 || !isLiveMainWindowSender(event.sender) || !isModCommandRequest(value)) {
+    return { kind: "error" as const, code: "invalid-request" as const, message: "The Mod request was invalid." };
+  }
+  try {
+    const result = await modHost.invokeCommand(value.modId, value.commandId, value.args);
+    return { kind: "result" as const, value: result };
+  } catch {
+    return { kind: "error" as const, code: "mod-unavailable" as const, message: "The Mod command is unavailable." };
+  }
+}
+
+async function handleRespondModCapability(
+  event: IpcMainInvokeEvent,
+  value: unknown,
+  ...args: readonly unknown[]
+) {
+  if (args.length !== 0
+    || !isLiveMainWindowSender(event.sender)
+    || !isModCapabilityResponseRequest(value)) {
+    return { kind: "error" as const, message: "The Mod capability response was invalid." };
+  }
+  const accepted = resolveModCapability(value.requestId, value.response);
+  return accepted
+    ? { kind: "accepted" as const }
+    : { kind: "error" as const, message: "The Mod capability request is no longer pending." };
+}
+
 function registerMarkdownIpc(): void {
   ipcMain.handle(OPEN_MARKDOWN_CHANNEL, handleOpenMarkdown);
   ipcMain.handle(SAVE_MARKDOWN_CHANNEL, handleSaveMarkdown);
@@ -509,6 +676,13 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL, libraryHandlers.resolveQuotationForInsert);
   ipcMain.handle(SEARCH_SHELF_CHANNEL, reviewerHandlers.searchShelf);
   ipcMain.handle(RESOLVE_REFERENCES_CHANNEL, referenceHandlers.resolveReferences);
+  ipcMain.handle(LOAD_MODS_CHANNEL, handleLoadMods);
+  ipcMain.handle(RELOAD_MODS_CHANNEL, handleReloadMods);
+  ipcMain.handle(OPEN_MODS_FOLDER_CHANNEL, handleOpenModsFolder);
+  ipcMain.handle(INVOKE_MOD_COMMAND_CHANNEL, handleInvokeModCommand);
+  ipcMain.handle(RESPOND_MOD_CAPABILITY_CHANNEL, handleRespondModCapability);
+  ipcMain.handle(LOAD_WORKSPACE_STATE_CHANNEL, workspaceStateHandlers.loadWorkspaceState);
+  ipcMain.handle(SAVE_WORKSPACE_STATE_CHANNEL, workspaceStateHandlers.saveWorkspaceState);
   ipcMain.handle(CREATE_REPOSITORY_CHANNEL, repositoryHandlers.createRepository);
   ipcMain.handle(CREATE_REPOSITORY_HISTORY_CHANNEL, repositoryHandlers.createRepositoryHistory);
   ipcMain.handle(LIST_REPOSITORY_HISTORY_CHANNEL, repositoryHandlers.listRepositoryHistory);
@@ -537,6 +711,13 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL);
   ipcMain.removeHandler(SEARCH_SHELF_CHANNEL);
   ipcMain.removeHandler(RESOLVE_REFERENCES_CHANNEL);
+  ipcMain.removeHandler(LOAD_MODS_CHANNEL);
+  ipcMain.removeHandler(RELOAD_MODS_CHANNEL);
+  ipcMain.removeHandler(OPEN_MODS_FOLDER_CHANNEL);
+  ipcMain.removeHandler(INVOKE_MOD_COMMAND_CHANNEL);
+  ipcMain.removeHandler(RESPOND_MOD_CAPABILITY_CHANNEL);
+  ipcMain.removeHandler(LOAD_WORKSPACE_STATE_CHANNEL);
+  ipcMain.removeHandler(SAVE_WORKSPACE_STATE_CHANNEL);
   ipcMain.removeHandler(CREATE_REPOSITORY_CHANNEL);
   ipcMain.removeHandler(CREATE_REPOSITORY_HISTORY_CHANNEL);
   ipcMain.removeHandler(LIST_REPOSITORY_HISTORY_CHANNEL);
@@ -563,6 +744,7 @@ function createMainWindow(): BrowserWindow {
       || quotationSmoke.requested
       || repositorySmoke.requested
       || shelfSmoke.requested
+      || d5Smoke.requested
       || !smokeMode,
     webPreferences: createSecureWebPreferences(path.join(__dirname, "preload.js"))
   });
@@ -764,6 +946,39 @@ function createMainWindow(): BrowserWindow {
         }
       });
     }
+  } else if (d5Smoke.requested) {
+    if (!d5Smoke.rootPath) {
+      failD5Smoke(new Error("The D.5 smoke fixture root was not provided."));
+    } else {
+      window.webContents.once("did-finish-load", () => {
+        const smoke = d5Smoke.restore
+          ? runD5RestoreSmoke(window, d5Smoke.rootPath!, modHost.modsDirectory)
+          : runD5Smoke(window, d5Smoke.rootPath!, modHost.modsDirectory);
+        void smoke.then(
+          () => completeD5Smoke(),
+          (error: unknown) => failD5Smoke(error)
+        );
+      });
+      window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) failD5Smoke(new Error(`Renderer load failed (${errorCode}): ${errorDescription}`));
+      });
+      window.webContents.on("preload-error", (_event, preloadPath, error) => {
+        failD5Smoke(new Error(`Preload failed (${preloadPath}): ${error.message}`));
+      });
+      window.webContents.on("render-process-gone", (_event, details) => {
+        failD5Smoke(new Error(`Renderer process exited: ${details.reason}`));
+      });
+      window.webContents.on("unresponsive", () => {
+        failD5Smoke(new Error("Renderer became unresponsive."));
+      });
+      window.webContents.on("console-message", (event) => {
+        if (event.level === "error") {
+          failD5Smoke(new Error(
+            `Renderer console error at ${event.sourceId}:${event.lineNumber}: ${event.message}`
+          ));
+        }
+      });
+    }
   } else if (quickSmokeMode) {
     window.webContents.once("did-finish-load", () => {
       console.log("MAGINALIA_ELECTRON_SMOKE_OK");
@@ -787,6 +1002,8 @@ function createMainWindow(): BrowserWindow {
           ? { query: { smoke: "repository" } }
           : shelfSmoke.requested
             ? { query: { smoke: "shelf" } }
+            : d5Smoke.requested
+              ? { query: { smoke: d5Smoke.restore ? "d5-restore" : "d5" } }
             : undefined;
   void window.loadFile(rendererPath, loadOptions).catch((error: unknown) => {
     console.error("MAGINALIA renderer failed to load", error);
@@ -802,6 +1019,8 @@ function createMainWindow(): BrowserWindow {
       failRepositorySmoke(error);
     } else if (shelfSmoke.requested) {
       failShelfSmoke(error);
+    } else if (d5Smoke.requested) {
+      failD5Smoke(error);
     } else if (quickSmokeMode) {
       app.exit(1);
     }
@@ -827,6 +1046,9 @@ function createMainWindow(): BrowserWindow {
     if (shelfSmoke.requested && !shelfSmokeFinished) {
       failShelfSmoke(new Error("Shelf smoke window closed before completion."));
     }
+    if (d5Smoke.requested && !d5SmokeFinished) {
+      failD5Smoke(new Error("D.5 smoke window closed before completion."));
+    }
     if (mainWindow === window) {
       mainWindow = null;
     }
@@ -846,11 +1068,18 @@ function openMainWindow(): void {
 
 void app.whenReady().then(() => {
   registerMarkdownIpc();
+  modHostReady = modHost.start().catch((error: unknown) => {
+    console.error("MAGINALIA_MOD_START_FAILED", error);
+    return modHost.snapshot();
+  });
   openMainWindow();
   app.on("activate", openMainWindow);
 });
 
-app.on("will-quit", unregisterMarkdownIpc);
+app.on("will-quit", () => {
+  void modHost.dispose();
+  unregisterMarkdownIpc();
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {

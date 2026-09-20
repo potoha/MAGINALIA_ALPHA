@@ -52,6 +52,29 @@ describe("Markdown file service", () => {
     });
   });
 
+  it("keeps concurrent owner sessions for separate files and reuses a session on re-open", async () => {
+    await withTempDirectory(async (directory) => {
+      const firstPath = path.join(directory, "first.md");
+      const secondPath = path.join(directory, "second.md");
+      await writeFile(firstPath, "first", "utf8");
+      await writeFile(secondPath, "second", "utf8");
+      const owner = {};
+      const service = new MarkdownFileService();
+
+      const first = opened(await service.openForOwner(owner, firstPath));
+      const second = opened(await service.openForOwner(owner, secondPath));
+      const firstAgain = opened(await service.openForOwner(owner, firstPath));
+
+      expect(second.sessionId).not.toBe(first.sessionId);
+      expect(firstAgain.sessionId).toBe(first.sessionId);
+      expect(firstAgain.text).toBe("first");
+      expect(await service.saveForOwner(owner, { sessionId: first.sessionId, text: "first edited" }))
+        .toMatchObject({ kind: "saved", sessionId: first.sessionId });
+      expect(await service.saveForOwner(owner, { sessionId: second.sessionId, text: "second edited" }))
+        .toMatchObject({ kind: "saved", sessionId: second.sessionId });
+    });
+  });
+
   it("reports an external-change conflict without overwriting external bytes", async () => {
     await withTempDirectory(async (directory) => {
       const filePath = path.join(directory, "notes.md");

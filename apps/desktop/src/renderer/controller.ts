@@ -1,11 +1,8 @@
 import {
-  confirmSave,
   createSaveSnapshot,
-  editDocument,
   insertQuoteRef as createQuoteRefInsertion,
   insertQuotation as createQuotationInsertion,
   isDirty,
-  openDocument,
   type DocumentId,
   type DocumentState,
   type QuoteRef,
@@ -19,6 +16,12 @@ import type {
   SaveMarkdownResult
 } from "../markdown-ipc";
 import type { MarkdownPreloadApi } from "../preload-api";
+import {
+  DocumentSessionStore,
+  type DocumentSession,
+  type DocumentSessionChange,
+  type DocumentViewInstance
+} from "./document-sessions";
 
 export interface WritingSurface {
   replaceDocument(text: string): void;
@@ -80,6 +83,8 @@ export interface WritingControllerOptions {
   readonly surface: WritingSurface;
   readonly view: WritingView;
   readonly confirmReplace: (displayName: string) => boolean | Promise<boolean>;
+  /** Shared source of truth when a document has more than one view. */
+  readonly sessionStore?: DocumentSessionStore;
 }
 
 interface SaveOperation {
@@ -97,29 +102,111 @@ export class WritingController {
   private readonly view: WritingView;
   private readonly confirmReplace: WritingControllerOptions["confirmReplace"];
   private readonly removeTextListener: () => void;
-  private document: DocumentState | null = null;
-  private currentSave: SaveOperation | null = null;
+  private readonly store: DocumentSessionStore;
+  private readonly removeStoreListener: () => void;
+  private activeDocumentId: DocumentId | null = null;
+  private readonly currentSaves = new Map<DocumentId, SaveOperation>();
   private nextSaveId = 1;
-  private revision = 0;
   private replacingSurface = false;
   private errorMessage: string | undefined;
   private readonly documentChangeListeners = new Set<WritingDocumentChangeListener>();
+  private readonly sessionChangeListeners = new Set<(change: DocumentSessionChange) => void>();
 
   public constructor(options: WritingControllerOptions) {
     this.api = options.api;
     this.surface = options.surface;
     this.view = options.view;
     this.confirmReplace = options.confirmReplace;
+    this.store = options.sessionStore ?? new DocumentSessionStore();
     this.removeTextListener = this.surface.onTextChange((text) => this.handleTextChange(text));
+    this.removeStoreListener = this.store.onDidChange((change) => this.handleStoreChange(change));
     this.render();
   }
 
   public getDocumentState(): DocumentState | null {
-    return this.document;
+    return this.getActiveSession();
   }
 
   public hasUnsavedChanges(): boolean {
-    return this.document !== null && isDirty(this.document);
+    const current = this.getActiveSession();
+    return current !== null && isDirty(current);
+  }
+
+  public getSessionStore(): DocumentSessionStore {
+    return this.store;
+  }
+
+  public getDocumentSessions(): readonly DocumentSession[] {
+    return this.store.snapshot().sessions;
+  }
+
+  public getDocumentViews(): readonly DocumentViewInstance[] {
+    return this.store.snapshot().views;
+  }
+
+  public onSessionChange(listener: (change: DocumentSessionChange) => void): () => void {
+    this.sessionChangeListeners.add(listener);
+    listener(this.store.snapshot());
+    return () => this.sessionChangeListeners.delete(listener);
+  }
+
+  public activateDocument(documentId: DocumentId, region: "main" | "secondary" = "main"): boolean {
+    const session = this.store.getSession(documentId);
+    if (session === null) return false;
+    const view = this.store.activateDocument(documentId, region);
+    if (view === null) return false;
+    this.activeDocumentId = documentId;
+    this.replaceSurfaceForActiveSession(false);
+    this.errorMessage = undefined;
+    this.render();
+    this.notifyDocumentChange();
+    return true;
+  }
+
+  /** Open/activate a central view without dirty-switch confirmation. */
+  public openDocumentView(documentId: DocumentId): DocumentViewInstance | null {
+    const session = this.store.getSession(documentId);
+    if (session === null) return null;
+    const view = this.store.openView(documentId, { region: "main", groupId: "editor-group-1" });
+    if (view === null) return null;
+    this.activeDocumentId = documentId;
+    this.replaceSurfaceForActiveSession(false);
+    this.errorMessage = undefined;
+    this.render();
+    this.notifyDocumentChange();
+    return view;
+  }
+
+  public async closeDocumentView(
+    instanceId: string,
+    decide: (displayName: string) => "save" | "discard" | "cancel" | Promise<"save" | "discard" | "cancel">
+  ): Promise<boolean> {
+    const view = this.store.getView(instanceId);
+    if (view === null) return false;
+    const views = this.store.getViewsForDocument(view.documentId);
+    const session = this.store.getSession(view.documentId);
+    if (session === null) return false;
+
+    // Closing a secondary/duplicate view never discards the shared session.
+    if (views.length === 1 && isDirty(session)) {
+      const decision = await decide(session.displayName);
+      if (decision === "cancel") return false;
+      if (decision === "save") {
+        await this.saveDocument(view.documentId);
+        const afterSave = this.store.getSession(view.documentId);
+        if (afterSave === null || isDirty(afterSave)) return false;
+      } else {
+        this.store.discardChanges(view.documentId);
+      }
+    }
+
+    this.store.closeView(instanceId);
+    if (views.length === 1) this.store.removeSession(view.documentId);
+    this.activeDocumentId = this.store.snapshot().activeDocumentId;
+    this.replaceSurfaceForActiveSession(false);
+    this.render();
+    this.notifyDocumentChange();
+    return true;
   }
 
   /** Subscribe to document changes without exposing the editor surface. */
@@ -129,23 +216,23 @@ export class WritingController {
   }
 
   public captureInsertionTarget(): CapturedInsertionTarget | null {
-    const current = this.document;
+    const current = this.getActiveSession();
     if (current === null) return null;
     const range = this.surface.getSelection();
     return {
       documentId: current.documentId,
-      revision: this.revision,
+      revision: current.revision,
       range: { start: range.start, end: range.end }
     };
   }
 
   public isInsertionTargetCurrent(target: CapturedInsertionTarget | null): boolean {
-    const current = this.document;
+    const current = this.getActiveSession();
     return current !== null
       && target !== null
       && typeof target === "object"
       && current.documentId === target.documentId
-      && this.revision === target.revision;
+      && current.revision === target.revision;
   }
 
   public insertQuotation(
@@ -183,12 +270,12 @@ export class WritingController {
     ) => QuotationInsertionResult | QuoteRefInsertionResult,
     surfaceFailureMessage: string
   ): WritingInsertionResult {
-    const current = this.document;
+    const current = this.getActiveSession();
     if (current === null
       || target === null
       || typeof target !== "object"
       || current.documentId !== target.documentId
-      || this.revision !== target.revision) {
+      || current.revision !== target.revision) {
       return {
         kind: "error",
         code: "stale-target",
@@ -212,7 +299,7 @@ export class WritingController {
     });
     if (result.kind !== "inserted") return result;
 
-    const revisionBeforeEdit = this.revision;
+    const revisionBeforeEdit = current.revision;
     try {
       this.surface.applyEdit(
         targetRange,
@@ -229,13 +316,8 @@ export class WritingController {
 
     // Monaco emits the normal text-change event synchronously. A small test
     // surface may not, so keep the Core state correct in either case.
-    if (this.document !== null
-      && this.document.documentId === target.documentId
-      && this.document.currentText !== result.state.currentText) {
-      this.document = result.state;
-    }
-    const surfaceEmittedChange = this.revision !== revisionBeforeEdit;
-    if (!surfaceEmittedChange) this.revision += 1;
+    const surfaceEmittedChange = this.getActiveSession()?.revision !== revisionBeforeEdit;
+    if (!surfaceEmittedChange) this.store.updateText(target.documentId, result.state.currentText);
     this.errorMessage = undefined;
     this.render();
     if (!surfaceEmittedChange) this.notifyDocumentChange();
@@ -247,14 +329,14 @@ export class WritingController {
    * Consumers such as derived-reference refresh must not touch Monaco.
    */
   public replaceText(nextText: string): boolean {
-    const current = this.document;
+    const current = this.getActiveSession();
     if (current === null || typeof nextText !== "string" || nextText === current.currentText) {
       return false;
     }
 
     const currentSelection = this.surface.getSelection();
     const clamp = (offset: number): number => Math.max(0, Math.min(nextText.length, offset));
-    const revisionBeforeEdit = this.revision;
+    const revisionBeforeEdit = current.revision;
     // Monaco stores a UTF-8 BOM as model metadata. `getText()` exposes that
     // character to Writing Core, but inserting it through executeEdits would
     // create a second BOM. Keep the authoring text unchanged while passing
@@ -274,13 +356,8 @@ export class WritingController {
 
     // Monaco emits the normal text-change event synchronously. A small test
     // surface may not, so keep the Core state correct in either case.
-    if (this.document !== null
-      && this.document.documentId === current.documentId
-      && this.document.currentText !== nextText) {
-      this.document = editDocument(this.document, nextText);
-    }
-    const surfaceEmittedChange = this.revision !== revisionBeforeEdit;
-    if (!surfaceEmittedChange) this.revision += 1;
+    const surfaceEmittedChange = this.getActiveSession()?.revision !== revisionBeforeEdit;
+    if (!surfaceEmittedChange) this.store.updateText(current.documentId, nextText);
     this.errorMessage = undefined;
     this.render();
     if (!surfaceEmittedChange) this.notifyDocumentChange();
@@ -288,7 +365,7 @@ export class WritingController {
   }
 
   public async open(): Promise<void> {
-    const current = this.document;
+    const current = this.getActiveSession();
     if (current && isDirty(current) && !(await this.confirmReplace(current.displayName))) {
       this.render();
       return;
@@ -315,34 +392,48 @@ export class WritingController {
   }
 
   public applyOpenedDocument(result: OpenMarkdownSuccess): void {
-    // Any outstanding save belongs to the replaced document. Its completion
-    // is ignored by the operation id and cannot affect this new state.
-    this.currentSave = null;
     this.errorMessage = undefined;
-    this.document = openDocument({
+    const session = this.store.openSession({
       documentId: result.sessionId,
       displayName: result.displayName,
       text: result.text
     });
-    this.revision += 1;
-    this.replacingSurface = true;
-    try {
-      this.surface.replaceDocument(result.text);
-    } finally {
-      this.replacingSurface = false;
-    }
+    this.activeDocumentId = session.documentId;
+    this.store.openView(session.documentId, { region: "main", groupId: "editor-group-1" });
+    this.replaceSurfaceForActiveSession(true);
     this.render();
     this.notifyDocumentChange();
     this.surface.focus();
   }
 
   public clearDocument(): void {
-    // A cleared surface cannot be affected by a save belonging to the
-    // document that was just removed.
-    this.currentSave = null;
     this.errorMessage = undefined;
-    this.document = null;
-    this.revision += 1;
+    const active = this.activeDocumentId;
+    if (active !== null) {
+      for (const view of this.store.getViewsForDocument(active)) this.store.closeView(view.instanceId);
+      this.store.removeSession(active);
+      this.currentSaves.delete(active);
+    }
+    this.activeDocumentId = null;
+    this.replacingSurface = true;
+    try {
+      this.surface.replaceDocument("");
+    } finally {
+      this.replacingSurface = false;
+    }
+    this.render();
+    this.notifyDocumentChange();
+  }
+
+  /** Close every view/session when switching the owning Project/Document. */
+  public clearDocuments(): void {
+    this.errorMessage = undefined;
+    for (const view of this.store.snapshot().views) this.store.closeView(view.instanceId);
+    for (const session of this.store.snapshot().sessions) {
+      this.currentSaves.delete(session.documentId);
+      this.store.removeSession(session.documentId);
+    }
+    this.activeDocumentId = null;
     this.replacingSurface = true;
     try {
       this.surface.replaceDocument("");
@@ -354,10 +445,17 @@ export class WritingController {
   }
 
   public save(): Promise<void> {
-    const current = this.document;
+    const current = this.getActiveSession();
     if (!current || !isDirty(current)) return Promise.resolve();
 
-    const active = this.currentSave;
+    return this.saveDocument(current.documentId);
+  }
+
+  private saveDocument(documentId: DocumentId): Promise<void> {
+    const current = this.store.getSession(documentId);
+    if (!current || !isDirty(current)) return Promise.resolve();
+
+    const active = this.currentSaves.get(documentId);
     if (active && active.snapshot.documentId === current.documentId) {
       active.queued = true;
       this.render();
@@ -370,42 +468,69 @@ export class WritingController {
       snapshot: createSaveSnapshot(current),
       queued: false
     };
-    this.currentSave = operation;
     const completion = this.executeSave(operation).then(() => {
-      if (this.currentSave?.id !== operation.id) return;
+      if (this.currentSaves.get(operation.snapshot.documentId)?.id !== operation.id) return;
 
       const followUp = operation.queued
-        && this.document !== null
-        && this.document.documentId === operation.snapshot.documentId
-        && isDirty(this.document);
-      this.currentSave = null;
+        && this.store.getSession(operation.snapshot.documentId) !== null
+        && isDirty(this.store.getSession(operation.snapshot.documentId)!);
+      this.currentSaves.delete(operation.snapshot.documentId);
       if (followUp) {
-        return this.save();
+        return this.saveDocument(operation.snapshot.documentId);
       }
       this.render();
     });
     operation.completion = completion;
+    this.currentSaves.set(documentId, operation);
     this.render();
     return completion;
   }
 
   public dispose(): void {
     this.removeTextListener();
+    this.removeStoreListener();
   }
 
   private handleTextChange(text: string): void {
-    if (this.replacingSurface || this.document === null) return;
-    this.document = editDocument(this.document, text);
-    this.revision += 1;
+    if (this.replacingSurface || this.activeDocumentId === null) return;
+    this.store.updateText(this.activeDocumentId, text);
     this.errorMessage = undefined;
     this.render();
     this.notifyDocumentChange();
   }
 
+  private getActiveSession(): DocumentSession | null {
+    return this.activeDocumentId === null ? null : this.store.getSession(this.activeDocumentId);
+  }
+
+  private replaceSurfaceForActiveSession(focus: boolean): void {
+    const session = this.getActiveSession();
+    const nextText = session?.currentText ?? "";
+    if (this.surface.getText() !== nextText) {
+      this.replacingSurface = true;
+      try {
+        this.surface.replaceDocument(nextText);
+      } finally {
+        this.replacingSurface = false;
+      }
+    }
+    if (focus) this.surface.focus();
+  }
+
+  private handleStoreChange(change: DocumentSessionChange): void {
+    const active = change.activeDocumentId;
+    this.activeDocumentId = active;
+    this.replaceSurfaceForActiveSession(false);
+    this.render();
+    for (const listener of this.sessionChangeListeners) {
+      try { listener(change); } catch { /* observers cannot break the store */ }
+    }
+  }
+
   private notifyDocumentChange(): void {
     for (const listener of this.documentChangeListeners) {
       try {
-        listener(this.document);
+        listener(this.getActiveSession());
       } catch {
         // A view listener must not interrupt editor state transitions.
       }
@@ -420,20 +545,18 @@ export class WritingController {
         text: operation.snapshot.text
       });
     } catch (_error: unknown) {
-      if (this.currentSave?.id === operation.id) {
+      if (this.currentSaves.get(operation.snapshot.documentId)?.id === operation.id) {
         this.showError("The Markdown file could not be saved. Try again.");
       }
       return;
     }
 
-    if (this.currentSave?.id !== operation.id) return;
+    if (this.currentSaves.get(operation.snapshot.documentId)?.id !== operation.id) return;
 
     if (result.kind === "saved"
       && result.sessionId === operation.snapshot.documentId
       && result.text === operation.snapshot.text) {
-      if (this.document !== null) {
-        this.document = confirmSave(this.document, operation.snapshot);
-      }
+      this.store.confirmSave(operation.snapshot.documentId, operation.snapshot.text);
       this.errorMessage = undefined;
       return;
     }
@@ -452,7 +575,7 @@ export class WritingController {
   }
 
   private render(): void {
-    const current = this.document;
+    const current = this.getActiveSession();
     this.view.setDocumentName(current?.displayName ?? NO_DOCUMENT_NAME);
 
     if (current === null) {
@@ -461,7 +584,7 @@ export class WritingController {
       return;
     }
 
-    const savingCurrent = this.currentSave?.snapshot.documentId === current.documentId;
+    const savingCurrent = this.currentSaves.has(current.documentId);
     if (savingCurrent) {
       this.view.setStatus({ kind: "saving", message: "Saving…" });
     } else if (this.errorMessage !== undefined) {

@@ -6,6 +6,8 @@ export const PROJECT_SMOKE_FLAG = "--smoke-project";
 export const PROJECT_RESTORE_SMOKE_FLAG = "--smoke-project-restore";
 export const PROJECT_CREATE_SMOKE_FLAG = "--smoke-project-create";
 export const SHELF_SMOKE_FLAG = "--smoke-shelf";
+export const D5_SMOKE_FLAG = "--smoke-d5";
+export const D5_RESTORE_SMOKE_FLAG = "--smoke-d5-restore";
 
 export interface WritingSmokeMode {
   readonly requested: boolean;
@@ -38,6 +40,12 @@ export interface ProjectSmokeMode {
 export interface ShelfSmokeMode {
   readonly requested: boolean;
   readonly rootPath?: string;
+}
+
+export interface D5SmokeMode {
+  readonly requested: boolean;
+  readonly rootPath?: string;
+  readonly restore?: boolean;
 }
 
 export function parseWritingSmokeMode(args: readonly string[]): WritingSmokeMode {
@@ -104,6 +112,20 @@ export function parseShelfSmokeMode(args: readonly string[]): ShelfSmokeMode {
   const flagIndex = args.indexOf(SHELF_SMOKE_FLAG);
   if (flagIndex < 0) return { requested: false };
 
+  const candidate = args[flagIndex + 1];
+  if (!candidate || candidate.startsWith("--")) return { requested: true };
+  return { requested: true, rootPath: candidate };
+}
+
+export function parseD5SmokeMode(args: readonly string[]): D5SmokeMode {
+  const restoreIndex = args.indexOf(D5_RESTORE_SMOKE_FLAG);
+  if (restoreIndex >= 0) {
+    const candidate = args[restoreIndex + 1];
+    if (!candidate || candidate.startsWith("--")) return { requested: true, restore: true };
+    return { requested: true, restore: true, rootPath: candidate };
+  }
+  const flagIndex = args.indexOf(D5_SMOKE_FLAG);
+  if (flagIndex < 0) return { requested: false };
   const candidate = args[flagIndex + 1];
   if (!candidate || candidate.startsWith("--")) return { requested: true };
   return { requested: true, rootPath: candidate };

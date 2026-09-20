@@ -15,6 +15,12 @@ import {
   RESOLVE_QUOTATION_FOR_INSERT_CHANNEL,
   SEARCH_SHELF_CHANNEL,
   RESOLVE_REFERENCES_CHANNEL,
+  LOAD_MODS_CHANNEL,
+  RELOAD_MODS_CHANNEL,
+  OPEN_MODS_FOLDER_CHANNEL,
+  INVOKE_MOD_COMMAND_CHANNEL,
+  LOAD_WORKSPACE_STATE_CHANNEL,
+  SAVE_WORKSPACE_STATE_CHANNEL,
   CREATE_REPOSITORY_CHANNEL,
   CREATE_REPOSITORY_HISTORY_CHANNEL,
   LIST_REPOSITORY_HISTORY_CHANNEL,
@@ -51,6 +57,13 @@ describe("preload boundary", () => {
       "resolveQuotationForInsert",
       "searchShelf",
       "resolveReferences",
+      "loadMods",
+      "reloadMods",
+      "openModsFolder",
+      "invokeModCommand",
+      "onModCapabilityRequest",
+      "loadWorkspaceState",
+      "saveWorkspaceState",
       "createRepository",
       "createRepositoryHistory",
       "listRepositoryHistory",
@@ -93,6 +106,22 @@ describe("preload boundary", () => {
     });
     await api.searchShelf({ query: "日本語" });
     await api.resolveReferences({ text: "# Draft" });
+    await api.loadMods();
+    await api.reloadMods();
+    await api.openModsFolder();
+    await api.invokeModCommand({
+      modId: "dev.maginalia.secondary-markdown",
+      commandId: "open-active-document-in-secondary",
+      args: []
+    });
+    await api.loadWorkspaceState();
+    await api.saveWorkspaceState({
+      version: 1,
+      projectId: "project-1",
+      openFileIds: ["file-1"],
+      activeFileId: "file-1",
+      viewPlacements: []
+    });
     await api.createRepository({ kind: "project", title: "Project" });
     await api.createRepositoryHistory({ repositoryId: "55555555-5555-4555-8555-555555555555" });
     await api.listRepositoryHistory({ repositoryId: "55555555-5555-4555-8555-555555555555" });
@@ -154,6 +183,28 @@ describe("preload boundary", () => {
       },
       { channel: SEARCH_SHELF_CHANNEL, args: [{ query: "日本語" }] },
       { channel: RESOLVE_REFERENCES_CHANNEL, args: [{ text: "# Draft" }] },
+      { channel: LOAD_MODS_CHANNEL, args: [] },
+      { channel: RELOAD_MODS_CHANNEL, args: [] },
+      { channel: OPEN_MODS_FOLDER_CHANNEL, args: [] },
+      {
+        channel: INVOKE_MOD_COMMAND_CHANNEL,
+        args: [{
+          modId: "dev.maginalia.secondary-markdown",
+          commandId: "open-active-document-in-secondary",
+          args: []
+        }]
+      },
+      { channel: LOAD_WORKSPACE_STATE_CHANNEL, args: [] },
+      {
+        channel: SAVE_WORKSPACE_STATE_CHANNEL,
+        args: [{
+          version: 1,
+          projectId: "project-1",
+          openFileIds: ["file-1"],
+          activeFileId: "file-1",
+          viewPlacements: []
+        }]
+      },
       {
         channel: CREATE_REPOSITORY_CHANNEL,
         args: [{ kind: "project", title: "Project" }]

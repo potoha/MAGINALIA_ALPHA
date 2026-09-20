@@ -31,6 +31,29 @@ import {
   type ResolveReferencesResult
 } from "./reference-ipc";
 import {
+  INVOKE_MOD_COMMAND_CHANNEL,
+  LOAD_MODS_CHANNEL,
+  MOD_CAPABILITY_REQUEST_CHANNEL,
+  OPEN_MODS_FOLDER_CHANNEL,
+  RELOAD_MODS_CHANNEL,
+  RESPOND_MOD_CAPABILITY_CHANNEL,
+  isModCapabilityRequestEvent,
+  type InvokeModCommandResult,
+  type ModCapabilityRequestEvent,
+  type ModCapabilityResponse,
+  type ModCapabilityResponseRequest,
+  type ModCommandRequest,
+  type OpenModsFolderResult,
+  type ModSnapshotResult
+} from "./mod-ipc";
+import {
+  LOAD_WORKSPACE_STATE_CHANNEL,
+  SAVE_WORKSPACE_STATE_CHANNEL,
+  type LoadWorkspaceStateResult,
+  type SaveWorkspaceStateResult,
+  type WorkspaceState
+} from "./workspace-state-ipc";
+import {
   CREATE_REPOSITORY_CHANNEL,
   CREATE_REPOSITORY_HISTORY_CHANNEL,
   LIST_REPOSITORY_HISTORY_CHANNEL,
@@ -93,6 +116,15 @@ export {
 export { SEARCH_SHELF_CHANNEL } from "./reviewer-ipc";
 export { RESOLVE_REFERENCES_CHANNEL } from "./reference-ipc";
 export {
+  INVOKE_MOD_COMMAND_CHANNEL,
+  LOAD_MODS_CHANNEL,
+  MOD_CAPABILITY_REQUEST_CHANNEL,
+  OPEN_MODS_FOLDER_CHANNEL,
+  RELOAD_MODS_CHANNEL,
+  RESPOND_MOD_CAPABILITY_CHANNEL
+} from "./mod-ipc";
+export { LOAD_WORKSPACE_STATE_CHANNEL, SAVE_WORKSPACE_STATE_CHANNEL } from "./workspace-state-ipc";
+export {
   CREATE_REPOSITORY_CHANNEL,
   CREATE_REPOSITORY_HISTORY_CHANNEL,
   LIST_REPOSITORY_HISTORY_CHANNEL,
@@ -126,6 +158,19 @@ export type {
   ResolveReferencesResult
 } from "./reference-ipc";
 export type {
+  InvokeModCommandResult,
+  ModCapabilityRequestEvent,
+  ModCapabilityResponse,
+  ModCapabilityResponseRequest,
+  ModCommandRequest,
+  ModSnapshotResult
+} from "./mod-ipc";
+export type {
+  LoadWorkspaceStateResult,
+  SaveWorkspaceStateResult,
+  WorkspaceState
+} from "./workspace-state-ipc";
+export type {
   CreateRepositoryRequest,
   CreateRepositoryResult,
   CreateRepositoryHistoryResult,
@@ -156,6 +201,9 @@ export type {
 
 export type DevicePromptCallback = (prompt: RepositoryCloudDevicePrompt) => void;
 export type DevicePromptUnsubscribe = () => void;
+export type ModCapabilityCallback = (
+  request: ModCapabilityRequestEvent,
+) => ModCapabilityResponse | Promise<ModCapabilityResponse>;
 
 export interface MarkdownPreloadApi {
   openMarkdown(): Promise<OpenMarkdownResult>;
@@ -172,6 +220,13 @@ export interface MarkdownPreloadApi {
   resolveQuotationForInsert?(request: ResolveQuotationForInsertRequest): Promise<ResolveQuotationForInsertResult>;
   searchShelf?(request: SearchShelfRequest): Promise<SearchShelfResult>;
   resolveReferences?(request: ResolveReferencesRequest): Promise<ResolveReferencesResult>;
+  loadMods?(): Promise<ModSnapshotResult>;
+  reloadMods?(): Promise<ModSnapshotResult>;
+  openModsFolder?(): Promise<OpenModsFolderResult>;
+  invokeModCommand?(request: ModCommandRequest): Promise<InvokeModCommandResult>;
+  onModCapabilityRequest?(callback: ModCapabilityCallback): DevicePromptUnsubscribe;
+  loadWorkspaceState?(): Promise<LoadWorkspaceStateResult>;
+  saveWorkspaceState?(state: WorkspaceState): Promise<SaveWorkspaceStateResult>;
   createRepository?(request: CreateRepositoryRequest): Promise<CreateRepositoryResult>;
   createRepositoryHistory?(request: RepositoryHistoryRequest): Promise<CreateRepositoryHistoryResult>;
   listRepositoryHistory?(request: RepositoryHistoryRequest): Promise<ListRepositoryHistoryResult>;
@@ -197,6 +252,13 @@ export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   resolveQuotationForInsert(request: ResolveQuotationForInsertRequest): Promise<ResolveQuotationForInsertResult>;
   searchShelf(request: SearchShelfRequest): Promise<SearchShelfResult>;
   resolveReferences(request: ResolveReferencesRequest): Promise<ResolveReferencesResult>;
+  loadMods(): Promise<ModSnapshotResult>;
+  reloadMods(): Promise<ModSnapshotResult>;
+  openModsFolder(): Promise<OpenModsFolderResult>;
+  invokeModCommand(request: ModCommandRequest): Promise<InvokeModCommandResult>;
+  onModCapabilityRequest(callback: ModCapabilityCallback): DevicePromptUnsubscribe;
+  loadWorkspaceState(): Promise<LoadWorkspaceStateResult>;
+  saveWorkspaceState(state: WorkspaceState): Promise<SaveWorkspaceStateResult>;
   createRepository(request: CreateRepositoryRequest): Promise<CreateRepositoryResult>;
   createRepositoryHistory(request: RepositoryHistoryRequest): Promise<CreateRepositoryHistoryResult>;
   listRepositoryHistory(request: RepositoryHistoryRequest): Promise<ListRepositoryHistoryResult>;
@@ -284,6 +346,39 @@ export function createMarkdownPreloadApi(
     searchShelf: (request) => invoke(SEARCH_SHELF_CHANNEL, request) as Promise<SearchShelfResult>,
     resolveReferences: (request) =>
       invoke(RESOLVE_REFERENCES_CHANNEL, request) as Promise<ResolveReferencesResult>,
+    loadMods: () => invoke(LOAD_MODS_CHANNEL) as Promise<ModSnapshotResult>,
+    reloadMods: () => invoke(RELOAD_MODS_CHANNEL) as Promise<ModSnapshotResult>,
+    openModsFolder: () => invoke(OPEN_MODS_FOLDER_CHANNEL) as Promise<OpenModsFolderResult>,
+    invokeModCommand: (request) => invoke(INVOKE_MOD_COMMAND_CHANNEL, request) as Promise<InvokeModCommandResult>,
+    onModCapabilityRequest: (callback) => {
+      if (typeof callback !== "function") throw new TypeError("The Mod capability callback is invalid.");
+      return subscribe(MOD_CAPABILITY_REQUEST_CHANNEL, (value) => {
+        // The main process has already validated the worker envelope. Keep
+        // the callback boundary explicit and ensure renderer failures produce
+        // a response instead of leaving a worker request pending.
+        if (!isModCapabilityRequestEvent(value)) return;
+        const request = value;
+        let result: ModCapabilityResponse | Promise<ModCapabilityResponse>;
+        try {
+          result = callback(request);
+        } catch (error) {
+          result = {
+            kind: "error",
+            message: error instanceof Error && error.message.length > 0
+              ? error.message.slice(0, 500)
+              : "The Mod capability failed."
+          };
+        }
+        void Promise.resolve(result).then((response) => {
+          const requestValue: ModCapabilityResponseRequest = { requestId: request.requestId, response };
+          return invoke(RESPOND_MOD_CAPABILITY_CHANNEL, requestValue);
+        }).catch(() => undefined);
+      });
+    },
+    loadWorkspaceState: () =>
+      invoke(LOAD_WORKSPACE_STATE_CHANNEL) as Promise<LoadWorkspaceStateResult>,
+    saveWorkspaceState: (state) =>
+      invoke(SAVE_WORKSPACE_STATE_CHANNEL, state) as Promise<SaveWorkspaceStateResult>,
     createRepository: (request) =>
       invoke(CREATE_REPOSITORY_CHANNEL, request) as Promise<CreateRepositoryResult>,
     createRepositoryHistory: (request) =>

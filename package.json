@@ -18,6 +18,7 @@
     "smoke:quotation": "npm run smoke:quotation --workspace @maginalia/desktop",
     "smoke:repository": "npm run smoke:repository --workspace @maginalia/desktop",
     "smoke:shelf": "npm run smoke:shelf --workspace @maginalia/desktop",
+    "smoke:d5": "npm run smoke:d5 --workspace @maginalia/desktop",
     "start": "npm run start --workspace @maginalia/desktop"
   }
 }

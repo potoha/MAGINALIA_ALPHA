@@ -29,6 +29,7 @@
     "smoke:quotation": "npm run build && node test/quotation-smoke.mjs",
     "smoke:repository": "npm run build && node test/repository-smoke.mjs",
     "smoke:shelf": "npm run build && node test/shelf-smoke.mjs",
+    "smoke:d5": "npm run build && node test/d5-smoke.mjs",
     "smoke:worker-job": "npm run build:main && electron dist/main/repository-materialization-worker-smoke.js",
     "start": "npm run build && electron dist/main/main.js"
   },

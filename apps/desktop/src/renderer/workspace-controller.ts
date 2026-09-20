@@ -160,7 +160,7 @@ export class WorkspaceNavigationController {
   private async applyOpenedDocument(result: DocumentWorkspaceOpened): Promise<boolean> {
     // The previous document must lose its editor/save capability as soon as
     // the new Document has been accepted, even if its first manuscript fails.
-    this.writing.clearDocument();
+    this.writing.clearDocuments();
     this.replaceWorkspace({
       document: result.document,
       manuscripts: result.manuscripts,

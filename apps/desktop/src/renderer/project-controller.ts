@@ -44,6 +44,8 @@ export interface ProjectNavigationControllerOptions {
   readonly writing: WritingController;
   readonly view: ProjectNavigationView;
   readonly decideDirtySwitch: (context: DirtySwitchContext) => DirtySwitchDecision | Promise<DirtySwitchDecision>;
+  /** Tabs keep dirty sessions alive; legacy workspace callers may opt in to the old guard. */
+  readonly confirmDocumentSwitch?: boolean;
 }
 
 const EMPTY_STATE: ProjectNavigationState = { project: null, files: [], activeFileId: null };
@@ -77,20 +79,51 @@ export class ProjectNavigationController {
   private readonly writing: WritingController;
   private readonly view: ProjectNavigationView;
   private readonly decideDirtySwitch: ProjectNavigationControllerOptions["decideDirtySwitch"];
+  private readonly confirmDocumentSwitch: boolean;
   private state: ProjectNavigationState = EMPTY_STATE;
   private busy = false;
+  private readonly openedFileIds = new Set<string>();
+  private readonly fileSessionIds = new Map<string, string>();
 
   public constructor(options: ProjectNavigationControllerOptions) {
     this.api = options.api;
     this.writing = options.writing;
     this.view = options.view;
     this.decideDirtySwitch = options.decideDirtySwitch;
+    this.confirmDocumentSwitch = options.confirmDocumentSwitch ?? true;
     this.view.setProjectState(this.state);
     this.view.setProjectError(null);
   }
 
   public getState(): ProjectNavigationState {
     return copyState(this.state);
+  }
+
+  /** File IDs are project-relative opaque handles suitable for workspace persistence. */
+  public getOpenedFileIds(): readonly string[] {
+    return [...this.openedFileIds];
+  }
+
+  public getFileIdForSession(documentId: string): string | null {
+    return [...this.fileSessionIds.entries()]
+      .find(([, sessionId]) => sessionId === documentId)?.[0] ?? null;
+  }
+
+  public syncOpenDocuments(documentIds: readonly string[]): void {
+    const open = new Set(documentIds);
+    for (const [fileId, sessionId] of this.fileSessionIds) {
+      if (open.has(sessionId)) this.openedFileIds.add(fileId);
+      else this.openedFileIds.delete(fileId);
+    }
+  }
+
+  public syncActiveDocument(documentId: string | null): void {
+    if (documentId === null) return;
+    const fileId = [...this.fileSessionIds.entries()]
+      .find(([, sessionId]) => sessionId === documentId)?.[0];
+    if (fileId === undefined || fileId === this.state.activeFileId) return;
+    if (!this.state.files.some((file) => file.fileId === fileId)) return;
+    this.replaceState({ ...this.state, activeFileId: fileId });
   }
 
   public restoreProject(): Promise<void> {
@@ -211,9 +244,11 @@ export class ProjectNavigationController {
   }
 
   private async applyProject(result: ProjectOpened): Promise<boolean> {
+    this.openedFileIds.clear();
+    this.fileSessionIds.clear();
     const first = result.files[0];
     if (!first) {
-      this.writing.clearDocument();
+    this.writing.clearDocuments();
       this.replaceState({ project: result.project, files: result.files, activeFileId: null });
       this.showError(null);
       return true;
@@ -231,6 +266,8 @@ export class ProjectNavigationController {
       return false;
     }
     this.writing.applyOpenedDocument(opened);
+    this.openedFileIds.add(first.fileId);
+    this.fileSessionIds.set(first.fileId, opened.sessionId);
     this.replaceState({ project: result.project, files: result.files, activeFileId: first.fileId });
     this.showError(null);
     return true;
@@ -247,7 +284,11 @@ export class ProjectNavigationController {
       this.showError("That Markdown file is not available in the current Project.");
       return;
     }
-    if (file.fileId === this.state.activeFileId) return;
+    const knownSessionId = this.fileSessionIds.get(file.fileId);
+    if (file.fileId === this.state.activeFileId && knownSessionId !== undefined) {
+      this.writing.activateDocument(knownSessionId);
+      return;
+    }
     if (!(await this.canSwitch({ kind: "manuscript", displayName: file.displayName }))) return;
 
     let result: ProjectFileOpenResult;
@@ -262,11 +303,14 @@ export class ProjectNavigationController {
       return;
     }
     this.writing.applyOpenedDocument(result);
+    this.openedFileIds.add(file.fileId);
+    this.fileSessionIds.set(file.fileId, result.sessionId);
     this.replaceState({ ...this.state, activeFileId: file.fileId });
     this.showError(null);
   }
 
   private async canSwitch(target: WorkspaceSwitchTarget): Promise<boolean> {
+    if (!this.confirmDocumentSwitch && target.kind === "manuscript") return true;
     if (!this.writing.hasUnsavedChanges()) return true;
     const current = this.writing.getDocumentState();
     if (!current) return true;

@@ -19,6 +19,7 @@ import {
   type WritingSurface,
   type WritingView
 } from "./controller";
+import { DocumentSessionStore } from "./document-sessions";
 
 class FakeSurface implements WritingSurface {
   private readonly listeners = new Set<(text: string) => void>();
@@ -522,6 +523,63 @@ describe("WritingController", () => {
     expect(surface.text).toBe("unsaved");
     expect(view.status).toEqual({ kind: "modified", message: "Modified" });
     expect(controller.getDocumentState()?.currentText).toBe("unsaved");
+  });
+
+  it("keeps dirty text when central tabs switch and re-activate", () => {
+    const { controller, surface } = makeHarness();
+    controller.applyOpenedDocument(opened("session-a", "a.md", "A"));
+    surface.edit("A edited");
+    controller.applyOpenedDocument(opened("session-b", "b.md", "B"));
+
+    expect(surface.text).toBe("B");
+    expect(controller.activateDocument("session-a")).toBe(true);
+    expect(surface.text).toBe("A edited");
+    expect(controller.getDocumentState()?.savedText).toBe("A");
+    expect(controller.getDocumentViews()).toHaveLength(2);
+  });
+
+  it("rejects a secondary duplicate without deleting the central dirty session", async () => {
+    const { controller, surface } = makeHarness();
+    controller.applyOpenedDocument(opened("session-a", "a.md", "A"));
+    surface.edit("A edited");
+    const secondary = controller.getSessionStore().openView("session-a", {
+      region: "secondary",
+      groupId: "sidebar-group-1"
+    });
+    expect(secondary).toBeNull();
+    expect(controller.getDocumentState()?.currentText).toBe("A edited");
+    expect(controller.getDocumentSessions()).toHaveLength(1);
+  });
+
+  it("does not create a second view for a document already open centrally", () => {
+    const store = new DocumentSessionStore();
+    const leftSurface = new FakeSurface();
+    const rightSurface = new FakeSurface();
+    const leftView = new FakeView();
+    const rightView = new FakeView();
+    const sharedLeft = new WritingController({
+      api: { openMarkdown: async () => ({ kind: "cancelled" as const }), saveMarkdown: async () => ({ kind: "error" as const, code: "save-failed" as const, message: "unused" }) },
+      surface: leftSurface,
+      view: leftView,
+      confirmReplace: () => true,
+      sessionStore: store
+    });
+    const sharedRight = new WritingController({
+      api: { openMarkdown: async () => ({ kind: "cancelled" as const }), saveMarkdown: async () => ({ kind: "error" as const, code: "save-failed" as const, message: "unused" }) },
+      surface: rightSurface,
+      view: rightView,
+      confirmReplace: () => true,
+      sessionStore: store
+    });
+    sharedLeft.applyOpenedDocument(opened("session-shared", "shared.md", "base"));
+    const secondary = store.openView("session-shared", { region: "secondary", groupId: "sidebar-group-1" });
+    expect(secondary).toBeNull();
+    expect(sharedRight.activateDocument("session-shared", "secondary")).toBe(false);
+
+    expect(leftSurface.text).toBe("base");
+    expect(store.getSession("session-shared")?.currentText).toBe("base");
+    sharedLeft.dispose();
+    sharedRight.dispose();
   });
 
   it.each([

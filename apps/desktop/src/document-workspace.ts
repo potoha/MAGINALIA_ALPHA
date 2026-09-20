@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { lstat, readdir, realpath, writeFile } from "node:fs/promises";
 import * as path from "node:path";
@@ -77,6 +77,30 @@ interface DocumentRecord extends DocumentSummary {
   readonly owner: object;
   readonly canonicalRoot: string;
   readonly manuscripts: ReadonlyMap<string, ManuscriptRecord>;
+}
+
+/**
+ * Workspace state survives an application restart, so the opaque handles
+ * exposed by this service must not be regenerated every time a Project is
+ * reopened.  Keep the wire shape UUID-like while deriving it only from the
+ * canonical filesystem boundary and direct child name.  The path itself is
+ * never returned to the renderer.
+ */
+function stableOpaqueUuid(seed: string): string {
+  const digest = createHash("sha256").update(seed, "utf8").digest("hex").slice(0, 32);
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-${((Number.parseInt(digest.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, "0")}${digest.slice(18, 20)}-${digest.slice(20)}`;
+}
+
+function stablePathSeed(value: string): string {
+  return process.platform === "win32" ? value.toLowerCase() : value;
+}
+
+function documentIdForRoot(canonicalRoot: string): string {
+  return stableOpaqueUuid(`maginalia:document:${stablePathSeed(canonicalRoot)}`);
+}
+
+function manuscriptIdForPath(canonicalRoot: string, displayName: string): string {
+  return stableOpaqueUuid(`maginalia:manuscript:${stablePathSeed(path.join(canonicalRoot, displayName))}`);
 }
 
 const INVALID_OWNER: DocumentWorkspaceFailure = {
@@ -273,9 +297,9 @@ export class DocumentWorkspaceService {
       return rootFailure(error);
     }
 
-    const documentId = randomUUID();
+    const documentId = documentIdForRoot(canonicalRoot);
     const manuscriptRecords = entries.map((entry): ManuscriptRecord => ({
-      manuscriptId: randomUUID(),
+      manuscriptId: manuscriptIdForPath(canonicalRoot, entry.name),
       displayName: entry.name,
       canonicalPath: path.join(canonicalRoot, entry.name)
     }));
@@ -344,7 +368,7 @@ export class DocumentWorkspaceService {
     const manuscriptRecords = entries.map((entry): ManuscriptRecord => {
       const previous = previousByName.get(entry.name);
       return previous ?? {
-        manuscriptId: randomUUID(),
+        manuscriptId: manuscriptIdForPath(document.canonicalRoot, entry.name),
         displayName: entry.name,
         canonicalPath: path.join(document.canonicalRoot, entry.name)
       };

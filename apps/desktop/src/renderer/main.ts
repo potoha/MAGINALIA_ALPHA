@@ -14,6 +14,9 @@ import {
   type ShelfViewState
 } from "./shelf-controller";
 import { MonacoMarkdownSurface } from "./monaco-surface";
+import type { DocumentSessionChange } from "./document-sessions";
+import type { WorkspaceState } from "../workspace-state-ipc";
+import { ModController, type ModControllerState } from "./mod-controller";
 import {
   ReferencesController,
   type ReferencesControllerApi,
@@ -75,6 +78,9 @@ app.innerHTML = `
         <button id="toolbar-toggle-primary-sidebar" data-workbench-command="maginalia.view.togglePrimarySidebar" type="button" title="Toggle primary sidebar">Primary</button>
         <button id="toolbar-toggle-secondary-sidebar" data-workbench-command="maginalia.view.toggleSecondarySidebar" type="button" title="Toggle secondary sidebar">Secondary</button>
         <button id="toolbar-toggle-editor-only" data-workbench-command="maginalia.view.toggleEditorOnly" type="button" title="Toggle editor-only mode">Editor only</button>
+        <button id="open-mods-folder" type="button" title="Open the global Mods folder">Mods</button>
+        <button id="reload-mods" type="button" title="Reload installed Mods">Reload Mods</button>
+        <span id="mods-status" class="mods-status" role="status" aria-live="polite">Mods not loaded</span>
       </div>
     </header>
     <div class="workbench-body">
@@ -177,6 +183,7 @@ app.innerHTML = `
         </div>
       </aside>
       <section class="editor-area" aria-label="Editor Area">
+        <nav id="document-tabs" class="document-tabs" role="tablist" aria-label="Open documents"></nav>
         <section id="editor" class="editor" aria-label="Markdown editor"></section>
       </section>
       <aside id="secondary-sidebar" class="workbench-sidebar secondary-sidebar" data-workbench-region="secondary-sidebar" aria-label="Secondary sidebar">
@@ -199,6 +206,10 @@ app.innerHTML = `
             <p id="references-status" class="references-status" data-state="empty" role="status" aria-live="polite">Open a document to refresh References.</p>
             <p id="references-unresolved" class="references-unresolved">Unresolved: 0</p>
             <ul id="library-results" class="library-results" aria-label="Shelf quotations"></ul>
+          </section>
+          <section id="mod-contributions" class="mod-contributions" aria-label="Mod contributions">
+            <div id="mod-view-host"></div>
+            <div id="mod-command-host"></div>
           </section>
         </div>
       </aside>
@@ -237,6 +248,7 @@ const secondarySidebar = requiredElement<HTMLElement>("#secondary-sidebar");
 const primarySidebarResizer = requiredElement<HTMLElement>("#primary-sidebar-resizer");
 const secondarySidebarResizer = requiredElement<HTMLElement>("#secondary-sidebar-resizer");
 const editorArea = requiredElement<HTMLElement>(".editor-area");
+const documentTabs = requiredElement<HTMLElement>("#document-tabs");
 const activityViewButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-workbench-view]")];
 const viewPanels = [...document.querySelectorAll<HTMLElement>("[data-workbench-view-panel]")];
 const togglePrimarySidebarButton = requiredElement<HTMLButtonElement>("#toggle-primary-sidebar");
@@ -247,6 +259,9 @@ const toolbarToggleActivityBarButton = requiredElement<HTMLButtonElement>("#tool
 const toolbarTogglePrimarySidebarButton = requiredElement<HTMLButtonElement>("#toolbar-toggle-primary-sidebar");
 const toolbarToggleSecondarySidebarButton = requiredElement<HTMLButtonElement>("#toolbar-toggle-secondary-sidebar");
 const toolbarToggleEditorOnlyButton = requiredElement<HTMLButtonElement>("#toolbar-toggle-editor-only");
+const openModsFolderButton = requiredElement<HTMLButtonElement>("#open-mods-folder");
+const reloadModsButton = requiredElement<HTMLButtonElement>("#reload-mods");
+const modsStatus = requiredElement<HTMLElement>("#mods-status");
 const openButton = requiredElement<HTMLButtonElement>("#open-markdown");
 const openProjectButton = requiredElement<HTMLButtonElement>("#open-project");
 const saveButton = requiredElement<HTMLButtonElement>("#save-markdown");
@@ -274,6 +289,8 @@ const libraryError = requiredElement<HTMLElement>("#library-error");
 const referencesStatus = requiredElement<HTMLElement>("#references-status");
 const referencesUnresolved = requiredElement<HTMLElement>("#references-unresolved");
 const libraryResults = requiredElement<HTMLUListElement>("#library-results");
+const modViewHost = requiredElement<HTMLElement>("#mod-view-host");
+const modCommandHost = requiredElement<HTMLElement>("#mod-command-host");
 const editorContainer = requiredElement<HTMLElement>("#editor");
 const projectHeaderActions = requiredElement<HTMLElement>("#project-header-actions");
 const projectNewButton = requiredElement<HTMLButtonElement>("#project-new");
@@ -452,6 +469,101 @@ const controller = new WritingController({
   view,
   confirmReplace: (displayName) => window.confirm(`Open another Markdown file? Unsaved changes to ${displayName} will be replaced.`)
 });
+
+let modController: ModController | undefined;
+
+function renderModState(state: ModControllerState): void {
+  modsStatus.dataset.state = state.busy ? "busy" : "ready";
+  modsStatus.textContent = state.message;
+  openModsFolderButton.disabled = state.busy;
+  reloadModsButton.disabled = state.busy;
+
+  modViewHost.replaceChildren();
+  modCommandHost.replaceChildren();
+
+  for (const registration of state.snapshot.contributions) {
+    const contribution = registration.contribution;
+    if (contribution.kind === "view") {
+      const view = document.createElement("div");
+      view.className = "mod-view-contribution";
+      view.dataset.modId = registration.modId;
+      view.dataset.modViewId = contribution.id;
+      view.textContent = `${contribution.title} · ${contribution.region}`;
+      modViewHost.append(view);
+      continue;
+    }
+
+    const command = document.createElement("button");
+    command.type = "button";
+    command.className = "mod-command";
+    command.dataset.modId = registration.modId;
+    command.dataset.modCommandId = contribution.id;
+    command.textContent = contribution.title;
+    command.disabled = state.busy;
+    command.addEventListener("click", () => {
+      void modController?.invoke(registration.modId, contribution.id);
+    });
+    modCommandHost.append(command);
+  }
+}
+
+const modView: { setModState(state: ModControllerState): void } = {
+  setModState: renderModState
+};
+
+function renderDocumentTabs(change: DocumentSessionChange): void {
+  documentTabs.replaceChildren();
+  const mainViews = change.views.filter((view) => view.region === "main" && view.groupId === "editor-group-1");
+  for (const view of mainViews) {
+    const session = change.sessions.find((candidate) => candidate.documentId === view.documentId);
+    if (session === undefined) continue;
+    const tab = document.createElement("div");
+    tab.className = "document-tab";
+    tab.dataset.documentTab = session.documentId;
+    tab.dataset.documentViewId = view.instanceId;
+    tab.setAttribute("role", "presentation");
+    tab.classList.toggle("active", change.activeDocumentId === session.documentId);
+    tab.classList.toggle("dirty", session.currentText !== session.savedText);
+
+    const activate = document.createElement("button");
+    activate.type = "button";
+    activate.className = "document-tab-label";
+    activate.setAttribute("role", "tab");
+    activate.setAttribute("aria-selected", String(change.activeDocumentId === session.documentId));
+    activate.textContent = session.displayName;
+    activate.title = session.displayName;
+    if (session.currentText !== session.savedText) {
+      const dirty = document.createElement("span");
+      dirty.className = "document-tab-dirty";
+      dirty.textContent = "●";
+      dirty.setAttribute("aria-label", "unsaved changes");
+      activate.append(dirty);
+    }
+    activate.addEventListener("click", () => {
+      void controller.activateDocument(session.documentId);
+    });
+
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "document-tab-close";
+    close.setAttribute("aria-label", `Close ${session.displayName}`);
+    close.textContent = "×";
+    close.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void controller.closeDocumentView(view.instanceId, async (displayName) => {
+        return decideDirtySwitch(
+          { currentDisplayName: displayName, target: { kind: "manuscript", displayName: "another document tab" } },
+          (message) => window.confirm(message)
+        );
+      });
+    });
+    tab.append(activate, close);
+    documentTabs.append(tab);
+  }
+  documentTabs.hidden = mainViews.length === 0;
+}
+
+controller.onSessionChange(renderDocumentTabs);
 
 function renderWorkspaceState(state: WorkspaceNavigationState): void {
   workspaceLabel.textContent = "Document";
@@ -675,6 +787,7 @@ function bindProjectMenuTriggerKeyboard(menu: HTMLElement, trigger: HTMLButtonEl
 
 let projectController: ProjectNavigationController | undefined;
 let workspaceController: WorkspaceNavigationController | undefined;
+let persistedWorkspaceState: WorkspaceState | null = null;
 
 const workspaceView: WorkspaceNavigationView = {
   setWorkspaceState(state: WorkspaceNavigationState): void {
@@ -696,6 +809,7 @@ const workspaceView: WorkspaceNavigationView = {
 const projectView: ProjectNavigationView = {
   setProjectState(state: ProjectNavigationState): void {
     renderProjectState(state);
+    void persistWorkspaceState();
     bindProjectFileKeyboard();
     updateSmokeTextForSmoke?.();
     for (const button of manuscriptList.querySelectorAll<HTMLButtonElement>("button[data-manuscript-id]")) {
@@ -716,6 +830,54 @@ const projectView: ProjectNavigationView = {
     workspaceError.hidden = message === null;
   }
 };
+
+let workspacePersistChain: Promise<void> = Promise.resolve();
+
+function persistWorkspaceState(): Promise<void> {
+  // Session/tab transitions can notify several observers in one turn. Queue
+  // the atomic file writes so a late save cannot race an earlier `.tmp`
+  // rename and accidentally persist an intermediate one-tab snapshot.
+  workspacePersistChain = workspacePersistChain.then(async () => {
+    const save = window.maginalia.saveWorkspaceState;
+    const project = projectController?.getState().project;
+    if (!save || !project) return;
+    const state = projectController?.getState();
+    if (!state) return;
+    const snapshot: WorkspaceState = {
+      version: 1,
+      projectId: project.projectId,
+      openFileIds: projectController?.getOpenedFileIds() ?? [],
+      activeFileId: state.activeFileId,
+      viewPlacements: controller.getDocumentViews().map((view) => ({
+        // Persist project-relative opaque file IDs, not runtime session IDs.
+        documentId: projectController?.getFileIdForSession(view.documentId) ?? view.documentId,
+        viewType: view.viewType,
+        region: view.region,
+        groupId: view.groupId
+      }))
+    };
+    try {
+      await save(snapshot);
+    } catch {
+      // Workspace restoration is convenience state and must never block editing.
+    }
+  }, () => undefined);
+  return workspacePersistChain;
+}
+
+async function restorePersistedProjectViews(): Promise<void> {
+  const current = projectController?.getState();
+  const project = current?.project;
+  if (!project || persistedWorkspaceState === null || persistedWorkspaceState.projectId !== project.projectId) return;
+  const validFileIds = new Set(current?.files.map((file) => file.fileId) ?? []);
+  const openFiles = persistedWorkspaceState.openFileIds;
+  for (const fileId of openFiles) {
+    if (validFileIds.has(fileId)) await projectController?.openFile(fileId);
+  }
+  if (persistedWorkspaceState.activeFileId !== null && validFileIds.has(persistedWorkspaceState.activeFileId)) {
+    await projectController?.openFile(persistedWorkspaceState.activeFileId);
+  }
+}
 
 const repositoryKindLabels: Record<RepositoryKindOption, string> = {
   project: "Project",
@@ -1040,6 +1202,28 @@ function getReferencesApi(): ReferencesControllerApi | null {
   };
 }
 
+function getModApi(): ConstructorParameters<typeof ModController>[0]["api"] | null {
+  const api = window.maginalia;
+  if (!api
+    || typeof api.loadMods !== "function"
+    || typeof api.reloadMods !== "function"
+    || typeof api.openModsFolder !== "function"
+    || typeof api.invokeModCommand !== "function") {
+    return null;
+  }
+  const loadMods = api.loadMods;
+  const reloadMods = api.reloadMods;
+  const openModsFolder = api.openModsFolder;
+  const invokeModCommand = api.invokeModCommand;
+  return {
+    loadMods: () => loadMods(),
+    reloadMods: () => reloadMods(),
+    openModsFolder: () => openModsFolder(),
+    invokeModCommand: (request) => invokeModCommand(request),
+    onModCapabilityRequest: api.onModCapabilityRequest
+  };
+}
+
 function getRepositoryApi(): RepositoryControllerApi | null {
   const api = window.maginalia;
   if (!api
@@ -1070,6 +1254,24 @@ function getRepositoryApi(): RepositoryControllerApi | null {
   };
 }
 
+const standaloneWorkbenchSmoke = new URLSearchParams(window.location.search).get("smoke") === "workbench";
+const modApi = getModApi();
+if (modApi && !standaloneWorkbenchSmoke) {
+  modController = new ModController({ api: modApi, writing: controller, view: modView });
+  openModsFolderButton.addEventListener("click", () => {
+    void modController?.openFolder();
+  });
+  reloadModsButton.addEventListener("click", () => {
+    void modController?.reload();
+  });
+  void modController.load();
+} else {
+  openModsFolderButton.disabled = true;
+  reloadModsButton.disabled = true;
+  modsStatus.dataset.state = "error";
+  modsStatus.textContent = "Mod host unavailable";
+}
+
 let updateSmokeTextForSmoke: (() => void) | undefined;
 const smokeQuery = new URLSearchParams(window.location.search).get("smoke");
 const writingSmokeMode = smokeQuery === "writing";
@@ -1077,13 +1279,18 @@ const workspaceSmokeMode = smokeQuery === "workspace";
 const quotationSmokeMode = smokeQuery === "quotation";
 const repositorySmokeMode = smokeQuery === "repository";
 const shelfSmokeMode = smokeQuery === "shelf";
+const d5SmokeMode = smokeQuery === "d5" || smokeQuery === "d5-restore";
 const projectSmokeMode = smokeQuery === "project";
-const projectRestoreSmokeMode = smokeQuery === "project-restore";
+const projectRestoreSmokeMode = smokeQuery === "project-restore" || smokeQuery === "d5-restore";
 const projectCreateSmokeMode = smokeQuery === "project-create";
 const workbenchSmokeMode = smokeQuery === "workbench";
 const smokeDecisionQueue: DirtySwitchDecision[] = [];
 const legacyWorkspaceMode = workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode;
-const projectLikeSmokeMode = projectSmokeMode || projectRestoreSmokeMode || projectCreateSmokeMode || shelfSmokeMode;
+const projectLikeSmokeMode = projectSmokeMode
+  || projectRestoreSmokeMode
+  || projectCreateSmokeMode
+  || shelfSmokeMode
+  || d5SmokeMode;
 openButton.textContent = writingSmokeMode ? "Open" : legacyWorkspaceMode ? "Open Document" : "Open Project";
 repositoryNavigation.hidden = writingSmokeMode;
 projectHeaderActions.hidden = writingSmokeMode || legacyWorkspaceMode;
@@ -1245,14 +1452,36 @@ if (legacyWorkspaceMode) {
       api: projectApi,
       writing: controller,
       view: projectView,
+      // Central tabs keep each DocumentSession alive, so switching files is
+      // activation and must not invoke the legacy replacement prompt.
+      confirmDocumentSwitch: false,
       decideDirtySwitch: projectLikeSmokeMode
         ? () => smokeDecisionQueue.shift() ?? "cancel"
         : (context) => decideDirtySwitch(context, (message) => window.confirm(message))
     });
     if ((!projectLikeSmokeMode && !workbenchSmokeMode) || projectRestoreSmokeMode) {
-      void projectController.restoreProject();
+      const restore = projectController.restoreProject();
+      void restore.then(() => restorePersistedProjectViews());
     }
   }
+}
+
+if (projectController && !workbenchSmokeMode) {
+  const load = window.maginalia.loadWorkspaceState;
+  if (load) {
+    void load().then((result) => {
+      if (!("version" in result) || result.version !== 1) return;
+      persistedWorkspaceState = result;
+      void restorePersistedProjectViews();
+    }).catch(() => undefined);
+  }
+  controller.onSessionChange((change) => {
+    projectController?.syncOpenDocuments(change.views
+      .filter((view) => view.region === "main" && view.groupId === "editor-group-1")
+      .map((view) => view.documentId));
+    projectController?.syncActiveDocument(change.activeDocumentId);
+    void persistWorkspaceState();
+  });
 }
 
 let libraryController: LibraryController | undefined;

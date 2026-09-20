@@ -488,6 +488,51 @@ button:disabled {
   background: #fffdf8;
 }
 
+.mods-status {
+  max-width: 14rem;
+  overflow: hidden;
+  color: #5f6c76;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mods-status[data-state="busy"] {
+  color: #8a431f;
+}
+
+.mods-status[data-state="error"] {
+  color: #8d2929;
+}
+
+.mod-contributions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.45rem 0.85rem;
+  border-top: 1px solid #e1d9ce;
+}
+
+.mod-view-contribution {
+  color: #5f6c76;
+  font-size: 0.78rem;
+}
+
+#mod-command-host {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.mod-command {
+  padding: 0.3rem 0.5rem;
+  border-color: #c69b86;
+  color: #5f3b2d;
+  background: #f6eee6;
+  font-size: 0.78rem;
+}
+
 .library-heading-row,
 .library-search-form,
 .library-result,
@@ -962,12 +1007,81 @@ button:focus-visible {
 }
 
 .editor-area {
+  position: relative;
   display: flex;
+  flex-direction: column;
   flex: 1 1 0;
   min-width: 120px;
   min-height: 0;
   overflow: hidden;
   background: #fff;
+}
+
+.document-tabs {
+  display: flex;
+  flex: 0 0 2.2rem;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 1px solid #d5cec3;
+  background: #eee9e0;
+}
+
+.document-tabs[hidden] {
+  display: none;
+}
+
+.document-tab {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+  min-width: 8rem;
+  max-width: 15rem;
+  border-right: 1px solid #d5cec3;
+  background: #e5dfd5;
+}
+
+.document-tab.active {
+  background: #fff;
+  box-shadow: inset 0 2px 0 #9b4b36;
+}
+
+.document-tab-label,
+.document-tab-close {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #4d4038;
+}
+
+.document-tab-label {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.3rem 0.45rem 0.3rem 0.65rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 0.78rem;
+}
+
+.document-tab-label:hover,
+.document-tab-close:hover {
+  background: #f6eee6;
+}
+
+.document-tab-close {
+  flex: 0 0 1.8rem;
+  padding: 0;
+  font-size: 1rem;
+}
+
+.document-tab-dirty {
+  color: #9b4b36;
+  font-size: 0.65rem;
 }
 
 .editor-area .editor {

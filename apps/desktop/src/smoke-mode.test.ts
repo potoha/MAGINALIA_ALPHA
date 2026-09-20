@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseQuotationSmokeMode,
+  parseD5SmokeMode,
   parseRepositorySmokeMode,
   parseShelfSmokeMode,
   parseWritingSmokeMode,
@@ -137,6 +138,35 @@ describe("Shelf smoke mode", () => {
   it("keeps an incomplete flag in smoke mode without inventing a root", () => {
     expect(parseShelfSmokeMode(["--smoke-shelf", "--other"])).toEqual({
       requested: true
+    });
+  });
+});
+
+describe("D.5 smoke mode", () => {
+  it("accepts the fixture root for the initial run", () => {
+    expect(parseD5SmokeMode([
+      "electron",
+      "dist/main/main.js",
+      "--smoke-d5",
+      "C:\\Temp\\d5-smoke"
+    ])).toEqual({
+      requested: true,
+      rootPath: "C:\\Temp\\d5-smoke"
+    });
+  });
+
+  it("accepts the restore flag without inventing a root", () => {
+    expect(parseD5SmokeMode(["--smoke-d5-restore", "--other"])).toEqual({
+      requested: true,
+      restore: true
+    });
+    expect(parseD5SmokeMode([
+      "--smoke-d5-restore",
+      "C:\\Temp\\d5-smoke"
+    ])).toEqual({
+      requested: true,
+      restore: true,
+      rootPath: "C:\\Temp\\d5-smoke"
     });
   });
 });

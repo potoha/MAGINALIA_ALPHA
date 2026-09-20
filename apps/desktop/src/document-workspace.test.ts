@@ -60,6 +60,14 @@ describe("Document workspace service", () => {
         kind: "resolved",
         canonicalPath: path.join(await realpath(root), "manuscript.md")
       });
+
+      // Workspace persistence stores these opaque handles, so reopening the
+      // same canonical root must reproduce them instead of generating a new
+      // set that would make saved tabs impossible to restore.
+      const reopened = opened(await service.openForOwner({}, root));
+      expect(reopened.document.documentId).toBe(result.document.documentId);
+      expect(reopened.manuscripts.map((manuscript) => manuscript.manuscriptId))
+        .toEqual(result.manuscripts.map((manuscript) => manuscript.manuscriptId));
     });
   });
 

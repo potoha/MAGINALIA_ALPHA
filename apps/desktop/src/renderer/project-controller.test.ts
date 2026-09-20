@@ -46,7 +46,11 @@ function opened(file: ProjectFileSummary): OpenMarkdownResult {
   };
 }
 
-function harness(decision: "save" | "discard" | "cancel", openFile: (file: ProjectFileSummary) => ProjectFileOpenResult = (file) => opened(file)) {
+function harness(
+  decision: "save" | "discard" | "cancel",
+  openFile: (file: ProjectFileSummary) => ProjectFileOpenResult = (file) => opened(file),
+  tabs = false
+) {
   const surface = new Surface();
   const writingView = new WritingViewStub();
   const view = new ProjectViewStub();
@@ -75,7 +79,8 @@ function harness(decision: "save" | "discard" | "cancel", openFile: (file: Proje
     api,
     writing,
     view,
-    decideDirtySwitch: () => decision
+    decideDirtySwitch: () => decision,
+    confirmDocumentSwitch: !tabs
   });
   return { navigation, openProjectFile, saveMarkdown, surface, writing, view };
 }
@@ -117,5 +122,18 @@ describe("ProjectNavigationController", () => {
     expect(test.view.state.activeFileId).toBe(files[0].fileId);
     expect(test.surface.text).toBe("keep me");
     expect(test.view.error).toBe("cannot open");
+  });
+
+  it("switches central tabs without replacing dirty sessions and reactivates an existing tab", async () => {
+    const test = harness("cancel", (file) => opened(file), true);
+    await test.navigation.openProject();
+    test.surface.edit("first edited");
+    await test.navigation.openFile(files[1].fileId);
+    await test.navigation.openFile(files[0].fileId);
+
+    expect(test.saveMarkdown).not.toHaveBeenCalled();
+    expect(test.surface.text).toBe("first edited");
+    expect(test.writing.getDocumentSessions()).toHaveLength(2);
+    expect(test.view.state.activeFileId).toBe(files[0].fileId);
   });
 });

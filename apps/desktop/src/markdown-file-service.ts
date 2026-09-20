@@ -114,7 +114,7 @@ async function readMarkdown(filePath: string): Promise<ReadMarkdownResult> {
 
 export class MarkdownFileService {
   private readonly sessions = new Map<string, MarkdownSession>();
-  private owners = new Map<object, MarkdownSession>();
+  private owners = new Map<object, Map<string, MarkdownSession>>();
   private readonly saveQueues = new Map<string, Promise<SaveMarkdownResult>>();
 
   public async openForOwner(owner: object, filePath: string): Promise<OpenMarkdownResult> {
@@ -123,8 +123,23 @@ export class MarkdownFileService {
     const readResult = await readMarkdown(filePath);
     if (readResult.kind !== "read") return readResult;
 
-    const previous = this.owners.get(owner);
-    if (previous) this.sessions.delete(previous.sessionId);
+    let ownerSessions = this.owners.get(owner);
+    if (ownerSessions === undefined) {
+      ownerSessions = new Map<string, MarkdownSession>();
+      this.owners.set(owner, ownerSessions);
+    }
+    // Opening the same path again is activation, not replacement. Keeping a
+    // stable host session lets the renderer switch tabs without losing its
+    // DocumentSession's unsaved text or creating duplicate save baselines.
+    const existing = ownerSessions.get(filePath);
+    if (existing !== undefined) {
+      return {
+        kind: "opened",
+        sessionId: existing.sessionId,
+        displayName: existing.displayName,
+        text: existing.savedText
+      };
+    }
 
     const session: MarkdownSession = {
       sessionId: randomUUID(),
@@ -133,7 +148,7 @@ export class MarkdownFileService {
       displayName: path.basename(filePath),
       savedText: readResult.text
     };
-    this.owners.set(owner, session);
+    ownerSessions.set(filePath, session);
     this.sessions.set(session.sessionId, session);
 
     return {
@@ -160,7 +175,7 @@ export class MarkdownFileService {
 
   public dispose(): void {
     this.sessions.clear();
-    this.owners = new Map<object, MarkdownSession>();
+    this.owners = new Map<object, Map<string, MarkdownSession>>();
     this.saveQueues.clear();
   }
 

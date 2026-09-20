@@ -19,6 +19,7 @@
   },
   "include": [
     "src/main.ts",
+    "src/d5-smoke.ts",
     "src/shelf-smoke.ts",
     "src/preload.ts",
     "src/security.ts",
@@ -29,6 +30,10 @@
     "src/library-service.ts",
     "src/reviewer-ipc.ts",
     "src/reference-ipc.ts",
+    "src/mod-host.ts",
+    "src/mod-bootstrap.ts",
+    "src/workspace-state-ipc.ts",
+    "src/workspace-state-service.ts",
     "src/reviewer-resolution.ts",
     "src/repository-filesystem.ts",
     "src/repository-local-history.ts",
