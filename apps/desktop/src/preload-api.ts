@@ -104,6 +104,13 @@ import {
   type ProjectOpenResult,
   type ProjectRestoreResult
 } from "./project-ipc";
+import {
+  AUTOSAVE_FLUSH_REQUEST_CHANNEL,
+  AUTOSAVE_FLUSH_RESPONSE_CHANNEL,
+  isAutosaveFlushRequest,
+  type AutosaveFlushRequest,
+  type AutosaveFlushResponseRequest
+} from "./autosave-ipc";
 
 export const OPEN_MARKDOWN_CHANNEL = "maginalia:open-markdown";
 export const SAVE_MARKDOWN_CHANNEL = "maginalia:save-markdown";
@@ -132,6 +139,10 @@ export {
   RESPOND_MOD_CAPABILITY_CHANNEL
 } from "./mod-ipc";
 export { LOAD_WORKSPACE_STATE_CHANNEL, SAVE_WORKSPACE_STATE_CHANNEL } from "./workspace-state-ipc";
+export {
+  AUTOSAVE_FLUSH_REQUEST_CHANNEL,
+  AUTOSAVE_FLUSH_RESPONSE_CHANNEL
+} from "./autosave-ipc";
 export {
   CREATE_REPOSITORY_CHANNEL,
   CREATE_REPOSITORY_HISTORY_CHANNEL,
@@ -212,9 +223,14 @@ export type {
   ProjectOpenResult,
   ProjectRestoreResult
 } from "./project-ipc";
+export type {
+  AutosaveFlushRequest,
+  AutosaveFlushResponseRequest
+} from "./autosave-ipc";
 
 export type DevicePromptCallback = (prompt: RepositoryCloudDevicePrompt) => void;
 export type DevicePromptUnsubscribe = () => void;
+export type AutosaveFlushCallback = (request: AutosaveFlushRequest) => boolean | Promise<boolean>;
 export type ModCapabilityCallback = (
   request: ModCapabilityRequestEvent,
 ) => ModCapabilityResponse | Promise<ModCapabilityResponse>;
@@ -253,6 +269,7 @@ export interface MarkdownPreloadApi {
   discoverPrivateWorks?(): Promise<RepositoryCloudDiscoveryIpcResult>;
   cancelPrivateWorksDiscovery?(): Promise<RepositoryCloudDiscoveryCancelResult>;
   onDevicePrompt?(callback: DevicePromptCallback): DevicePromptUnsubscribe;
+  onAutosaveFlushRequest?(callback: AutosaveFlushCallback): DevicePromptUnsubscribe;
 }
 
 export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
@@ -287,6 +304,7 @@ export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   discoverPrivateWorks(): Promise<RepositoryCloudDiscoveryIpcResult>;
   cancelPrivateWorksDiscovery(): Promise<RepositoryCloudDiscoveryCancelResult>;
   onDevicePrompt(callback: DevicePromptCallback): DevicePromptUnsubscribe;
+  onAutosaveFlushRequest(callback: AutosaveFlushCallback): DevicePromptUnsubscribe;
 };
 
 export type MarkdownInvoke = (channel: string, ...args: readonly unknown[]) => Promise<unknown>;
@@ -428,6 +446,25 @@ export function createMarkdownPreloadApi(
         } catch {
           // Renderer callback failures must not affect the fixed IPC listener.
         }
+      });
+    },
+    onAutosaveFlushRequest: (callback) => {
+      if (typeof callback !== "function") throw new TypeError("The Autosave callback is invalid.");
+      return subscribe(AUTOSAVE_FLUSH_REQUEST_CHANNEL, (value) => {
+        if (!isAutosaveFlushRequest(value)) return;
+        let result: boolean | Promise<boolean>;
+        try {
+          result = callback(value);
+        } catch {
+          result = false;
+        }
+        void Promise.resolve(result).then((ok) => {
+          const response: AutosaveFlushResponseRequest = {
+            requestId: value.requestId,
+            ok: ok === true
+          };
+          return invoke(AUTOSAVE_FLUSH_RESPONSE_CHANNEL, response);
+        }).catch(() => undefined);
       });
     },
   };

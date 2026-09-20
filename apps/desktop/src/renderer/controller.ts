@@ -22,6 +22,11 @@ import {
   type DocumentSessionChange,
   type DocumentViewInstance
 } from "./document-sessions";
+import type {
+  AutosaveFlushResult,
+  AutosaveStatus,
+  AutosaveStatusChange
+} from "./autosave-coordinator";
 
 export interface WritingSurface {
   replaceDocument(text: string): void;
@@ -85,6 +90,17 @@ export interface WritingControllerOptions {
   readonly confirmReplace: (displayName: string) => boolean | Promise<boolean>;
   /** Shared source of truth when a document has more than one view. */
   readonly sessionStore?: DocumentSessionStore;
+  /** Optional lifecycle save coordinator. It delegates to this controller's save queue. */
+  readonly autosave?: WritingAutosavePort;
+}
+
+/** Narrow lifecycle boundary; it intentionally carries no filesystem path. */
+export interface WritingAutosavePort {
+  flushDocument(documentId: DocumentId): Promise<AutosaveFlushResult>;
+  /** Explicit Save and autosave use the same coordinator-owned pipeline. */
+  manualSave?(documentId: DocumentId): Promise<AutosaveFlushResult>;
+  /** Optional status stream used to render inactive-document state safely. */
+  onStatusChange?(listener: (change: AutosaveStatusChange) => void): () => void;
 }
 
 interface SaveOperation {
@@ -103,9 +119,15 @@ export class WritingController {
   private readonly confirmReplace: WritingControllerOptions["confirmReplace"];
   private readonly removeTextListener: () => void;
   private readonly store: DocumentSessionStore;
+  private autosave: WritingAutosavePort | undefined;
+  private removeAutosaveStatusListener: (() => void) | undefined;
   private readonly removeStoreListener: () => void;
   private activeDocumentId: DocumentId | null = null;
   private readonly currentSaves = new Map<DocumentId, SaveOperation>();
+  /** Save failures belong to their document, not to whichever tab is active. */
+  private readonly saveErrors = new Map<DocumentId, string>();
+  /** Coordinator status is keyed by document so tab activation cannot leak it. */
+  private readonly autosaveStatuses = new Map<DocumentId, AutosaveStatus>();
   private nextSaveId = 1;
   private replacingSurface = false;
   private errorMessage: string | undefined;
@@ -120,11 +142,12 @@ export class WritingController {
     this.store = options.sessionStore ?? new DocumentSessionStore();
     this.removeTextListener = this.surface.onTextChange((text) => this.handleTextChange(text));
     this.removeStoreListener = this.store.onDidChange((change) => this.handleStoreChange(change));
+    this.setAutosaveCoordinator(options.autosave ?? null);
     this.render();
   }
 
-  public getDocumentState(): DocumentSession | null {
-    return this.getActiveSession();
+  public getDocumentState(documentId?: DocumentId): DocumentSession | null {
+    return documentId === undefined ? this.getActiveSession() : this.store.getSession(documentId);
   }
 
   public hasUnsavedChanges(): boolean {
@@ -148,6 +171,21 @@ export class WritingController {
     this.sessionChangeListeners.add(listener);
     listener(this.store.snapshot());
     return () => this.sessionChangeListeners.delete(listener);
+  }
+
+  /** Attach the already-created coordinator after the controller is constructed. */
+  public setAutosaveCoordinator(autosave: WritingAutosavePort | null): void {
+    this.removeAutosaveStatusListener?.();
+    this.removeAutosaveStatusListener = undefined;
+    this.autosave = autosave ?? undefined;
+    this.autosaveStatuses.clear();
+    if (autosave?.onStatusChange !== undefined) {
+      this.removeAutosaveStatusListener = autosave.onStatusChange(({ documentId, status }) => {
+        this.autosaveStatuses.set(documentId, status);
+        this.render();
+      });
+    }
+    this.render();
   }
 
   public activateDocument(documentId: DocumentId, region: "main" | "secondary" = "main"): boolean {
@@ -189,14 +227,24 @@ export class WritingController {
 
     // Closing a secondary/duplicate view never discards the shared session.
     if (views.length === 1 && isDirty(session)) {
-      const decision = await decide(session.displayName);
-      if (decision === "cancel") return false;
-      if (decision === "save") {
-        await this.saveDocument(view.documentId);
-        const afterSave = this.store.getSession(view.documentId);
-        if (afterSave === null || isDirty(afterSave)) return false;
-      } else {
-        this.store.discardChanges(view.documentId);
+      // Autosave gets the first chance to flush the latest revision. A normal
+      // close therefore does not repeatedly prompt after a successful local
+      // save. If the flush fails, retain the existing explicit safety choice
+      // so the user can retry, discard deliberately, or cancel.
+      const flushed = await this.flushWithAutosave(view.documentId);
+      const afterFlush = this.store.getSession(view.documentId);
+      if (!flushed && afterFlush !== null && isDirty(afterFlush)) {
+        const decision = await decide(session.displayName);
+        if (decision === "cancel") return false;
+        if (decision === "save") {
+          const saved = this.autosave === undefined
+            ? await this.saveDocument(view.documentId).then(() => true).catch(() => false)
+            : await this.flushWithAutosave(view.documentId);
+          const afterSave = this.store.getSession(view.documentId);
+          if (!saved || afterSave === null || isDirty(afterSave)) return false;
+        } else {
+          this.store.discardChanges(view.documentId);
+        }
       }
     }
 
@@ -317,7 +365,10 @@ export class WritingController {
     // Monaco emits the normal text-change event synchronously. A small test
     // surface may not, so keep the Core state correct in either case.
     const surfaceEmittedChange = this.getActiveSession()?.revision !== revisionBeforeEdit;
-    if (!surfaceEmittedChange) this.store.updateText(target.documentId, result.state.currentText);
+    if (!surfaceEmittedChange) {
+      this.store.updateText(target.documentId, result.state.currentText);
+      this.saveErrors.delete(target.documentId);
+    }
     this.errorMessage = undefined;
     this.render();
     if (!surfaceEmittedChange) this.notifyDocumentChange();
@@ -357,7 +408,10 @@ export class WritingController {
     // Monaco emits the normal text-change event synchronously. A small test
     // surface may not, so keep the Core state correct in either case.
     const surfaceEmittedChange = this.getActiveSession()?.revision !== revisionBeforeEdit;
-    if (!surfaceEmittedChange) this.store.updateText(current.documentId, nextText);
+    if (!surfaceEmittedChange) {
+      this.store.updateText(current.documentId, nextText);
+      this.saveErrors.delete(current.documentId);
+    }
     this.errorMessage = undefined;
     this.render();
     if (!surfaceEmittedChange) this.notifyDocumentChange();
@@ -413,6 +467,7 @@ export class WritingController {
       for (const view of this.store.getViewsForDocument(active)) this.store.closeView(view.instanceId);
       this.store.removeSession(active);
       this.currentSaves.delete(active);
+      this.saveErrors.delete(active);
     }
     this.activeDocumentId = null;
     this.replacingSurface = true;
@@ -431,6 +486,7 @@ export class WritingController {
     for (const view of this.store.snapshot().views) this.store.closeView(view.instanceId);
     for (const session of this.store.snapshot().sessions) {
       this.currentSaves.delete(session.documentId);
+      this.saveErrors.delete(session.documentId);
       this.store.removeSession(session.documentId);
     }
     this.activeDocumentId = null;
@@ -448,10 +504,25 @@ export class WritingController {
     const current = this.getActiveSession();
     if (!current || !isDirty(current)) return Promise.resolve();
 
+    // Manual Save consumes the coordinator's pending debounce and shares its
+    // in-flight/revision-safe queue. The flush fallback keeps focused hosts
+    // and legacy tests compatible with the pre-manualSave port.
+    const autosave = this.autosave;
+    const manualSave = autosave?.manualSave ?? autosave?.flushDocument;
+    if (manualSave !== undefined) {
+      return manualSave.call(autosave, current.documentId).then(() => undefined);
+    }
     return this.saveDocument(current.documentId);
   }
 
-  private saveDocument(documentId: DocumentId): Promise<void> {
+  /**
+   * Save one document through the existing serialized save pipeline.
+   *
+   * This is public for renderer-local orchestration such as Autosave. It
+   * accepts only the opaque DocumentId; filesystem paths never cross this
+   * boundary and the queue remains owned by this controller.
+   */
+  public saveDocument(documentId: DocumentId): Promise<void> {
     const current = this.store.getSession(documentId);
     if (!current || !isDirty(current)) return Promise.resolve();
 
@@ -486,14 +557,41 @@ export class WritingController {
     return completion;
   }
 
+  /** Wait for the currently active save operation, if any. */
+  public waitForSave(documentId: DocumentId): Promise<void> {
+    return this.currentSaves.get(documentId)?.completion ?? Promise.resolve();
+  }
+
+  private async flushWithAutosave(documentId: DocumentId): Promise<boolean> {
+    if (this.autosave === undefined) {
+      // Preserve the pre-autosave close path when the optional coordinator is
+      // not wired (for example in focused controller tests or legacy hosts).
+      return false;
+    }
+    try {
+      const result = await this.autosave.flushDocument(documentId);
+      return result.kind === "saved" || result.kind === "clean";
+    } catch {
+      return false;
+    }
+  }
+
+  /** A save failure remains observable until a later edit or successful save. */
+  public getSaveError(documentId: DocumentId): string | undefined {
+    return this.saveErrors.get(documentId);
+  }
+
   public dispose(): void {
     this.removeTextListener();
     this.removeStoreListener();
+    this.removeAutosaveStatusListener?.();
+    this.removeAutosaveStatusListener = undefined;
   }
 
   private handleTextChange(text: string): void {
     if (this.replacingSurface || this.activeDocumentId === null) return;
     this.store.updateText(this.activeDocumentId, text);
+    this.saveErrors.delete(this.activeDocumentId);
     this.errorMessage = undefined;
     this.render();
     this.notifyDocumentChange();
@@ -520,6 +618,10 @@ export class WritingController {
   private handleStoreChange(change: DocumentSessionChange): void {
     const active = change.activeDocumentId;
     this.activeDocumentId = active;
+    const liveDocumentIds = new Set(change.sessions.map((session) => session.documentId));
+    for (const documentId of this.autosaveStatuses.keys()) {
+      if (!liveDocumentIds.has(documentId)) this.autosaveStatuses.delete(documentId);
+    }
     this.replaceSurfaceForActiveSession(false);
     this.render();
     for (const listener of this.sessionChangeListeners) {
@@ -546,7 +648,7 @@ export class WritingController {
       });
     } catch (_error: unknown) {
       if (this.currentSaves.get(operation.snapshot.documentId)?.id === operation.id) {
-        this.showError("The Markdown file could not be saved. Try again.");
+        this.showSaveError(operation.snapshot.documentId, "The Markdown file could not be saved. Try again.");
       }
       return;
     }
@@ -557,16 +659,25 @@ export class WritingController {
       && result.sessionId === operation.snapshot.documentId
       && result.text === operation.snapshot.text) {
       this.store.confirmSave(operation.snapshot.documentId, operation.snapshot.text);
+      this.saveErrors.delete(operation.snapshot.documentId);
       this.errorMessage = undefined;
       return;
     }
 
     if (result.kind === "conflict" || result.kind === "error") {
-      this.showError(result.message);
+      this.showSaveError(operation.snapshot.documentId, result.message);
       return;
     }
 
-    this.showError("The save confirmation did not match this draft. Try saving again.");
+    this.showSaveError(
+      operation.snapshot.documentId,
+      "The save confirmation did not match this draft. Try saving again."
+    );
+  }
+
+  private showSaveError(documentId: DocumentId, message: string): void {
+    this.saveErrors.set(documentId, message);
+    this.render();
   }
 
   private showError(message: string): void {
@@ -585,8 +696,14 @@ export class WritingController {
     }
 
     const savingCurrent = this.currentSaves.has(current.documentId);
-    if (savingCurrent) {
+    const autosaveStatus = this.autosaveStatuses.get(current.documentId);
+    const autosaveStatusIsCurrent = autosaveStatus?.revision === current.revision;
+    if (savingCurrent || (autosaveStatusIsCurrent && autosaveStatus?.kind === "saving")) {
       this.view.setStatus({ kind: "saving", message: "Saving…" });
+    } else if (this.saveErrors.has(current.documentId)) {
+      this.view.setStatus({ kind: "error", message: this.saveErrors.get(current.documentId)! });
+    } else if (autosaveStatusIsCurrent && autosaveStatus?.kind === "error") {
+      this.view.setStatus({ kind: "error", message: autosaveStatus.message });
     } else if (this.errorMessage !== undefined) {
       this.view.setStatus({ kind: "error", message: this.errorMessage });
     } else if (isDirty(current)) {

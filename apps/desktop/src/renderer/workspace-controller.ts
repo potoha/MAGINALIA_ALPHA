@@ -52,6 +52,8 @@ export interface WorkspaceNavigationControllerOptions {
   readonly decideDirtySwitch: (
     context: DirtySwitchContext
   ) => DirtySwitchDecision | Promise<DirtySwitchDecision>;
+  /** Flush every open session before a workspace replacement. */
+  readonly flushAllDocuments?: () => Promise<boolean>;
 }
 
 const EMPTY_STATE: WorkspaceNavigationState = {
@@ -69,6 +71,7 @@ export class WorkspaceNavigationController {
   private readonly writing: WritingController;
   private readonly view: WorkspaceNavigationView;
   private readonly decideDirtySwitch: WorkspaceNavigationControllerOptions["decideDirtySwitch"];
+  private readonly flushAllDocuments: WorkspaceNavigationControllerOptions["flushAllDocuments"];
   private state: WorkspaceNavigationState = EMPTY_STATE;
   private navigationBusy = false;
   private lastDirtySwitchOutcome: DocumentActivationOutcome = "cancelled";
@@ -78,6 +81,7 @@ export class WorkspaceNavigationController {
     this.writing = options.writing;
     this.view = options.view;
     this.decideDirtySwitch = options.decideDirtySwitch;
+    this.flushAllDocuments = options.flushAllDocuments;
     this.view.setWorkspaceState(this.state);
     this.view.setWorkspaceError(null);
   }
@@ -221,6 +225,24 @@ export class WorkspaceNavigationController {
   }
 
   private async canSwitch(target: WorkspaceSwitchTarget): Promise<boolean> {
+    // Switching a manuscript inside the legacy Document workspace keeps the
+    // existing explicit dirty decision flow. A whole Document replacement is
+    // the lifecycle boundary that must flush every open session first.
+    if (target.kind === "document"
+      && this.flushAllDocuments
+      && this.writing.getDocumentSessions().length > 0) {
+      let flushed = false;
+      try {
+        flushed = await this.flushAllDocuments();
+      } catch {
+        flushed = false;
+      }
+      if (!flushed) {
+        this.lastDirtySwitchOutcome = "failed";
+        this.showError(SWITCH_REQUIRES_CLEAN);
+        return false;
+      }
+    }
     if (!this.writing.hasUnsavedChanges()) return true;
     const current = this.writing.getDocumentState();
     if (!current) return true;

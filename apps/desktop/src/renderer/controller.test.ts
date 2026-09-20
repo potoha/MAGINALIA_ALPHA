@@ -246,6 +246,120 @@ describe("WritingController", () => {
     expect(view.saveEnabled).toBe(false);
   });
 
+  it("routes explicit Save through the autosave coordinator when present", async () => {
+    const save = vi.fn((request: SaveMarkdownRequest) => Promise.resolve({
+      kind: "saved",
+      sessionId: request.sessionId,
+      displayName: "notes.md",
+      text: request.text
+    } as const));
+    const { controller, surface } = makeHarness({ save });
+    await openDefault(controller);
+    surface.edit("manual coordinator save");
+
+    const manualSave = vi.fn(async (documentId: string) => {
+      const current = controller.getDocumentState(documentId);
+      if (current !== null) controller.getSessionStore().confirmSave(documentId, current.currentText);
+      return {
+        kind: "saved",
+        documentId,
+        revision: current?.revision ?? 0
+      } as const;
+    });
+    controller.setAutosaveCoordinator({
+      flushDocument: manualSave,
+      manualSave
+    });
+
+    await controller.save();
+
+    expect(manualSave).toHaveBeenCalledWith("session-1");
+    expect(save).not.toHaveBeenCalled();
+    expect(controller.hasUnsavedChanges()).toBe(false);
+  });
+
+  it("renders autosave status for the active document without leaking inactive errors", async () => {
+    const { controller, surface, view } = makeHarness();
+    await openDefault(controller);
+    controller.applyOpenedDocument(opened("session-2", "second.md", "second"));
+    controller.activateDocument("session-1");
+    surface.edit("first edit");
+
+    let emitStatus: ((change: {
+      documentId: string;
+      status: { documentId: string; revision: number; kind: "scheduled" | "saving" | "saved" | "error"; message: string };
+    }) => void) | undefined;
+    controller.setAutosaveCoordinator({
+      flushDocument: async (documentId) => ({ kind: "clean", documentId, revision: 1 } as const),
+      onStatusChange: (listener) => {
+        emitStatus = listener;
+        return () => { emitStatus = undefined; };
+      }
+    });
+
+    emitStatus?.({
+      documentId: "session-2",
+      status: { documentId: "session-2", revision: 1, kind: "error", message: "second failed" }
+    });
+    expect(view.status).toEqual({ kind: "modified", message: "Modified" });
+
+    expect(controller.activateDocument("session-2")).toBe(true);
+    expect(view.status).toEqual({ kind: "error", message: "second failed" });
+
+    const second = controller.getDocumentState("session-2");
+    emitStatus?.({
+      documentId: "session-2",
+      status: {
+        documentId: "session-2",
+        revision: second?.revision ?? 1,
+        kind: "saving",
+        message: "Saving…"
+      }
+    });
+    expect(view.status).toEqual({ kind: "saving", message: "Saving…" });
+
+    surface.edit("second newer edit");
+    expect(view.status).toEqual({ kind: "modified", message: "Modified" });
+  });
+
+  it("flushes a dirty tab before close without prompting after autosave succeeds", async () => {
+    const { controller, surface } = makeHarness();
+    await openDefault(controller);
+    surface.edit("autosaved");
+    const flush = vi.fn(async (documentId: string) => {
+      const current = controller.getDocumentState(documentId);
+      if (current) controller.getSessionStore().confirmSave(documentId, current.currentText);
+      return { kind: "saved", documentId, revision: current?.revision ?? 0 } as const;
+    });
+    const decide = vi.fn(() => "cancel" as const);
+    controller.setAutosaveCoordinator({ flushDocument: flush });
+    const view = controller.getDocumentViews()[0];
+
+    await expect(controller.closeDocumentView(view.instanceId, decide)).resolves.toBe(true);
+    expect(flush).toHaveBeenCalledWith("session-1");
+    expect(decide).not.toHaveBeenCalled();
+    expect(controller.getDocumentState()).toBeNull();
+  });
+
+  it("keeps a dirty tab open after autosave failure unless the user discards", async () => {
+    const { controller, surface } = makeHarness();
+    await openDefault(controller);
+    surface.edit("still dirty");
+    const flush = vi.fn(async (documentId: string) => ({
+      kind: "error",
+      documentId,
+      revision: controller.getDocumentState(documentId)?.revision ?? 0,
+      message: "disk unavailable"
+    } as const));
+    const decide = vi.fn(() => "cancel" as const);
+    controller.setAutosaveCoordinator({ flushDocument: flush });
+    const view = controller.getDocumentViews()[0];
+
+    await expect(controller.closeDocumentView(view.instanceId, decide)).resolves.toBe(false);
+    expect(controller.getDocumentState()?.currentText).toBe("still dirty");
+    expect(decide).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a newer edit dirty after an in-flight save confirms", async () => {
     const pending = deferred<SaveMarkdownResult>();
     const save = vi.fn(() => pending.promise);

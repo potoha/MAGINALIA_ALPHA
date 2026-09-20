@@ -1,5 +1,6 @@
 import "./style.css";
 import { WritingController, type WritingStatus, type WritingView } from "./controller";
+import { AutosaveCoordinator } from "./autosave-coordinator";
 import { decideDirtySwitch } from "./dirty-decision";
 import {
   LibraryController,
@@ -479,6 +480,20 @@ const controller = new WritingController({
   view,
   confirmReplace: (displayName) => window.confirm(`Open another Markdown file? Unsaved changes to ${displayName} will be replaced.`)
 });
+
+const autosaveCoordinator = new AutosaveCoordinator({ writing: controller });
+controller.setAutosaveCoordinator(autosaveCoordinator);
+
+async function flushAllAutosave(): Promise<boolean> {
+  const results = await autosaveCoordinator.flushAll();
+  return results.every((result) => result.kind === "saved" || result.kind === "clean");
+}
+
+// Main process shutdown uses this subscription as an explicit awaitable
+// handshake. No beforeunload/unload save is attempted.
+const removeAutosaveFlushRequest = window.maginalia.onAutosaveFlushRequest?.(
+  () => flushAllAutosave()
+);
 
 let modController: ModController | undefined;
 
@@ -1452,6 +1467,7 @@ if (legacyWorkspaceMode) {
       api: workspaceApi,
       writing: controller,
       view: workspaceView,
+      flushAllDocuments: flushAllAutosave,
       decideDirtySwitch: workspaceSmokeMode
         ? () => smokeDecisionQueue.shift() ?? "cancel"
         : (context) => decideDirtySwitch(context, (message) => window.confirm(message))
@@ -1478,6 +1494,7 @@ if (legacyWorkspaceMode) {
       // Central tabs keep each DocumentSession alive, so switching files is
       // activation and must not invoke the legacy replacement prompt.
       confirmDocumentSwitch: false,
+      flushAllDocuments: flushAllAutosave,
       decideDirtySwitch: projectLikeSmokeMode
         ? () => smokeDecisionQueue.shift() ?? "cancel"
         : (context) => decideDirtySwitch(context, (message) => window.confirm(message))

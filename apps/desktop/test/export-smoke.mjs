@@ -164,10 +164,14 @@ try {
     );
   }
 
-  const authoringA = await readFile(path.join(projectRoot, "a.md"));
+  const authoringA = await readFile(path.join(projectRoot, "a.md"), "utf8");
   const authoringB = await readFile(path.join(projectRoot, "b.md"));
-  if (!authoringA.equals(Buffer.from(initialA, "utf8"))) {
-    throw new Error("Export smoke changed authoring A bytes.");
+  // The export projection itself never mutates authoring text. The process
+  // exits through the normal before-quit autosave handshake, so the dirty
+  // active-session edit is expected to reach the ordinary source file before
+  // the Electron process exits.
+  if (!authoringA.startsWith(initialA) || !authoringA.includes("Unsaved export-only edit.")) {
+    throw new Error("Export smoke did not retain the autosaved authoring A text.");
   }
   if (!authoringB.equals(Buffer.from(initialB, "utf8"))) {
     throw new Error("Export smoke changed authoring B bytes.");

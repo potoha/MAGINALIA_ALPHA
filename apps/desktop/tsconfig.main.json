@@ -22,6 +22,8 @@
     "src/d5-smoke.ts",
     "src/shelf-smoke.ts",
     "src/preload.ts",
+    "src/autosave-ipc.ts",
+    "src/autosave-shutdown.ts",
     "src/security.ts",
     "src/document-workspace.ts",
     "src/project-metadata.ts",

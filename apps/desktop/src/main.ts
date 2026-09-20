@@ -107,6 +107,13 @@ import {
   GITHUB_DEVICE_VERIFICATION_URI,
   type CloudDiscoveryOperation
 } from "./repository-cloud-ipc";
+import {
+  AUTOSAVE_FLUSH_REQUEST_CHANNEL,
+  AUTOSAVE_FLUSH_RESPONSE_CHANNEL,
+  isAutosaveFlushResponseRequest,
+  type AutosaveFlushResponseResult
+} from "./autosave-ipc";
+import { AutosaveShutdownCoordinator } from "./autosave-shutdown";
 import { discoverAuthenticatedRestoreRepositories } from "./repository-cloud-discover-operation";
 import { RepositoryCloudCoordinator } from "./repository-cloud-coordinator";
 import type { GitHubDeviceVerificationCallback, GitHubDeviceVerificationPrompt } from "./repository-github-auth";
@@ -357,6 +364,12 @@ const INVALID_REQUEST: MarkdownFailure = {
   message: "The Markdown save request was invalid."
 };
 let mainWindow: BrowserWindow | null = null;
+let autosaveQuitSequence = 0;
+type PendingAutosaveQuit = {
+  readonly resolve: (ok: boolean) => void;
+  readonly timer: NodeJS.Timeout;
+};
+const pendingAutosaveQuit = new Map<string, PendingAutosaveQuit>();
 type PendingModCapability = {
   readonly modId: string;
   readonly resolve: (response: ModCapabilityResponse) => void;
@@ -712,6 +725,26 @@ async function handleRespondModCapability(
     : { kind: "error" as const, message: "The Mod capability request is no longer pending." };
 }
 
+function handleAutosaveFlushResponse(
+  event: IpcMainInvokeEvent,
+  value: unknown,
+  ...args: readonly unknown[]
+): AutosaveFlushResponseResult {
+  if (args.length !== 0
+    || !isLiveMainWindowSender(event.sender)
+    || !isAutosaveFlushResponseRequest(value)) {
+    return { kind: "error", message: "The Autosave response was invalid." };
+  }
+  const pending = pendingAutosaveQuit.get(value.requestId);
+  if (pending === undefined) {
+    return { kind: "error", message: "The Autosave request is no longer pending." };
+  }
+  pendingAutosaveQuit.delete(value.requestId);
+  clearTimeout(pending.timer);
+  pending.resolve(value.ok);
+  return { kind: "accepted" };
+}
+
 function registerMarkdownIpc(): void {
   ipcMain.handle(OPEN_MARKDOWN_CHANNEL, handleOpenMarkdown);
   ipcMain.handle(SAVE_MARKDOWN_CHANNEL, handleSaveMarkdown);
@@ -734,6 +767,7 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(OPEN_MODS_FOLDER_CHANNEL, handleOpenModsFolder);
   ipcMain.handle(INVOKE_MOD_COMMAND_CHANNEL, handleInvokeModCommand);
   ipcMain.handle(RESPOND_MOD_CAPABILITY_CHANNEL, handleRespondModCapability);
+  ipcMain.handle(AUTOSAVE_FLUSH_RESPONSE_CHANNEL, handleAutosaveFlushResponse);
   ipcMain.handle(LOAD_WORKSPACE_STATE_CHANNEL, workspaceStateHandlers.loadWorkspaceState);
   ipcMain.handle(SAVE_WORKSPACE_STATE_CHANNEL, workspaceStateHandlers.saveWorkspaceState);
   ipcMain.handle(CREATE_REPOSITORY_CHANNEL, repositoryHandlers.createRepository);
@@ -771,6 +805,7 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(OPEN_MODS_FOLDER_CHANNEL);
   ipcMain.removeHandler(INVOKE_MOD_COMMAND_CHANNEL);
   ipcMain.removeHandler(RESPOND_MOD_CAPABILITY_CHANNEL);
+  ipcMain.removeHandler(AUTOSAVE_FLUSH_RESPONSE_CHANNEL);
   ipcMain.removeHandler(LOAD_WORKSPACE_STATE_CHANNEL);
   ipcMain.removeHandler(SAVE_WORKSPACE_STATE_CHANNEL);
   ipcMain.removeHandler(CREATE_REPOSITORY_CHANNEL);
@@ -1158,6 +1193,45 @@ function openMainWindow(): void {
 
   mainWindow = createMainWindow();
 }
+
+const AUTOSAVE_QUIT_TIMEOUT_MS = 15_000;
+
+function requestRendererAutosaveFlush(window: BrowserWindow): Promise<boolean> {
+  if (window.isDestroyed() || window.webContents.isDestroyed()) return Promise.resolve(true);
+  const requestId = `autosave-quit-${Date.now()}-${autosaveQuitSequence++}`;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingAutosaveQuit.delete(requestId);
+      resolve(false);
+    }, AUTOSAVE_QUIT_TIMEOUT_MS);
+    pendingAutosaveQuit.set(requestId, { resolve, timer });
+    try {
+      window.webContents.send(AUTOSAVE_FLUSH_REQUEST_CHANNEL, { requestId });
+    } catch {
+      clearTimeout(timer);
+      pendingAutosaveQuit.delete(requestId);
+      resolve(false);
+    }
+  });
+}
+
+const autosaveShutdown = new AutosaveShutdownCoordinator({
+  requestFlush: () => {
+    const window = mainWindow;
+    return window === null || window.isDestroyed()
+      ? true
+      : requestRendererAutosaveFlush(window);
+  },
+  quit: () => app.quit(),
+  onFailure: () => {
+    if (mainWindow !== null && !mainWindow.isDestroyed()) mainWindow.focus();
+  }
+});
+
+// Electron's before-quit event is the awaitable main/renderer boundary. The
+// renderer flushes DocumentSession saves here; beforeunload is intentionally
+// not used because its async work is not reliable.
+app.on("before-quit", (event) => autosaveShutdown.beforeQuit(event));
 
 void app.whenReady().then(() => {
   registerMarkdownIpc();

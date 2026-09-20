@@ -46,6 +46,8 @@ export interface ProjectNavigationControllerOptions {
   readonly decideDirtySwitch: (context: DirtySwitchContext) => DirtySwitchDecision | Promise<DirtySwitchDecision>;
   /** Tabs keep dirty sessions alive; legacy workspace callers may opt in to the old guard. */
   readonly confirmDocumentSwitch?: boolean;
+  /** Flush all open sessions before replacing the owning Project. */
+  readonly flushAllDocuments?: () => Promise<boolean>;
 }
 
 const EMPTY_STATE: ProjectNavigationState = { project: null, files: [], activeFileId: null };
@@ -80,6 +82,7 @@ export class ProjectNavigationController {
   private readonly view: ProjectNavigationView;
   private readonly decideDirtySwitch: ProjectNavigationControllerOptions["decideDirtySwitch"];
   private readonly confirmDocumentSwitch: boolean;
+  private readonly flushAllDocuments: ProjectNavigationControllerOptions["flushAllDocuments"];
   private state: ProjectNavigationState = EMPTY_STATE;
   private busy = false;
   private readonly openedFileIds = new Set<string>();
@@ -91,6 +94,7 @@ export class ProjectNavigationController {
     this.view = options.view;
     this.decideDirtySwitch = options.decideDirtySwitch;
     this.confirmDocumentSwitch = options.confirmDocumentSwitch ?? true;
+    this.flushAllDocuments = options.flushAllDocuments;
     this.view.setProjectState(this.state);
     this.view.setProjectError(null);
   }
@@ -128,6 +132,7 @@ export class ProjectNavigationController {
 
   public restoreProject(): Promise<void> {
     return this.run(async () => {
+      if (!(await this.canSwitch({ kind: "document" }))) return;
       let result: ProjectRestoreResult;
       try {
         result = await this.api.restoreProject();
@@ -310,6 +315,23 @@ export class ProjectNavigationController {
   }
 
   private async canSwitch(target: WorkspaceSwitchTarget): Promise<boolean> {
+    // Opening another file inside the current Project is a tab activation and
+    // must retain dirty sessions. A Project/Document replacement, however,
+    // clears all sessions below, so flush inactive tabs before proceeding.
+    if (target.kind === "document"
+      && this.flushAllDocuments
+      && this.writing.getDocumentSessions().length > 0) {
+      let flushed = false;
+      try {
+        flushed = await this.flushAllDocuments();
+      } catch {
+        flushed = false;
+      }
+      if (!flushed) {
+        this.showError(SWITCH_REQUIRES_CLEAN);
+        return false;
+      }
+    }
     if (!this.confirmDocumentSwitch && target.kind === "manuscript") return true;
     if (!this.writing.hasUnsavedChanges()) return true;
     const current = this.writing.getDocumentState();

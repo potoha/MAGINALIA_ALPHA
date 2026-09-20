@@ -148,6 +148,7 @@ function makeHarness(options: {
   openManuscript?: (request: OpenManuscriptRequest) => Promise<OpenManuscriptResult>;
   saveMarkdown?: (request: SaveMarkdownRequest) => Promise<SaveMarkdownResult>;
   decideDirtySwitch?: (context: DirtySwitchContext) => "save" | "discard" | "cancel" | Promise<"save" | "discard" | "cancel">;
+  flushAllDocuments?: () => Promise<boolean>;
 } = {}) {
   const surface = new FakeSurface();
   const writingView = new FakeWritingView();
@@ -176,6 +177,7 @@ function makeHarness(options: {
     api: api as WorkspaceNavigationApi & typeof api,
     writing,
     view: workspaceView,
+    flushAllDocuments: options.flushAllDocuments,
     decideDirtySwitch: options.decideDirtySwitch ?? (() => "cancel")
   });
   return { api, navigation, surface, writing, writingView, workspaceView };
@@ -253,6 +255,20 @@ describe("WorkspaceNavigationController", () => {
     });
     expect(harness.workspaceView.state.activeManuscriptId).toBe("manuscript-2");
     expect(currentState(harness.writing).currentText).toBe("manuscript-2");
+  });
+
+  it("blocks Document replacement when lifecycle flush cannot save all sessions", async () => {
+    const flushAll = vi.fn(async () => false);
+    const harness = makeHarness({ flushAllDocuments: flushAll });
+    await openDefault(harness.navigation);
+    harness.surface.edit("dirty manuscript");
+
+    await harness.navigation.openDocument();
+
+    expect(flushAll).toHaveBeenCalledTimes(1);
+    expect(harness.api.openManuscript).toHaveBeenCalledTimes(1);
+    expect(harness.workspaceView.state.activeManuscriptId).toBe("manuscript-1");
+    expect(harness.workspaceView.error).toBe("Save or discard the current manuscript before switching.");
   });
 
   it("saves dirty work before a Document switch", async () => {

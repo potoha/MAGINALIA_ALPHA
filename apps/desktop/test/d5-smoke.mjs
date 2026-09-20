@@ -88,7 +88,7 @@ try {
     throw new Error(`Electron D.5 smoke failed (exit ${first.code ?? first.signal}).\n${first.stdout}${first.stderr}`);
   }
   const firstText = await readFile(path.join(projectRoot, "first.md"), "utf8");
-  if (!firstText.includes("D5 tab edit") || !firstText.includes("D5 close cancel")) {
+  if (!firstText.includes("D5 tab edit") || !firstText.includes("D5 close autosave") || !firstText.includes("D5 shutdown autosave")) {
     throw new Error("D.5 smoke did not persist the active tab edits.");
   }
   if (await exists(path.join(userDataRoot, "mods", modId))) {

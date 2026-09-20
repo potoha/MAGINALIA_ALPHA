@@ -65,6 +65,21 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function waitForFileContains(filePath: string, expected: string, description: string): Promise<void> {
+  const deadline = Date.now() + STATE_TIMEOUT_MS;
+  let last = "";
+  while (Date.now() < deadline) {
+    try {
+      last = await readFile(filePath, "utf8");
+      if (last.includes(expected)) return;
+    } catch {
+      // The Project file may not be observable until the first save attempt.
+    }
+    await delay(POLL_INTERVAL_MS);
+  }
+  throw new Error(`D.5 smoke timed out waiting for ${description}. Last file text: ${JSON.stringify(last)}`);
+}
+
 async function readState(window: BrowserWindow): Promise<D5RendererState | null> {
   try {
     return await window.webContents.executeJavaScript(READ_STATE_SCRIPT, true) as D5RendererState | null;
@@ -218,6 +233,13 @@ export async function runD5Smoke(
 
   await clickTab(window, "second.md");
   await waitForState(window, (state) => state.activeFile === "second.md" && state.text.includes("Second"), "switch to second tab");
+  // An inactive document still owns an independent debounce timer. Editing A
+  // and activating B immediately must not prevent A's local autosave.
+  await clickTab(window, "first.md");
+  await editActive(window, "\nD5 inactive autosave");
+  await clickTab(window, "second.md");
+  await waitForState(window, (state) => state.activeFile === "second.md" && state.status === "saved", "switch away from inactive dirty tab");
+  await waitForFileContains(path.join(fixtureRoot, "first.md"), "D5 inactive autosave", "inactive tab autosave");
   await clickTab(window, "first.md");
   await waitForState(
     window,
@@ -235,30 +257,46 @@ export async function runD5Smoke(
   );
   assert(duplicate.tabs.filter((tab) => tab.name.startsWith("first.md")).length === 1, "duplicate first tab was created");
 
-  await clickButton(window, "#save-markdown", "save first tab");
+  // The first tab was persisted by its inactive-tab debounce above. Verify
+  // the normal Save state is already clean instead of forcing a disabled
+  // button click after Autosave has consumed the dirty revision.
   await waitForState(
     window,
     (state) => state.activeFile === "first.md"
       && state.status === "saved"
       && !state.tabs.some((tab) => tab.name.startsWith("first.md") && tab.dirty),
-    "first tab save"
+    "first tab autosave"
   );
   assert((await readFile(path.join(fixtureRoot, "first.md"), "utf8")).includes("D5 tab edit"), "first tab edit was not saved");
 
-  // Exercise the revised close policy without allowing a modal dialog to
-  // block the smoke: a dirty close with a negative decision must keep the tab.
-  await editActive(window, "\nD5 close cancel");
+  // Autosave now gets the first chance to flush a dirty tab. A successful
+  // flush closes the tab without prompting; the reopened tab below verifies
+  // that the latest text survived that lifecycle boundary.
+  await editActive(window, "\nD5 close autosave");
   await waitForState(window, (state) => state.status === "modified" && state.tabs.length === 2, "dirty close fixture");
   await setConfirm(window, false);
-  await clickButton(window, "#document-tabs .document-tab:first-child .document-tab-close", "cancel dirty tab close");
+  await clickButton(window, "#document-tabs .document-tab:first-child .document-tab-close", "autosaved dirty tab close");
   await waitForState(
     window,
-    (state) => state.activeFile === "first.md" && state.tabs.length === 2 && state.status === "modified",
-    "cancelled dirty tab close"
+    (state) => state.activeFile === "second.md" && state.tabs.length === 1 && state.status === "saved",
+    "autosaved dirty tab close"
   );
   await restoreConfirm(window);
-  await clickButton(window, "#save-markdown", "save after close cancellation");
-  await waitForState(window, (state) => state.status === "saved" && state.tabs.length === 2, "post-close-cancel save");
+  await clickFile(window, "first.md");
+  await waitForState(
+    window,
+    (state) => state.activeFile === "first.md"
+      && state.tabs.length === 2
+      && state.status === "saved"
+      && state.text.includes("D5 close autosave"),
+    "reopen after autosaved close"
+  );
+
+  // Complete the smoke with a dirty edit immediately before the main-process
+  // quit path. The Electron before-quit handshake must flush it even though
+  // the one-second debounce has not elapsed.
+  await editActive(window, "\nD5 shutdown autosave");
+  await waitForState(window, (state) => state.activeFile === "first.md" && state.status === "modified", "shutdown autosave fixture");
 
   const contribution = await waitForModContribution(window);
   assert(contribution.hasShelf && contribution.referencesStatus !== "error", "Shelf or References disappeared with the Mod");

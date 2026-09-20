@@ -77,7 +77,8 @@ describe("preload boundary", () => {
       "useRepositoryShelf",
       "discoverPrivateWorks",
       "cancelPrivateWorksDiscovery",
-      "onDevicePrompt"
+      "onDevicePrompt",
+      "onAutosaveFlushRequest"
     ]);
     await api.openMarkdown();
     await api.saveMarkdown({ sessionId: "opaque-session", text: "# Draft\r\n" });

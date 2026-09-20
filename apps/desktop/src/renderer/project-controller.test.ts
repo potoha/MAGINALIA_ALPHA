@@ -49,7 +49,8 @@ function opened(file: ProjectFileSummary): OpenMarkdownResult {
 function harness(
   decision: "save" | "discard" | "cancel",
   openFile: (file: ProjectFileSummary) => ProjectFileOpenResult = (file) => opened(file),
-  tabs = false
+  tabs = false,
+  flushAllDocuments?: () => Promise<boolean>
 ) {
   const surface = new Surface();
   const writingView = new WritingViewStub();
@@ -80,7 +81,8 @@ function harness(
     writing,
     view,
     decideDirtySwitch: () => decision,
-    confirmDocumentSwitch: !tabs
+    confirmDocumentSwitch: !tabs,
+    flushAllDocuments
   });
   return { navigation, openProjectFile, saveMarkdown, surface, writing, view };
 }
@@ -135,5 +137,19 @@ describe("ProjectNavigationController", () => {
     expect(test.surface.text).toBe("first edited");
     expect(test.writing.getDocumentSessions()).toHaveLength(2);
     expect(test.view.state.activeFileId).toBe(files[0].fileId);
+  });
+
+  it("flushes every session before replacing the Project", async () => {
+    const flushAll = vi.fn(async () => false);
+    const test = harness("cancel", (file) => opened(file), true, flushAll);
+    await test.navigation.openProject();
+    test.surface.edit("project dirty");
+
+    await test.navigation.openProject();
+
+    expect(flushAll).toHaveBeenCalledTimes(1);
+    expect(test.openProjectFile).toHaveBeenCalledTimes(1);
+    expect(test.view.state.project).toEqual(project);
+    expect(test.view.error).toBe("Save or discard the current manuscript before switching.");
   });
 });
