@@ -80,6 +80,12 @@ export interface RepositoryFilesystemCaptureOptions {
   readonly modeHints?: ReadonlyMap<string, RepositoryFileMode>;
   readonly isIgnored?: (pathValue: string) => boolean | Promise<boolean>;
   /**
+   * Main-process validated repository-owned subtrees which must not be
+   * traversed or captured. This is intentionally a relative directory list,
+   * never a renderer-controlled filesystem ignore mechanism.
+   */
+  readonly excludedDirectories?: ReadonlySet<string>;
+  /**
    * This is an internal initialization-only escape hatch. It only controls
    * whether the root publication marker is omitted from a capture; it never
    * removes the marker or permits arbitrary paths.
@@ -468,6 +474,29 @@ function trackedDescendant(
   return false;
 }
 
+function validatedExcludedDirectories(
+  value: ReadonlySet<string> | undefined,
+  trackedPaths: ReadonlySet<string>,
+  limits: RepositoryFilesystemLimits,
+): ReadonlySet<string> {
+  const exclusions = new Set<string>();
+  for (const pathValue of value ?? []) {
+    validateRepositoryPath(pathValue);
+    if (Buffer.byteLength(pathValue, "utf8") > limits.maxPathBytes) {
+      fail("limits-exceeded", LIMIT_MESSAGE);
+    }
+    for (const trackedPath of trackedPaths) {
+      if (trackedPath === pathValue || trackedPath.startsWith(`${pathValue}/`)) {
+        // Never silently drop content which an earlier parent snapshot already
+        // tracked. The caller must resolve this ownership conflict explicitly.
+        fail("unsafe-path", UNSAFE_PATH_MESSAGE);
+      }
+    }
+    exclusions.add(pathValue);
+  }
+  return exclusions;
+}
+
 function modeFor(
   stat: Stats,
   pathValue: string,
@@ -492,6 +521,7 @@ async function captureWorkingTreeInternal(
       fail("limits-exceeded", LIMIT_MESSAGE);
     }
   }
+  const excludedDirectories = validatedExcludedDirectories(options?.excludedDirectories, trackedPaths, limits);
 
   const files: CapturedRepositoryFile[] = [];
   const seen = new Map<string, string>();
@@ -558,6 +588,12 @@ async function captureWorkingTreeInternal(
       if (stat.isSymbolicLink()) fail("unsafe-path", UNSAFE_PATH_MESSAGE);
 
       if (stat.isDirectory()) {
+        if (excludedDirectories.has(pathValue)) {
+          // The caller supplied this only after validating the direct child
+          // repository identity and ownership. Stop before readdir so a
+          // nested .git or any authoring data cannot cross into the parent.
+          continue;
+        }
         if (
           SKIPPED_DIRECTORY_NAMES.has(entry.name.toLowerCase())
           && !trackedDescendant(trackedPaths, pathValue)

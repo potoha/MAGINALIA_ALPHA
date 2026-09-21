@@ -15,7 +15,10 @@ export const COMMAND_CONTEXT_KEYS = [
   "editor.hasQuoteRef",
   "renderer.orientation",
   "document.type",
-  "view.id"
+  "view.id",
+  // Portable parent navigation state; still a scalar, never a path or a
+  // Workdesk service object. It scopes Workdesk-only creation commands.
+  "workdesk.active"
 ] as const;
 
 export type CommandContextKey = typeof COMMAND_CONTEXT_KEYS[number];

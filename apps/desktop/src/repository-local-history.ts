@@ -95,6 +95,8 @@ export { LocalRepositoryError as RepositoryLocalHistoryError };
 
 export interface LocalRepositoryOptions {
   readonly limits?: Partial<LocalHistoryLimits>;
+  /** Main-process validated child repository zones excluded from parent capture. */
+  readonly excludedDirectories?: ReadonlySet<string>;
 }
 
 export interface LocalHistorySnapshot {
@@ -763,6 +765,7 @@ async function inspectInternal(
     trackedPaths,
     modeHints,
     isIgnored,
+    excludedDirectories: options?.excludedDirectories,
     allowIncompleteMarker,
   };
   await captureWorkingTree(rootReal, captureOptions);
@@ -2870,6 +2873,7 @@ export async function createHistorySnapshot(
           trackedPaths,
           modeHints,
           isIgnored,
+          excludedDirectories: options?.excludedDirectories,
         };
         const captured = await captureWorkingTree(rootReal, captureOptions);
         const prepared = await prepareSnapshotFiles(rootReal, captured.files);

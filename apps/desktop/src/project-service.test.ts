@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { DocumentWorkspaceService } from "./document-workspace";
 import { MarkdownFileService } from "./markdown-file-service";
 import { parseProjectMetadata } from "./project-metadata";
-import { MemoryProjectPathStore, ProjectService } from "./project-service";
+import { MemoryProjectPathStore, ProjectService, withCopiedDocumentType } from "./project-service";
 
 async function withTempDirectory<T>(run: (directory: string) => Promise<T>): Promise<T> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "maginalia-project-"));
@@ -94,6 +94,66 @@ describe("Project service", () => {
       const stats = await lstat(path.join(parent, "Coffee Sapling"));
       expect(stats.isDirectory()).toBe(true);
     });
+  });
+
+  it("copies a Workdesk source as an independent, collision-safe Project document", async () => {
+    await withTempDirectory(async (directory) => {
+      const sourceRoot = path.join(directory, "workdesk");
+      const destinationRoot = path.join(directory, "project");
+      await mkdir(sourceRoot);
+      await mkdir(destinationRoot);
+      const sourceText = "---\r\ntype: memo\r\ntitle: Source title\r\n---\r\n\r\n# Exact source\r\n\r\n[[note]]\r\n";
+      await writeFile(path.join(sourceRoot, "memo.md"), sourceText, "utf8");
+
+      const service = new ProjectService(new DocumentWorkspaceService(), new MarkdownFileService(), new MemoryProjectPathStore());
+      const sourceOwner = {};
+      const destinationOwner = {};
+      const sourceProject = opened(await service.openForOwner(sourceOwner, sourceRoot));
+      const destinationProject = opened(await service.openForOwner(destinationOwner, destinationRoot));
+      const sourceFile = sourceProject.files.find((file) => file.displayName === "memo.md");
+      expect(sourceFile).toBeDefined();
+      const source = await service.readCopySourceForOwner(sourceOwner, sourceProject.project.projectId, sourceFile!.fileId);
+      expect("kind" in source).toBe(false);
+      if ("kind" in source) throw new Error("Expected an owner-bound copy source");
+
+      const first = await service.copySourceToProjectForOwner(
+        destinationOwner,
+        destinationProject.project.projectId,
+        source,
+        "memo"
+      );
+      expect(first).toMatchObject({ kind: "created", file: { displayName: "memo.md", documentType: "memo" } });
+      expect(await readFile(path.join(destinationRoot, "memo.md"), "utf8")).toBe(sourceText);
+      expect(await readFile(path.join(sourceRoot, "memo.md"), "utf8")).toBe(sourceText);
+
+      const second = await service.copySourceToProjectForOwner(
+        destinationOwner,
+        destinationProject.project.projectId,
+        source,
+        "draft"
+      );
+      expect(second).toMatchObject({ kind: "created", file: { displayName: "memo-001.md", documentType: "draft" } });
+      const changedType = await readFile(path.join(destinationRoot, "memo-001.md"), "utf8");
+      expect(parseProjectMetadata(changedType, "memo-001.md")).toMatchObject({ documentType: "draft", title: "Source title" });
+      expect(changedType).toContain("# Exact source\r\n\r\n[[note]]\r\n");
+      expect(await readFile(path.join(sourceRoot, "memo.md"), "utf8")).toBe(sourceText);
+
+      await writeFile(path.join(destinationRoot, "memo-002.md"), "already here", "utf8");
+      const third = await service.copySourceToProjectForOwner(
+        destinationOwner,
+        destinationProject.project.projectId,
+        source,
+        "other"
+      );
+      expect(third).toMatchObject({ kind: "created", file: { displayName: "memo-003.md", documentType: "other" } });
+      expect(await readFile(path.join(destinationRoot, "memo-002.md"), "utf8")).toBe("already here");
+    });
+  });
+
+  it("changes only YAML type for an explicit cross-type copy and preserves an untyped body", () => {
+    const typed = "---\ntitle: Keep\ntype: memo\ncreated: 2026-01-01\n---\n\nBody\n";
+    expect(withCopiedDocumentType(typed, "body")).toBe("---\ntitle: Keep\ntype: body\ncreated: 2026-01-01\n---\n\nBody\n");
+    expect(withCopiedDocumentType("Plain body\n", "draft")).toBe("---\ntype: draft\n---\n\nPlain body\n");
   });
 
   it("searches only the current Project Markdown with opaque ids and literal Unicode matching", async () => {

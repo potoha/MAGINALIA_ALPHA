@@ -9,7 +9,7 @@ import type {
   ProjectOpenResult,
   ProjectRestoreResult
 } from "../project-ipc";
-import type { ProjectFileSummary, ProjectOpened, ProjectSummary } from "../project-service";
+import type { ProjectFileCreated, ProjectFileSummary, ProjectOpened, ProjectSummary } from "../project-service";
 import type { DocumentWorkspaceOpened } from "../document-workspace";
 import type { WritingController } from "./controller";
 import type {
@@ -178,6 +178,25 @@ export class ProjectNavigationController {
     });
   }
 
+  /**
+   * Bounded parent-navigation handoff used by Workdesk loose documents.  The
+   * caller has already received an IPC result whose root was validated in the
+   * main process; it never supplies a path to this controller.
+   */
+  public activateOpenedProject(result: ProjectOpened): Promise<boolean> {
+    if (this.busy) return Promise.resolve(false);
+    this.busy = true;
+    return (async () => {
+      if (!(await this.canSwitch({ kind: "document" }))) return false;
+      return this.applyProject(result);
+    })().catch(() => {
+      this.showError(OPEN_FAILED);
+      return false;
+    }).finally(() => {
+      this.busy = false;
+    });
+  }
+
   public createProject(title: string): Promise<void> {
     return this.run(async () => {
       if (!(await this.canSwitch({ kind: "document" }))) return;
@@ -216,6 +235,19 @@ export class ProjectNavigationController {
         this.showError(result.message);
         return;
       }
+      const previousActive = this.state.activeFileId;
+      this.replaceState({
+        project: result.project,
+        files: result.files,
+        activeFileId: result.files.some((file) => file.fileId === previousActive) ? previousActive : null
+      });
+      await this.openFileNow(result.file.fileId);
+    });
+  }
+
+  /** Apply a main-process file creation result without replacing open tabs. */
+  public applyCreatedFile(result: ProjectFileCreated): Promise<void> {
+    return this.run(async () => {
       const previousActive = this.state.activeFileId;
       this.replaceState({
         project: result.project,

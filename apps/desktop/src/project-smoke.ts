@@ -149,7 +149,9 @@ async function exerciseProjectMenuKeyboard(window: BrowserWindow): Promise<void>
     const keydown = (element, key) => element.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
     const newItems = items(newMenu);
     const overflowItems = items(overflowMenu);
-    if (newItems.length !== 4 || overflowItems.length !== 2) return fail("menu-items");
+    // H adds Workdesk create/open beside the established Project actions;
+    // both menus remain keyboard-addressable through the same menu surface.
+    if (newItems.length !== 4 || overflowItems.length !== 4) return fail("menu-items");
 
     plus.focus();
     keydown(plus, "ArrowDown");

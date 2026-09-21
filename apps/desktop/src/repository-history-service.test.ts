@@ -15,6 +15,7 @@ import {
   type LocalRepositoryResult,
 } from "./repository-service.js";
 import * as localHistory from "./repository-local-history.js";
+import { FileWorkdeskPathStore, WorkdeskService } from "./workdesk-service.js";
 
 const roots: string[] = [];
 const IDS: Record<RepositoryKind, string> = {
@@ -69,6 +70,63 @@ async function makeRepository(
 }
 
 describe("owner-bound History service", () => {
+  test("excludes one registered direct Workdesk Project from every parent History capture", async () => {
+    const parent = await fs.mkdtemp(join(tmpdir(), "maginalia-workdesk-history-"));
+    roots.push(parent);
+    const workdeskService = new WorkdeskService(new FileWorkdeskPathStore(join(parent, "app-local-workdesk-state.json")));
+    const service = new LocalRepositoryService({
+      workdeskHistoryExclusionResolver: (root, identity) => workdeskService.historyExcludedChildDirectories(root, identity),
+    });
+    const workdeskOwner = {};
+    const workdesk = opened(await service.createForOwner(workdeskOwner, parent, "workbench", "Desk"));
+    const resolvedDesk = await service.resolveForOwner(workdeskOwner, workdesk.repository.repositoryId);
+    expect(resolvedDesk.kind).toBe("resolved");
+    if (resolvedDesk.kind !== "resolved") throw new Error("Expected Workdesk root");
+    const desk = await workdeskService.open(resolvedDesk.canonicalRoot);
+
+    const projectsRoot = join(desk.canonicalRoot, "projects");
+    await fs.mkdir(projectsRoot);
+    const childOwner = {};
+    const child = opened(await service.createForOwner(childOwner, projectsRoot, "project", "Child"));
+    const resolvedChild = await service.resolveForOwner(childOwner, child.repository.repositoryId);
+    expect(resolvedChild.kind).toBe("resolved");
+    if (resolvedChild.kind !== "resolved") throw new Error("Expected child Project root");
+    const childBoundary = await workdeskService.validateDirectChildProject(desk, resolvedChild.canonicalRoot);
+    await workdeskService.registerPortableProject(desk, childBoundary.projectIdentity);
+    await workdeskService.registerProjectPath(desk, childBoundary);
+
+    await fs.writeFile(join(desk.canonicalRoot, "memo.md"), "parent v1\n", "utf8");
+    const exclusions = await workdeskService.historyExcludedChildDirectories(desk.canonicalRoot, desk.identity);
+    const captured = await import("./repository-filesystem.js").then(({ captureWorkingTree }) => captureWorkingTree(desk.canonicalRoot, { excludedDirectories: exclusions }));
+    expect(captured.files.map((file) => file.path)).not.toContain(`projects/${childBoundary.canonicalRoot.split(/[\\/]/u).pop()}/manuscript.md`);
+    expect(captured.files.some((file) => file.path === ".git" || file.path.includes("/.git/"))).toBe(false);
+    const firstSnapshot = await service.createHistoryForOwner(workdeskOwner, workdesk.repository.repositoryId);
+    if (firstSnapshot.kind === "error") throw new Error(`${firstSnapshot.code}: ${firstSnapshot.message}`);
+    expect(firstSnapshot.created).toBe(true);
+
+    await fs.writeFile(join(childBoundary.canonicalRoot, "manuscript.md"), "child only change\n", "utf8");
+    expect(snapshot(await service.createHistoryForOwner(workdeskOwner, workdesk.repository.repositoryId)).created).toBe(false);
+  });
+
+  test("fails closed when a nested Workdesk Project is not registered consistently", async () => {
+    const parent = await fs.mkdtemp(join(tmpdir(), "maginalia-workdesk-history-unsafe-"));
+    roots.push(parent);
+    const workdeskService = new WorkdeskService(new FileWorkdeskPathStore(join(parent, "app-local-workdesk-state.json")));
+    const service = new LocalRepositoryService({
+      workdeskHistoryExclusionResolver: (root, identity) => workdeskService.historyExcludedChildDirectories(root, identity),
+    });
+    const owner = {};
+    const deskOpened = opened(await service.createForOwner(owner, parent, "workbench", "Desk"));
+    const deskResolved = await service.resolveForOwner(owner, deskOpened.repository.repositoryId);
+    expect(deskResolved.kind).toBe("resolved");
+    if (deskResolved.kind !== "resolved") throw new Error("Expected Workdesk root");
+    await fs.mkdir(join(deskResolved.canonicalRoot, "projects"));
+    const child = opened(await service.createForOwner({}, join(deskResolved.canonicalRoot, "projects"), "project", "Unregistered"));
+    expect(child.repository.kind).toBe("project");
+
+    await expect(service.createHistoryForOwner(owner, deskOpened.repository.repositoryId)).resolves.toMatchObject({ kind: "error" });
+  });
+
   test("creates changed and unchanged snapshots and lists newest-first without exposing Git data", async () => {
     const owner = {};
     const service = new LocalRepositoryService({

@@ -39,6 +39,7 @@
     "src/mod-bootstrap.ts",
     "src/workspace-state-ipc.ts",
     "src/workspace-state-service.ts",
+    "src/workdesk-service.ts",
     "src/reviewer-resolution.ts",
     "src/repository-filesystem.ts",
     "src/repository-local-history.ts",

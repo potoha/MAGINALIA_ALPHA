@@ -25,6 +25,18 @@ import {
   createProjectHandlers
 } from "./project-ipc";
 import { FileProjectPathStore, ProjectService } from "./project-service";
+import { FileWorkdeskPathStore, WorkdeskService } from "./workdesk-service";
+import {
+  COPY_WORKDESK_FILE_TO_PROJECT_CHANNEL,
+  CREATE_WORKDESK_CHANNEL,
+  CREATE_WORKDESK_FILE_CHANNEL,
+  CREATE_WORKDESK_PROJECT_CHANNEL,
+  OPEN_WORKDESK_CHANNEL,
+  OPEN_WORKDESK_PROJECT_CHANNEL,
+  REGISTER_WORKDESK_PROJECT_CHANNEL,
+  RESTORE_WORKDESK_CHANNEL,
+  createWorkdeskHandlers
+} from "./workdesk-ipc";
 import {
   SEARCH_PROJECT_MARKDOWN_CHANNEL,
   createProjectSearchHandlers
@@ -96,6 +108,7 @@ import {
   parseD5SmokeMode,
   parseExportSmokeMode,
   parseGSmokeMode,
+  parseHSmokeMode,
   parseProjectSmokeMode,
   parseRepositorySmokeMode,
   parseShelfSmokeMode,
@@ -111,6 +124,7 @@ import { runWritingSmoke } from "./writing-smoke";
 import { runD5Smoke, runD5RestoreSmoke } from "./d5-smoke";
 import { runExportSmoke } from "./export-smoke";
 import { runGSmoke } from "./g-smoke";
+import { runHSmoke } from "./h-smoke";
 import {
   LOAD_WORKSPACE_STATE_CHANNEL,
   SAVE_WORKSPACE_STATE_CHANNEL,
@@ -154,6 +168,7 @@ const shelfSmoke = parseShelfSmokeMode(process.argv);
 const d5Smoke = parseD5SmokeMode(process.argv);
 const exportSmoke = parseExportSmokeMode(process.argv);
 const gSmoke = parseGSmokeMode(process.argv);
+const hSmoke = parseHSmokeMode(process.argv);
 const smokeMode = quickSmokeMode
   || writingSmoke.requested
   || workspaceSmoke.requested
@@ -163,7 +178,8 @@ const smokeMode = quickSmokeMode
   || shelfSmoke.requested
   || d5Smoke.requested
   || exportSmoke.requested
-  || gSmoke.requested;
+  || gSmoke.requested
+  || hSmoke.requested;
 const markdownFileService = new MarkdownFileService();
 const workspaceStateStore = new FileWorkspaceStateStore(path.join(app.getPath("userData"), "workspace-state.json"));
 const workspaceStateHandlers = createWorkspaceStateHandlers({
@@ -178,7 +194,14 @@ const projectService = new ProjectService(
 );
 const projectAssetService = new ProjectAssetService(documentWorkspaceService);
 const libraryService = new LibraryService();
-const repositoryService = new LocalRepositoryService();
+const workdeskService = new WorkdeskService(
+  new FileWorkdeskPathStore(path.join(app.getPath("userData"), "workdesk-paths.json"))
+);
+const repositoryService = new LocalRepositoryService({
+  // Repository History asks only the main-process Workdesk coordinator for
+  // validated direct-child boundaries; renderer paths never become ignores.
+  workdeskHistoryExclusionResolver: (root, identity) => workdeskService.historyExcludedChildDirectories(root, identity),
+});
 let quotationResolveCount = 0;
 
 const REPOSITORY_SMOKE_BOOK_ID = "isbn:9781234567890";
@@ -284,6 +307,27 @@ const projectHandlers = createProjectHandlers({
     request.title,
     request.documentType
   )
+});
+const workdeskHandlers = createWorkdeskHandlers({
+  pickWorkdeskFolder: () => hSmoke.requested
+    ? Promise.resolve({ canceled: false, filePaths: hSmoke.rootPath ? [hSmoke.rootPath] : [] })
+    : dialog.showOpenDialog({
+    title: "Open Workdesk",
+    properties: ["openDirectory"]
+  }),
+  pickWorkdeskParent: () => hSmoke.requested && !hSmoke.restore
+    ? Promise.resolve({ canceled: false, filePaths: hSmoke.rootPath ? [hSmoke.rootPath] : [] })
+    : dialog.showOpenDialog({
+    title: "Choose a folder for the new Workdesk",
+    properties: ["openDirectory"]
+  }),
+  pickExistingProjectFolder: () => dialog.showOpenDialog({
+    title: "Register existing Project",
+    properties: ["openDirectory"]
+  }),
+  service: workdeskService,
+  repositories: repositoryService,
+  projects: projectService
 });
 const projectLinkHandlers = createProjectLinkHandlers({
   resolveInternalLink: (owner, projectId, target) => projectService.resolveInternalLinkForOwner(owner, projectId, target),
@@ -480,6 +524,7 @@ let shelfSmokeFinished = false;
 let d5SmokeFinished = false;
 let exportSmokeFinished = false;
 let gSmokeFinished = false;
+let hSmokeFinished = false;
 
 const CLOUD_USER_CODE_PATTERN = /^[A-Za-z0-9-]+$/u;
 const MAX_CLOUD_USER_CODE_LENGTH = 64;
@@ -699,6 +744,21 @@ function completeGSmoke(): void {
   app.quit();
 }
 
+function failHSmoke(error: unknown): void {
+  if (hSmokeFinished) return;
+  hSmokeFinished = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`MAGINALIA_ELECTRON_H_SMOKE_FAILED ${message}`);
+  app.exit(1);
+}
+
+function completeHSmoke(): void {
+  if (hSmokeFinished) return;
+  hSmokeFinished = true;
+  console.log("MAGINALIA_ELECTRON_H_SMOKE_OK");
+  app.quit();
+}
+
 async function handleOpenMarkdown(event: IpcMainInvokeEvent): Promise<OpenMarkdownResult> {
   if (writingSmoke.requested) {
     if (!writingSmoke.filePath) {
@@ -811,6 +871,20 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(RESTORE_PROJECT_CHANNEL, projectHandlers.restoreProject);
   ipcMain.handle(OPEN_PROJECT_FILE_CHANNEL, projectHandlers.openProjectFile);
   ipcMain.handle(CREATE_PROJECT_FILE_CHANNEL, projectHandlers.createProjectFile);
+  // Workdesk responses are explicit data-transfer objects. Cloning here also
+  // makes the main/preload boundary reject any accidental service object
+  // before Electron attempts to serialize it for a renderer.
+  const workdeskIpc = <T>(handler: (event: Electron.IpcMainInvokeEvent, ...args: readonly unknown[]) => Promise<T>) =>
+    async (event: Electron.IpcMainInvokeEvent, ...args: readonly unknown[]): Promise<T> =>
+      structuredClone(await handler(event, ...args));
+  ipcMain.handle(OPEN_WORKDESK_CHANNEL, workdeskIpc(workdeskHandlers.openWorkdesk));
+  ipcMain.handle(CREATE_WORKDESK_CHANNEL, workdeskIpc(workdeskHandlers.createWorkdesk));
+  ipcMain.handle(RESTORE_WORKDESK_CHANNEL, workdeskIpc(workdeskHandlers.restoreWorkdesk));
+  ipcMain.handle(CREATE_WORKDESK_FILE_CHANNEL, workdeskIpc(workdeskHandlers.createWorkdeskFile));
+  ipcMain.handle(CREATE_WORKDESK_PROJECT_CHANNEL, workdeskIpc(workdeskHandlers.createWorkdeskProject));
+  ipcMain.handle(REGISTER_WORKDESK_PROJECT_CHANNEL, workdeskIpc(workdeskHandlers.registerWorkdeskProject));
+  ipcMain.handle(OPEN_WORKDESK_PROJECT_CHANNEL, workdeskIpc(workdeskHandlers.openWorkdeskProject));
+  ipcMain.handle(COPY_WORKDESK_FILE_TO_PROJECT_CHANNEL, workdeskIpc(workdeskHandlers.copyWorkdeskFileToProject));
   ipcMain.handle(RESOLVE_INTERNAL_LINK_CHANNEL, projectLinkHandlers.resolveInternalLink);
   ipcMain.handle(OPEN_INTERNAL_LINK_CHANNEL, projectLinkHandlers.openInternalLink);
   ipcMain.handle(OPEN_EXTERNAL_LINK_CHANNEL, projectLinkHandlers.openExternalLink);
@@ -855,6 +929,10 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(RESTORE_PROJECT_CHANNEL);
   ipcMain.removeHandler(OPEN_PROJECT_FILE_CHANNEL);
   ipcMain.removeHandler(CREATE_PROJECT_FILE_CHANNEL);
+  ipcMain.removeHandler(OPEN_WORKDESK_CHANNEL);
+  ipcMain.removeHandler(CREATE_WORKDESK_CHANNEL);
+  ipcMain.removeHandler(RESTORE_WORKDESK_CHANNEL);
+  ipcMain.removeHandler(CREATE_WORKDESK_FILE_CHANNEL);
   ipcMain.removeHandler(RESOLVE_INTERNAL_LINK_CHANNEL);
   ipcMain.removeHandler(OPEN_INTERNAL_LINK_CHANNEL);
   ipcMain.removeHandler(OPEN_EXTERNAL_LINK_CHANNEL);
@@ -1168,6 +1246,33 @@ function createMainWindow(): BrowserWindow {
         }
       });
     }
+  } else if (hSmoke.requested) {
+    if (!hSmoke.rootPath) {
+      failHSmoke(new Error("The Workdesk smoke fixture root was not provided."));
+    } else {
+      window.webContents.once("did-finish-load", () => {
+        void runHSmoke({
+          fixtureRoot: hSmoke.rootPath!,
+          restore: hSmoke.restore === true,
+          workdesks: workdeskService,
+          repositories: repositoryService,
+          projects: projectService
+        }).then(
+          () => completeHSmoke(),
+          (error: unknown) => failHSmoke(error)
+        );
+      });
+      window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) failHSmoke(new Error(`Renderer load failed (${errorCode}): ${errorDescription}`));
+      });
+      window.webContents.on("preload-error", (_event, preloadPath, error) => {
+        failHSmoke(new Error(`Preload failed (${preloadPath}): ${error.message}`));
+      });
+      window.webContents.on("render-process-gone", (_event, details) => {
+        failHSmoke(new Error(`Renderer process exited: ${details.reason}`));
+      });
+      window.webContents.on("unresponsive", () => failHSmoke(new Error("Renderer became unresponsive.")));
+    }
   } else if (gSmoke.requested) {
     if (!gSmoke.rootPath) {
       failGSmoke(new Error("The G smoke fixture root was not provided."));
@@ -1223,6 +1328,8 @@ function createMainWindow(): BrowserWindow {
               ? { query: { smoke: d5Smoke.restore ? "d5-restore" : "d5" } }
               : exportSmoke.requested
                 ? { query: { smoke: "export" } }
+                : hSmoke.requested
+                  ? { query: { smoke: "h" } }
                 : gSmoke.requested
                   ? { query: { smoke: "g" } }
                   : undefined;
@@ -1244,6 +1351,8 @@ function createMainWindow(): BrowserWindow {
       failD5Smoke(error);
     } else if (exportSmoke.requested) {
       failExportSmoke(error);
+    } else if (hSmoke.requested) {
+      failHSmoke(error);
     } else if (gSmoke.requested) {
       failGSmoke(error);
     } else if (quickSmokeMode) {
@@ -1276,6 +1385,9 @@ function createMainWindow(): BrowserWindow {
     }
     if (exportSmoke.requested && !exportSmokeFinished) {
       failExportSmoke(new Error("Export smoke window closed before completion."));
+    }
+    if (hSmoke.requested && !hSmokeFinished) {
+      failHSmoke(new Error("Workdesk smoke window closed before completion."));
     }
     if (gSmoke.requested && !gSmokeFinished) {
       failGSmoke(new Error("G smoke window closed before completion."));

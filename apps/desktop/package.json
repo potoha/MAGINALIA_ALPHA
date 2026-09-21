@@ -33,6 +33,7 @@
     "smoke:d5": "npm run build && node test/d5-smoke.mjs",
     "smoke:export": "npm run build && node test/export-smoke.mjs",
     "smoke:g": "npm run build && node test/g-smoke.mjs",
+    "smoke:h": "npm run build && node test/h-smoke.mjs",
     "smoke:worker-job": "npm run build:main && electron dist/main/repository-materialization-worker-smoke.js",
     "start": "npm run build && electron dist/main/main.js"
   },

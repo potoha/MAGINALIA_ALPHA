@@ -19,6 +19,7 @@ async function loadRepositoryCore(): Promise<RepositoryCore> {
 import {
   assertSafeRoot,
   captureWorkingTree,
+  readIdentity,
   validateRepositoryPath,
   RepositoryFilesystemError,
 } from "./repository-filesystem.js";
@@ -31,6 +32,7 @@ import {
   materializeHistoryCommit,
   LocalRepositoryError,
   type LocalHistoryEntry,
+  type LocalRepositoryOptions,
   type LocalRepositoryInspection,
 } from "./repository-local-history.js";
 
@@ -129,6 +131,11 @@ export type LocalHistoryResolveResult = LocalHistoryResolved | LocalRepositoryFa
 export interface LocalRepositoryServiceOptions {
   /** Host UUID generation remains outside the portable repository package. */
   readonly uuidFactory?: () => string;
+  /** Main-process resolver for validated Workdesk child repository zones. */
+  readonly workdeskHistoryExclusionResolver?: (
+    canonicalRoot: string,
+    identity: RepositoryIdentity,
+  ) => Promise<ReadonlySet<string>>;
 }
 
 interface ActiveRepository {
@@ -567,9 +574,11 @@ export class LocalRepositoryService {
   private readonly owners = new Map<object, ActiveRepository>();
   private readonly histories = new Map<string, ActiveHistoryEntry>();
   private readonly uuidFactory: () => string;
+  private readonly workdeskHistoryExclusionResolver: LocalRepositoryServiceOptions["workdeskHistoryExclusionResolver"];
 
   public constructor(options: LocalRepositoryServiceOptions = {}) {
     this.uuidFactory = options.uuidFactory ?? randomUUID;
+    this.workdeskHistoryExclusionResolver = options.workdeskHistoryExclusionResolver;
   }
 
   /** Create a new local repository with marker-first publication. */
@@ -645,7 +654,7 @@ export class LocalRepositoryService {
     if (typeof root !== "string" || !isAbsolute(root)) return failure("invalid-root");
     let inspection: LocalRepositoryInspection;
     try {
-      inspection = await inspectRepository(root);
+      inspection = await this.inspectWithWorkdeskBoundaries(root);
     } catch (error) {
       return mapError(error, "invalid-root");
     }
@@ -670,7 +679,7 @@ export class LocalRepositoryService {
     if (!active || active.owner !== owner) return failure("repository-not-owned");
     let inspection: LocalRepositoryInspection;
     try {
-      inspection = await inspectRepository(active.canonicalRoot);
+      inspection = await this.inspectWithWorkdeskBoundaries(active.canonicalRoot);
     } catch (error) {
       return mapError(error);
     }
@@ -692,8 +701,15 @@ export class LocalRepositoryService {
     const resolved = await this.resolveForOwner(owner, repositoryId);
     if (resolved.kind === "error") return resolved;
     try {
-      const snapshot = await createHistorySnapshot(resolved.canonicalRoot);
-      const listing = await listLocalHistory(resolved.canonicalRoot, 100);
+      const snapshot = await createHistorySnapshot(
+        resolved.canonicalRoot,
+        await this.historyOptions(resolved.canonicalRoot, resolved.identity),
+      );
+      const listing = await listLocalHistory(
+        resolved.canonicalRoot,
+        100,
+        await this.historyOptions(resolved.canonicalRoot, resolved.identity),
+      );
       if (listing.entries[0]?.oid !== snapshot.head) return failure("changed");
       const entries = this.replaceHistoryHandles(owner, repositoryId, listing.entries);
       const latest = entries[0];
@@ -719,7 +735,11 @@ export class LocalRepositoryService {
     const resolved = await this.resolveForOwner(owner, repositoryId);
     if (resolved.kind === "error") return resolved;
     try {
-      const listing = await listLocalHistory(resolved.canonicalRoot, 100);
+      const listing = await listLocalHistory(
+        resolved.canonicalRoot,
+        100,
+        await this.historyOptions(resolved.canonicalRoot, resolved.identity),
+      );
       const entries = this.replaceHistoryHandles(owner, repositoryId, listing.entries);
       return Object.freeze({
         kind: "history",
@@ -758,7 +778,11 @@ export class LocalRepositoryService {
     const resolved = await this.resolveForOwner(owner, repositoryId);
     if (resolved.kind === "error") return resolved;
     try {
-      const listing = await listLocalHistory(resolved.canonicalRoot, 100);
+      const listing = await listLocalHistory(
+        resolved.canonicalRoot,
+        100,
+        await this.historyOptions(resolved.canonicalRoot, resolved.identity),
+      );
       if (!listing.entries.some((entry) => entry.oid === stored.oid)) {
         return failure("history-not-found");
       }
@@ -921,6 +945,21 @@ export class LocalRepositoryService {
     this.repositories.clear();
     this.owners.clear();
     this.histories.clear();
+  }
+
+  private async historyOptions(
+    canonicalRoot: string,
+    identity: RepositoryIdentity,
+  ): Promise<LocalRepositoryOptions> {
+    if (identity.kind !== "workbench" || !this.workdeskHistoryExclusionResolver) return {};
+    return { excludedDirectories: await this.workdeskHistoryExclusionResolver(canonicalRoot, identity) };
+  }
+
+  /** Reuse the same validated exclusions for every parent inspection/open. */
+  private async inspectWithWorkdeskBoundaries(root: string): Promise<LocalRepositoryInspection> {
+    const canonicalRoot = await assertSafeRoot(root);
+    const identity = await readIdentity(canonicalRoot);
+    return inspectRepository(canonicalRoot, await this.historyOptions(canonicalRoot, identity));
   }
 
   private isCurrentHistoryCopySession(

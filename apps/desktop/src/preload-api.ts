@@ -105,6 +105,27 @@ import {
   type ProjectRestoreResult
 } from "./project-ipc";
 import {
+  CREATE_WORKDESK_CHANNEL,
+  CREATE_WORKDESK_FILE_CHANNEL,
+  CREATE_WORKDESK_PROJECT_CHANNEL,
+  COPY_WORKDESK_FILE_TO_PROJECT_CHANNEL,
+  OPEN_WORKDESK_CHANNEL,
+  OPEN_WORKDESK_PROJECT_CHANNEL,
+  REGISTER_WORKDESK_PROJECT_CHANNEL,
+  RESTORE_WORKDESK_CHANNEL,
+  type CreateWorkdeskFileRequest,
+  type CopyWorkdeskFileToProjectRequest,
+  type CreateWorkdeskProjectRequest,
+  type CreateWorkdeskRequest,
+  type OpenWorkdeskProjectRequest,
+  type RegisterWorkdeskProjectRequest,
+  type WorkdeskFileCreateResult,
+  type WorkdeskCopyResult,
+  type WorkdeskOpenResult,
+  type WorkdeskProjectResult,
+  type WorkdeskRestoreResult
+} from "./workdesk-ipc";
+import {
   AUTOSAVE_FLUSH_REQUEST_CHANNEL,
   AUTOSAVE_FLUSH_RESPONSE_CHANNEL,
   isAutosaveFlushRequest,
@@ -144,6 +165,16 @@ export {
   OPEN_PROJECT_FILE_CHANNEL,
   RESTORE_PROJECT_CHANNEL
 } from "./project-ipc";
+export {
+  COPY_WORKDESK_FILE_TO_PROJECT_CHANNEL,
+  CREATE_WORKDESK_CHANNEL,
+  CREATE_WORKDESK_FILE_CHANNEL,
+  CREATE_WORKDESK_PROJECT_CHANNEL,
+  OPEN_WORKDESK_CHANNEL,
+  OPEN_WORKDESK_PROJECT_CHANNEL,
+  REGISTER_WORKDESK_PROJECT_CHANNEL,
+  RESTORE_WORKDESK_CHANNEL
+} from "./workdesk-ipc";
 export {
   OPEN_LIBRARY_CHANNEL,
   SEARCH_LIBRARY_CHANNEL,
@@ -250,6 +281,15 @@ export type {
   ProjectRestoreResult
 } from "./project-ipc";
 export type {
+  CopyWorkdeskFileToProjectRequest,
+  CreateWorkdeskFileRequest,
+  CreateWorkdeskRequest,
+  WorkdeskFileCreateResult,
+  WorkdeskCopyResult,
+  WorkdeskOpenResult,
+  WorkdeskRestoreResult
+} from "./workdesk-ipc";
+export type {
   AutosaveFlushRequest,
   AutosaveFlushResponseRequest
 } from "./autosave-ipc";
@@ -280,6 +320,14 @@ export interface MarkdownPreloadApi {
   restoreProject?(): Promise<ProjectRestoreResult>;
   openProjectFile?(request: OpenProjectFileRequest): Promise<ProjectFileOpenResult>;
   createProjectFile?(request: CreateProjectFileRequest): Promise<ProjectFileCreateResultWithError>;
+  openWorkdesk?(): Promise<WorkdeskOpenResult>;
+  createWorkdesk?(request: CreateWorkdeskRequest): Promise<WorkdeskOpenResult>;
+  restoreWorkdesk?(): Promise<WorkdeskRestoreResult>;
+  createWorkdeskFile?(request: CreateWorkdeskFileRequest): Promise<WorkdeskFileCreateResult>;
+  createWorkdeskProject?(request: CreateWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
+  registerWorkdeskProject?(request: RegisterWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
+  openWorkdeskProject?(request: OpenWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
+  copyWorkdeskFileToProject?(request: CopyWorkdeskFileToProjectRequest): Promise<WorkdeskCopyResult>;
   openLibrary?(): Promise<OpenLibraryResult>;
   searchLibrary?(request: SearchLibraryRequest): Promise<SearchLibraryResult>;
   resolveQuotationForInsert?(request: ResolveQuotationForInsertRequest): Promise<ResolveQuotationForInsertResult>;
@@ -322,6 +370,14 @@ export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   restoreProject(): Promise<ProjectRestoreResult>;
   openProjectFile(request: OpenProjectFileRequest): Promise<ProjectFileOpenResult>;
   createProjectFile(request: CreateProjectFileRequest): Promise<ProjectFileCreateResultWithError>;
+  openWorkdesk(): Promise<WorkdeskOpenResult>;
+  createWorkdesk(request: CreateWorkdeskRequest): Promise<WorkdeskOpenResult>;
+  restoreWorkdesk(): Promise<WorkdeskRestoreResult>;
+  createWorkdeskFile(request: CreateWorkdeskFileRequest): Promise<WorkdeskFileCreateResult>;
+  createWorkdeskProject(request: CreateWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
+  registerWorkdeskProject(request: RegisterWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
+  openWorkdeskProject(request: OpenWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
+  copyWorkdeskFileToProject(request: CopyWorkdeskFileToProjectRequest): Promise<WorkdeskCopyResult>;
   openLibrary(): Promise<OpenLibraryResult>;
   searchLibrary(request: SearchLibraryRequest): Promise<SearchLibraryResult>;
   resolveQuotationForInsert(request: ResolveQuotationForInsertRequest): Promise<ResolveQuotationForInsertResult>;
@@ -424,6 +480,14 @@ export function createMarkdownPreloadApi(
     restoreProject: () => invoke(RESTORE_PROJECT_CHANNEL) as Promise<ProjectRestoreResult>,
     openProjectFile: (request) => invoke(OPEN_PROJECT_FILE_CHANNEL, request) as Promise<ProjectFileOpenResult>,
     createProjectFile: (request) => invoke(CREATE_PROJECT_FILE_CHANNEL, request) as Promise<ProjectFileCreateResultWithError>,
+    openWorkdesk: () => invoke(OPEN_WORKDESK_CHANNEL) as Promise<WorkdeskOpenResult>,
+    createWorkdesk: (request) => invoke(CREATE_WORKDESK_CHANNEL, request) as Promise<WorkdeskOpenResult>,
+    restoreWorkdesk: () => invoke(RESTORE_WORKDESK_CHANNEL) as Promise<WorkdeskRestoreResult>,
+    createWorkdeskFile: (request) => invoke(CREATE_WORKDESK_FILE_CHANNEL, request) as Promise<WorkdeskFileCreateResult>,
+    createWorkdeskProject: (request) => invoke(CREATE_WORKDESK_PROJECT_CHANNEL, request) as Promise<WorkdeskProjectResult>,
+    registerWorkdeskProject: (request) => invoke(REGISTER_WORKDESK_PROJECT_CHANNEL, request) as Promise<WorkdeskProjectResult>,
+    openWorkdeskProject: (request) => invoke(OPEN_WORKDESK_PROJECT_CHANNEL, request) as Promise<WorkdeskProjectResult>,
+    copyWorkdeskFileToProject: (request) => invoke(COPY_WORKDESK_FILE_TO_PROJECT_CHANNEL, request) as Promise<WorkdeskCopyResult>,
     openLibrary: () => invoke(OPEN_LIBRARY_CHANNEL) as Promise<OpenLibraryResult>,
     searchLibrary: (request) => invoke(SEARCH_LIBRARY_CHANNEL, request) as Promise<SearchLibraryResult>,
     resolveQuotationForInsert: (request) =>

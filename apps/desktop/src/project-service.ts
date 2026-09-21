@@ -44,6 +44,14 @@ export interface ProjectFileCreated {
   readonly file: ProjectFileSummary;
 }
 
+/** Main-process-only source snapshot used by the Workdesk copy coordinator. */
+export interface ProjectFileCopySource {
+  readonly displayName: string;
+  readonly text: string;
+  readonly title: string;
+  readonly documentType: ProjectDocumentType;
+}
+
 export interface ProjectFailure {
   readonly kind: "error";
   readonly code:
@@ -189,6 +197,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isRootError(value: unknown): value is DocumentWorkspaceFailure {
   return isRecord(value) && value.kind === "error" && typeof value.code === "string" && typeof value.message === "string";
+}
+
+function copyCandidateName(sourceName: string, index: number): string {
+  const normalized = normalizeProjectFileName(sourceName);
+  const base = (normalized ?? "document.md").replace(/\.md$/iu, "");
+  return index === 0 ? `${base}.md` : `${base}-${String(index).padStart(3, "0")}.md`;
+}
+
+/**
+ * Change only the frontmatter `type` field for an explicit cross-type copy.
+ * The original text is returned byte-for-byte for the normal same-type path.
+ */
+export function withCopiedDocumentType(source: string, type: ProjectDocumentType): string {
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  const bom = source.startsWith("\uFEFF") ? "\uFEFF" : "";
+  const body = bom ? source.slice(1) : source;
+  const closing = /^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/u.exec(body);
+  if (!closing) return `${bom}---${newline}type: ${type}${newline}---${newline}${newline}${body}`;
+  const frontmatter = closing[1] ?? "";
+  const nextFrontmatter = /^([ \t]*type[ \t]*:[^\r\n]*)(\r?\n|$)/imu.test(frontmatter)
+    ? frontmatter.replace(/^([ \t]*type[ \t]*:)[^\r\n]*(\r?\n|$)/imu, `$1 ${type}$2`)
+    : `type: ${type}${newline}${frontmatter}`;
+  return `${bom}---${newline}${nextFrontmatter}${newline}---${body.slice(closing[0].length - (closing[0].endsWith("\n") ? 1 : 0))}`;
 }
 
 export class ProjectService {
@@ -344,6 +375,57 @@ export class ProjectService {
     const file = project.files.find((candidate) => candidate.displayName === normalizedName);
     if (!file) return PROJECT_FILE_CREATE_FAILED;
     return { kind: "created", project: project.project, files: project.files, file };
+  }
+
+  /** Read a current owner-bound root-level file without exposing its path. */
+  public async readCopySourceForOwner(
+    owner: object,
+    projectId: string,
+    fileId: string,
+  ): Promise<ProjectFileCopySource | DocumentWorkspaceFailure | ProjectFailure> {
+    const resolved = await this.workspace.resolveManuscriptPath(owner, projectId, fileId);
+    if (resolved.kind !== "resolved") return resolved;
+    try {
+      const text = await readFile(resolved.canonicalPath, "utf8");
+      const metadata = parseProjectMetadata(text, path.basename(resolved.canonicalPath));
+      return Object.freeze({
+        displayName: path.basename(resolved.canonicalPath),
+        text,
+        title: metadata.title ?? path.basename(resolved.canonicalPath).replace(/\.(?:md|markdown)$/iu, ""),
+        documentType: metadata.documentType,
+      });
+    } catch {
+      return PROJECT_FILE_CREATE_FAILED;
+    }
+  }
+
+  /**
+   * Exclusive-create a separate Project file from a main-process source
+   * snapshot. This never overwrites an existing destination or mutates source.
+   */
+  public async copySourceToProjectForOwner(
+    owner: object,
+    destinationProjectId: string,
+    source: ProjectFileCopySource,
+    targetType: ProjectDocumentType,
+  ): Promise<ProjectFileCreateResult> {
+    if (!isDocumentType(targetType)) return PROJECT_FILE_INVALID;
+    const contents = targetType === source.documentType ? source.text : withCopiedDocumentType(source.text, targetType);
+    for (let index = 0; index < 1000; index += 1) {
+      const fileName = copyCandidateName(source.displayName, index);
+      const created = await this.workspace.createManuscriptForOwner(owner, destinationProjectId, fileName, contents);
+      if (created.kind !== "created") {
+        if (isRootError(created) && created.code === "manuscript-exists") continue;
+        return isRootError(created) ? created : PROJECT_FILE_CREATE_FAILED;
+      }
+      const refreshed = await this.workspace.refreshForOwner(owner, destinationProjectId);
+      if (refreshed.kind !== "opened") return refreshed;
+      const project = await this.enrich(owner, refreshed);
+      if (project.kind !== "opened") return project;
+      const file = project.files.find((candidate) => candidate.displayName === fileName);
+      return file ? { kind: "created", project: project.project, files: project.files, file } : PROJECT_FILE_CREATE_FAILED;
+    }
+    return PROJECT_FILE_CREATE_FAILED;
   }
 
   private async enrich(owner: object, opened: DocumentWorkspaceOpened): Promise<ProjectOpened | DocumentWorkspaceFailure> {

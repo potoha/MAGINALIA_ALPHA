@@ -4,6 +4,7 @@ import {
   parseD5SmokeMode,
   parseExportSmokeMode,
   parseGSmokeMode,
+  parseHSmokeMode,
   parseRepositorySmokeMode,
   parseShelfSmokeMode,
   parseWritingSmokeMode,
@@ -200,5 +201,23 @@ describe("G smoke mode", () => {
       rootPath: "C:\\Temp\\g-smoke"
     });
     expect(parseGSmokeMode(["--smoke-g", "--other"])).toEqual({ requested: true });
+  });
+});
+
+describe("H smoke mode", () => {
+  it("accepts the Workdesk fixture root for the initial run", () => {
+    expect(parseHSmokeMode(["electron", "dist/main/main.js", "--smoke-h", "C:\\Temp\\h-smoke"])).toEqual({
+      requested: true,
+      rootPath: "C:\\Temp\\h-smoke"
+    });
+  });
+
+  it("accepts the restore flag without inventing a root", () => {
+    expect(parseHSmokeMode(["--smoke-h-restore", "--other"])).toEqual({ requested: true, restore: true });
+    expect(parseHSmokeMode(["--smoke-h-restore", "C:\\Temp\\h-smoke"])).toEqual({
+      requested: true,
+      restore: true,
+      rootPath: "C:\\Temp\\h-smoke"
+    });
   });
 });

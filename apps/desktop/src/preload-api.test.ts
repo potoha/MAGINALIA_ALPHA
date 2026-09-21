@@ -9,6 +9,14 @@ import {
   RESTORE_PROJECT_CHANNEL,
   OPEN_PROJECT_FILE_CHANNEL,
   CREATE_PROJECT_FILE_CHANNEL,
+  OPEN_WORKDESK_CHANNEL,
+  CREATE_WORKDESK_CHANNEL,
+  RESTORE_WORKDESK_CHANNEL,
+  CREATE_WORKDESK_FILE_CHANNEL,
+  CREATE_WORKDESK_PROJECT_CHANNEL,
+  REGISTER_WORKDESK_PROJECT_CHANNEL,
+  OPEN_WORKDESK_PROJECT_CHANNEL,
+  COPY_WORKDESK_FILE_TO_PROJECT_CHANNEL,
   SAVE_MARKDOWN_CHANNEL,
   OPEN_LIBRARY_CHANNEL,
   SEARCH_LIBRARY_CHANNEL,
@@ -60,6 +68,14 @@ describe("preload boundary", () => {
       "restoreProject",
       "openProjectFile",
       "createProjectFile",
+      "openWorkdesk",
+      "createWorkdesk",
+      "restoreWorkdesk",
+      "createWorkdeskFile",
+      "createWorkdeskProject",
+      "registerWorkdeskProject",
+      "openWorkdeskProject",
+      "copyWorkdeskFileToProject",
       "openLibrary",
       "searchLibrary",
       "resolveQuotationForInsert",
@@ -110,6 +126,27 @@ describe("preload boundary", () => {
       projectId: "77777777-7777-4777-8777-777777777777",
       fileName: "memo.md",
       title: "Memo",
+      documentType: "memo"
+    });
+    await api.openWorkdesk();
+    await api.createWorkdesk({ title: "Desk" });
+    await api.restoreWorkdesk();
+    await api.createWorkdeskFile({
+      workdeskId: "77777777-7777-4777-8777-777777777777",
+      fileName: "memo.md",
+      title: "Memo",
+      documentType: "memo"
+    });
+    await api.createWorkdeskProject({ workdeskIdentityId: "11111111-1111-4111-8111-111111111111", title: "Child" });
+    await api.registerWorkdeskProject({ workdeskIdentityId: "11111111-1111-4111-8111-111111111111" });
+    await api.openWorkdeskProject({
+      workdeskIdentityId: "11111111-1111-4111-8111-111111111111",
+      projectIdentityId: "22222222-2222-4222-8222-222222222222"
+    });
+    await api.copyWorkdeskFileToProject({
+      workdeskId: "77777777-7777-4777-8777-777777777777",
+      sourceFileId: "88888888-8888-4888-8888-888888888888",
+      projectIdentityId: "22222222-2222-4222-8222-222222222222",
       documentType: "memo"
     });
     await api.openLibrary();
@@ -191,6 +228,42 @@ describe("preload boundary", () => {
           projectId: "77777777-7777-4777-8777-777777777777",
           fileName: "memo.md",
           title: "Memo",
+          documentType: "memo"
+        }]
+      },
+      { channel: OPEN_WORKDESK_CHANNEL, args: [] },
+      { channel: CREATE_WORKDESK_CHANNEL, args: [{ title: "Desk" }] },
+      { channel: RESTORE_WORKDESK_CHANNEL, args: [] },
+      {
+        channel: CREATE_WORKDESK_FILE_CHANNEL,
+        args: [{
+          workdeskId: "77777777-7777-4777-8777-777777777777",
+          fileName: "memo.md",
+          title: "Memo",
+          documentType: "memo"
+        }]
+      },
+      {
+        channel: CREATE_WORKDESK_PROJECT_CHANNEL,
+        args: [{ workdeskIdentityId: "11111111-1111-4111-8111-111111111111", title: "Child" }]
+      },
+      {
+        channel: REGISTER_WORKDESK_PROJECT_CHANNEL,
+        args: [{ workdeskIdentityId: "11111111-1111-4111-8111-111111111111" }]
+      },
+      {
+        channel: OPEN_WORKDESK_PROJECT_CHANNEL,
+        args: [{
+          workdeskIdentityId: "11111111-1111-4111-8111-111111111111",
+          projectIdentityId: "22222222-2222-4222-8222-222222222222"
+        }]
+      },
+      {
+        channel: COPY_WORKDESK_FILE_TO_PROJECT_CHANNEL,
+        args: [{
+          workdeskId: "77777777-7777-4777-8777-777777777777",
+          sourceFileId: "88888888-8888-4888-8888-888888888888",
+          projectIdentityId: "22222222-2222-4222-8222-222222222222",
           documentType: "memo"
         }]
       },
