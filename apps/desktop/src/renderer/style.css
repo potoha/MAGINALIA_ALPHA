@@ -590,6 +590,50 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.unified-search-modes,
+.shelf-search-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.unified-search-modes button[aria-pressed="true"] {
+  border-color: #8a431f;
+  background: #f5e4d6;
+  color: #5f3b2d;
+}
+
+.shelf-search-fields {
+  margin: 0;
+  padding: 0.3rem 0;
+  border: 0;
+  color: #5f6c76;
+  font-size: 0.78rem;
+}
+
+.shelf-search-fields legend {
+  padding: 0;
+  font-size: 0.75rem;
+}
+
+.shelf-search-fields label { white-space: nowrap; }
+
+.unified-search-status {
+  min-height: 1.1rem;
+  margin: 0;
+  color: #5f6c76;
+  font-size: 0.78rem;
+}
+
+.project-search-panel { min-width: 0; }
+.project-search-panel h3 { margin: 0.35rem 0; font-size: 0.8rem; color: #5f6c76; }
+.project-search-results { display: flex; flex-direction: column; gap: 0.35rem; margin: 0; padding: 0; list-style: none; }
+.project-search-result { min-width: 0; padding: 0.35rem 0.45rem; border: 1px solid #e1d9ce; border-radius: 0.35rem; background: #fcfaf6; }
+.project-search-open { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-search-excerpt { max-height: 5.5rem; margin: 0.3rem 0 0; overflow: hidden; color: #5f6c76; font: 0.76rem/1.3 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+.project-search-preview { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.5rem; }
+.project-search-source { box-sizing: border-box; min-height: 9rem; width: 100%; resize: vertical; font: 0.78rem/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; }
+
 .library-search-form label {
   color: #5f6c76;
   font-size: 0.85rem;
@@ -1129,6 +1173,91 @@ button:focus-visible {
   background: #faf8f3;
 }
 
+/* G: compact command surface.  Contributions wrap rather than forcing the
+ * editor below a usable width on narrow workbench layouts. */
+.editor-utility-bar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  min-height: 2.1rem;
+  padding: 0.22rem 0.55rem;
+  border-bottom: 1px solid #d5cec3;
+  background: #f6f2eb;
+  overflow: hidden;
+}
+
+.editor-utility-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.12rem;
+  min-width: 0;
+  padding-right: 0.25rem;
+  border-right: 1px solid #d5cec3;
+}
+
+.editor-utility-group:last-child {
+  border-right: 0;
+}
+
+.editor-utility-command {
+  min-height: 1.65rem;
+  padding: 0.15rem 0.38rem;
+  border-color: transparent;
+  background: transparent;
+  color: #4d2d22;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.editor-utility-command:hover,
+.editor-utility-command:focus-visible {
+  border-color: #c69b86;
+  background: #fffdf8;
+}
+
+.workbench-context-menu {
+  position: fixed;
+  z-index: 1100;
+  min-width: 12rem;
+  max-width: min(20rem, calc(100vw - 1rem));
+  padding: 0.25rem;
+  border: 1px solid #a99f94;
+  border-radius: 0.35rem;
+  background: #fffdf8;
+  box-shadow: 0 0.65rem 1.8rem rgb(47 41 37 / 24%);
+}
+
+.workbench-context-menu button {
+  display: block;
+  width: 100%;
+  padding: 0.38rem 0.55rem;
+  border-color: transparent;
+  background: transparent;
+  color: #2f2925;
+  text-align: left;
+}
+
+.workbench-context-menu button:hover,
+.workbench-context-menu button:focus-visible {
+  border-color: #c69b86;
+  background: #f6eee6;
+}
+
+.workbench-context-menu-divider {
+  height: 1px;
+  margin: 0.22rem 0;
+  background: #ddd5cb;
+}
+
+.workbench-context-menu-empty {
+  display: block;
+  padding: 0.38rem 0.55rem;
+  color: #6e625b;
+  font-size: 0.8rem;
+}
+
 .document-presentation-controls button {
   padding: 0.25rem 0.5rem;
   border-color: transparent;
@@ -1271,6 +1400,44 @@ body.resizing-sidebar,
 body.resizing-sidebar * {
   cursor: col-resize !important;
   user-select: none !important;
+}
+
+.command-palette {
+  position: fixed;
+  z-index: 1000;
+  top: min(18vh, 12rem);
+  left: 50%;
+  width: min(42rem, calc(100vw - 2rem));
+  transform: translateX(-50%);
+  border: 1px solid var(--border, #5c6470);
+  border-radius: 0.5rem;
+  background: var(--panel-background, #20242b);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 40%);
+  padding: 0.5rem;
+}
+
+.command-palette > input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 0.55rem 0.65rem;
+}
+
+.command-palette-results {
+  max-height: min(52vh, 24rem);
+  overflow: auto;
+  padding: 0.35rem 0;
+  margin: 0;
+  list-style: none;
+}
+
+.command-palette-item {
+  padding: 0.45rem 0.65rem;
+  cursor: pointer;
+}
+
+.command-palette-item[aria-selected="true"] {
+  background: var(--selection-background, #394b64);
 }
 
 @media (max-width: 720px) {

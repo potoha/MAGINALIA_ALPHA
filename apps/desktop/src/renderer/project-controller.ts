@@ -50,6 +50,16 @@ export interface ProjectNavigationControllerOptions {
   readonly flushAllDocuments?: () => Promise<boolean>;
 }
 
+/** The bounded result shape returned by the opaque internal-link IPC. */
+type InternalLinkOpenResult = OpenMarkdownSuccess | { readonly kind: string; readonly message?: string };
+
+function isInternalLinkOpened(value: InternalLinkOpenResult): value is OpenMarkdownSuccess {
+  return value.kind === "opened"
+    && "sessionId" in value && typeof value.sessionId === "string"
+    && "displayName" in value && typeof value.displayName === "string"
+    && "text" in value && typeof value.text === "string";
+}
+
 const EMPTY_STATE: ProjectNavigationState = { project: null, files: [], activeFileId: null };
 const OPEN_FAILED = "The Project folder could not be opened. Choose it again.";
 const FILE_OPEN_FAILED = "The Markdown file could not be opened. Try again.";
@@ -218,6 +228,48 @@ export class ProjectNavigationController {
 
   public openFile(fileId: string): Promise<void> {
     return this.run(() => this.openFileNow(fileId));
+  }
+
+  /**
+   * Activate an already-open internal-link target or open the target through
+   * the caller's opaque main-process capability.  This deliberately takes a
+   * file ID rather than a path and uses the same DocumentSession/tab map as
+   * Registry activation, so it cannot create a duplicate editable view.
+   */
+  public openInternalLink(
+    fileId: string,
+    load: () => Promise<InternalLinkOpenResult>,
+  ): Promise<void> {
+    return this.run(async () => {
+      const project = this.state.project;
+      if (!project) {
+        this.showError("Open a Project before opening an internal link.");
+        return;
+      }
+      const knownSessionId = this.fileSessionIds.get(fileId);
+      if (knownSessionId !== undefined) {
+        this.writing.activateDocument(knownSessionId);
+        this.replaceState({ ...this.state, activeFileId: fileId });
+        this.showError(null);
+        return;
+      }
+      let result: InternalLinkOpenResult;
+      try {
+        result = await load();
+      } catch {
+        this.showError("The linked Markdown document could not be opened.");
+        return;
+      }
+      if (!isInternalLinkOpened(result)) {
+        this.showError(result.message ?? "The linked Markdown document could not be opened.");
+        return;
+      }
+      this.writing.applyOpenedDocument(result);
+      this.openedFileIds.add(fileId);
+      this.fileSessionIds.set(fileId, result.sessionId);
+      this.replaceState({ ...this.state, activeFileId: fileId });
+      this.showError(null);
+    });
   }
 
   /** Repository handoff adapter retained for the existing Repository feature. */

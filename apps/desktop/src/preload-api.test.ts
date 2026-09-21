@@ -22,6 +22,7 @@ import {
   OPEN_EXTERNAL_LINK_CHANNEL,
   RESOLVE_PROJECT_ASSET_CHANNEL,
   IMPORT_DROPPED_IMAGE_CHANNEL,
+  SEARCH_PROJECT_MARKDOWN_CHANNEL,
   LOAD_MODS_CHANNEL,
   RELOAD_MODS_CHANNEL,
   OPEN_MODS_FOLDER_CHANNEL,
@@ -71,6 +72,7 @@ describe("preload boundary", () => {
       "openExternalLink",
       "resolveProjectAsset",
       "importDroppedImageFile",
+      "searchProjectMarkdown",
       "loadMods",
       "reloadMods",
       "openModsFolder",
@@ -128,6 +130,7 @@ describe("preload boundary", () => {
     await api.openExternalLink({ url: "https://example.test/" });
     await api.resolveProjectAsset({ projectId: "77777777-7777-4777-8777-777777777777", relativePath: "assets/figure.png" });
     await api.importDroppedImageFile({ projectId: "77777777-7777-4777-8777-777777777777", file: {} as File, optimize: true });
+    await api.searchProjectMarkdown?.({ projectId: "77777777-7777-4777-8777-777777777777", query: "Eco" });
     await api.loadMods();
     await api.reloadMods();
     await api.openModsFolder();
@@ -229,6 +232,10 @@ describe("preload boundary", () => {
       {
         channel: IMPORT_DROPPED_IMAGE_CHANNEL,
         args: [{ projectId: "77777777-7777-4777-8777-777777777777", sourcePath: "C:\\drop\\figure.png", optimize: true }]
+      },
+      {
+        channel: SEARCH_PROJECT_MARKDOWN_CHANNEL,
+        args: [{ projectId: "77777777-7777-4777-8777-777777777777", query: "Eco" }]
       },
       { channel: LOAD_MODS_CHANNEL, args: [] },
       { channel: RELOAD_MODS_CHANNEL, args: [] },

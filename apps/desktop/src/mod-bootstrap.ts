@@ -12,7 +12,9 @@ import { pathToFileURL } from "node:url";
 import * as path from "node:path";
 import type {
   ModCommandContribution,
+  ModContextMenuContribution,
   ModManifest,
+  ModUtilityBarContribution,
   ModViewContribution,
   ModViewRegion
 } from "./mod-host";
@@ -85,6 +87,8 @@ export interface ModContributionApi extends ModCapabilityApi {
     contribution: Omit<ModCommandContribution, "kind">,
     handler: (args: readonly unknown[]) => unknown | Promise<unknown>,
   ): void;
+  registerContextMenu(contribution: Omit<ModContextMenuContribution, "kind">): void;
+  registerUtilityBar(contribution: Omit<ModUtilityBarContribution, "kind">): void;
   registerView(contribution: Omit<ModViewContribution, "kind">): void;
 }
 
@@ -200,12 +204,65 @@ function isGroupId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(value);
 }
 
-function validateCommand(value: Omit<ModCommandContribution, "kind">): Omit<ModCommandContribution, "kind"> {
+function isWhen(value: unknown): value is string | undefined {
+  return value === undefined || (typeof value === "string" && isTitle(value) && value.length <= 240);
+}
+
+function isKeywords(value: unknown): value is readonly string[] | undefined {
+  return value === undefined || (Array.isArray(value) && value.length <= 24 && value.every((item) => typeof item === "string" && isTitle(item) && item.length <= 64));
+}
+
+function isOrder(value: unknown): value is number | undefined {
+  return value === undefined || (typeof value === "number" && Number.isSafeInteger(value) && value >= -10_000 && value <= 10_000);
+}
+
+function onlyKeys(value: Record<string, unknown>, required: readonly string[], allowed: readonly string[]): boolean {
+  return required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function validateCommand(value: Omit<ModCommandContribution, "kind">, ownerId: string): Omit<ModCommandContribution, "kind"> {
   if (!isRecord(value)
-    || Object.keys(value).length !== 2
+    || !onlyKeys(value, ["id", "title"], ["id", "title", "category", "keywords", "when"])
     || !isCommandId(value.id)
-    || !isTitle(value.title)) throw new Error("Invalid Mod command contribution.");
-  return Object.freeze({ id: value.id, title: value.title });
+    || !isTitle(value.title)
+    || !value.id.startsWith(`${ownerId}.`)
+    || (value.category !== undefined && !isTitle(value.category))
+    || !isKeywords(value.keywords)
+    || !isWhen(value.when)) throw new Error("Invalid Mod command contribution.");
+  return Object.freeze({ id: value.id, title: value.title,
+    ...(value.category === undefined ? {} : { category: value.category }),
+    ...(value.keywords === undefined ? {} : { keywords: Object.freeze([...value.keywords]) }),
+    ...(value.when === undefined ? {} : { when: value.when }) });
+}
+
+function validateContextMenu(value: Omit<ModContextMenuContribution, "kind">, ownerId: string): Omit<ModContextMenuContribution, "kind"> {
+  if (!isRecord(value)
+    || !onlyKeys(value, ["id", "location", "command"], ["id", "location", "command", "group", "order", "when"])
+    || !isCommandId(value.id) || !isCommandId(value.command)
+    || !value.id.startsWith(`${ownerId}.`) || !value.command.startsWith(`${ownerId}.`)
+    || typeof value.location !== "string" || !/^[a-z][a-z0-9.-]{0,127}$/iu.test(value.location)
+    || (value.group !== undefined && !isGroupId(value.group)) || !isOrder(value.order) || !isWhen(value.when)) {
+    throw new Error("Invalid Mod context menu contribution.");
+  }
+  return Object.freeze({ id: value.id, location: value.location, command: value.command,
+    ...(value.group === undefined ? {} : { group: value.group }),
+    ...(value.order === undefined ? {} : { order: value.order }),
+    ...(value.when === undefined ? {} : { when: value.when }) });
+}
+
+function validateUtilityBar(value: Omit<ModUtilityBarContribution, "kind">, ownerId: string): Omit<ModUtilityBarContribution, "kind"> {
+  if (!isRecord(value)
+    || !onlyKeys(value, ["id", "command", "group", "label"], ["id", "command", "group", "label", "title", "when", "order"])
+    || !isCommandId(value.id) || !isCommandId(value.command)
+    || !value.id.startsWith(`${ownerId}.`) || !value.command.startsWith(`${ownerId}.`)
+    || !isGroupId(value.group) || !isTitle(value.label) || value.label.length > 80
+    || (value.title !== undefined && !isTitle(value.title)) || !isWhen(value.when) || !isOrder(value.order)) {
+    throw new Error("Invalid Mod utility bar contribution.");
+  }
+  return Object.freeze({ id: value.id, command: value.command, group: value.group, label: value.label,
+    ...(value.title === undefined ? {} : { title: value.title }),
+    ...(value.when === undefined ? {} : { when: value.when }),
+    ...(value.order === undefined ? {} : { order: value.order }) });
 }
 
 function validateView(value: Omit<ModViewContribution, "kind">): Omit<ModViewContribution, "kind"> {
@@ -257,7 +314,7 @@ export function installModBootstrap(
   let modId: string | undefined;
   let deactivate: (() => void | Promise<void>) | undefined;
   const commands = new Map<string, (args: readonly unknown[]) => unknown | Promise<unknown>>();
-  const contributions: Array<ModCommandContribution | ModViewContribution> = [];
+  const contributions: Array<ModCommandContribution | ModContextMenuContribution | ModUtilityBarContribution | ModViewContribution> = [];
   const pendingCapabilities = new Map<string, {
     readonly resolve: (value: unknown) => void;
     readonly reject: (error: Error) => void;
@@ -307,10 +364,26 @@ export function installModBootstrap(
     const api: ModContributionApi = {
       registerCommand: (value, handler): void => {
         if (finished || activationCommitted) throw new Error("Mod activation is finished.");
-        const contribution = validateCommand(value);
+        const contribution = validateCommand(value, message.modId);
         if (commands.has(contribution.id)) throw new Error(`Duplicate Mod command: ${contribution.id}.`);
         commands.set(contribution.id, handler);
         contributions.push({ kind: "command", ...contribution });
+      },
+      registerContextMenu: (value): void => {
+        if (finished || activationCommitted) throw new Error("Mod activation is finished.");
+        const contribution = validateContextMenu(value, message.modId);
+        if (contributions.some((entry) => entry.kind === "context-menu" && entry.id === contribution.id)) {
+          throw new Error(`Duplicate Mod context menu: ${contribution.id}.`);
+        }
+        contributions.push({ kind: "context-menu", ...contribution });
+      },
+      registerUtilityBar: (value): void => {
+        if (finished || activationCommitted) throw new Error("Mod activation is finished.");
+        const contribution = validateUtilityBar(value, message.modId);
+        if (contributions.some((entry) => entry.kind === "utility-bar" && entry.id === contribution.id)) {
+          throw new Error(`Duplicate Mod utility bar item: ${contribution.id}.`);
+        }
+        contributions.push({ kind: "utility-bar", ...contribution });
       },
       registerView: (value): void => {
         if (finished || activationCommitted) throw new Error("Mod activation is finished.");

@@ -1,5 +1,5 @@
 import "./style.css";
-import { WritingController, type WritingStatus, type WritingView } from "./controller";
+import { WritingController, type CapturedInsertionTarget, type WritingStatus, type WritingView } from "./controller";
 import { AutosaveCoordinator } from "./autosave-coordinator";
 import { decideDirtySwitch } from "./dirty-decision";
 import {
@@ -21,6 +21,24 @@ import { createLocalStorageRendererPreferenceStore } from "./renderer-preference
 import { resolvePreviewMedia } from "./project-media";
 import { resolvePreviewInternalLinks } from "./preview-links";
 import { importDroppedImageIntoDocument } from "./dropped-image";
+import { ContextKeyService } from "./command-context";
+import { CommandRegistry } from "./command-registry";
+import { CommandPalette } from "./command-palette";
+import { registerCoreCommands } from "./core-commands";
+import { ContextMenuRegistry } from "./context-menu-registry";
+import { ContextMenuSurface } from "./context-menu-surface";
+import { UtilityBar } from "./utility-bar";
+import { ModContributionBridge } from "./mod-contribution-bridge";
+import {
+  DEFAULT_SHELF_SEARCH_FIELDS,
+  ProjectSearchController,
+  filterShelfResults,
+  insertProjectSearchSelection,
+  shelfFilterValidation,
+  type ProjectSearchState,
+  type ShelfSearchField,
+  type UnifiedSearchMode
+} from "./unified-search";
 import type { DocumentSessionChange } from "./document-sessions";
 import type { WorkspaceState } from "../workspace-state-ipc";
 import { ModController, type ModControllerState } from "./mod-controller";
@@ -199,6 +217,7 @@ app.innerHTML = `
       </aside>
       <section class="editor-area" aria-label="Editor Area">
         <nav id="document-tabs" class="document-tabs" role="tablist" aria-label="Open documents"></nav>
+        <div id="editor-utility-bar" aria-label="Editor commands"></div>
         <div id="document-presentation-controls" class="document-presentation-controls" aria-label="Document presentation">
           <button id="document-edit-mode" type="button" aria-pressed="true">Edit</button>
           <button id="document-preview-mode" type="button" aria-pressed="false">Preview</button>
@@ -224,6 +243,30 @@ app.innerHTML = `
               <input id="library-query" type="search" autocomplete="off" placeholder="Search quotations...">
               <button id="library-search" type="submit">Search</button>
             </form>
+            <div id="unified-search-modes" class="unified-search-modes" role="group" aria-label="Search source">
+              <button type="button" data-unified-search-mode="all" aria-pressed="true">All</button>
+              <button type="button" data-unified-search-mode="shelf" aria-pressed="false">Shelf</button>
+              <button type="button" data-unified-search-mode="project" aria-pressed="false">Project</button>
+            </div>
+            <fieldset id="shelf-search-fields" class="shelf-search-fields">
+              <legend>Shelf fields</legend>
+              <label><input type="checkbox" data-shelf-search-field="quote" checked> 引用文</label>
+              <label><input type="checkbox" data-shelf-search-field="comment" checked> コメント</label>
+              <label><input type="checkbox" data-shelf-search-field="title" checked> 書名</label>
+              <label><input type="checkbox" data-shelf-search-field="authors" checked> 著者</label>
+              <label><input type="checkbox" data-shelf-search-field="pageLabel" checked> ページ</label>
+            </fieldset>
+            <p id="unified-search-status" class="unified-search-status" role="status" aria-live="polite"></p>
+            <section id="project-search-panel" class="project-search-panel" aria-label="Project search results" hidden>
+              <h3>PROJECT</h3>
+              <ul id="project-search-results" class="project-search-results"></ul>
+              <div id="project-search-preview" class="project-search-preview" hidden>
+                <label for="project-search-source">Source Markdown</label>
+                <textarea id="project-search-source" readonly spellcheck="false" aria-label="Read-only source Markdown"></textarea>
+                <button id="project-search-insert" type="button">選択部分を挿入</button>
+                <p id="project-search-error" class="library-error" role="alert" hidden></p>
+              </div>
+            </section>
             <p id="library-status" class="library-status" role="status" aria-live="polite">Search approved Reviewer quotations.</p>
             <p id="library-error" class="library-error" role="alert" aria-live="assertive" hidden></p>
             <p id="references-status" class="references-status" data-state="empty" role="status" aria-live="polite">Open a document to refresh References.</p>
@@ -314,10 +357,21 @@ const libraryError = requiredElement<HTMLElement>("#library-error");
 const referencesStatus = requiredElement<HTMLElement>("#references-status");
 const referencesUnresolved = requiredElement<HTMLElement>("#references-unresolved");
 const libraryResults = requiredElement<HTMLUListElement>("#library-results");
+const unifiedSearchModeButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-unified-search-mode]"));
+const shelfSearchFieldset = requiredElement<HTMLFieldSetElement>("#shelf-search-fields");
+const shelfSearchFieldInputs = Array.from(document.querySelectorAll<HTMLInputElement>("[data-shelf-search-field]"));
+const unifiedSearchStatus = requiredElement<HTMLElement>("#unified-search-status");
+const projectSearchPanel = requiredElement<HTMLElement>("#project-search-panel");
+const projectSearchResults = requiredElement<HTMLUListElement>("#project-search-results");
+const projectSearchPreview = requiredElement<HTMLElement>("#project-search-preview");
+const projectSearchSource = requiredElement<HTMLTextAreaElement>("#project-search-source");
+const projectSearchInsert = requiredElement<HTMLButtonElement>("#project-search-insert");
+const projectSearchError = requiredElement<HTMLElement>("#project-search-error");
 const modViewHost = requiredElement<HTMLElement>("#mod-view-host");
 const modCommandHost = requiredElement<HTMLElement>("#mod-command-host");
 const editorContainer = requiredElement<HTMLElement>("#editor");
 const previewContainer = requiredElement<HTMLElement>("#markdown-preview");
+const editorUtilityBar = requiredElement<HTMLElement>("#editor-utility-bar");
 const editModeButton = requiredElement<HTMLButtonElement>("#document-edit-mode");
 const previewModeButton = requiredElement<HTMLButtonElement>("#document-preview-mode");
 const horizontalDirectionButton = requiredElement<HTMLButtonElement>("#document-horizontal");
@@ -349,6 +403,11 @@ const repositoryHistoryEntry = requiredElement<HTMLSelectElement>("#repository-h
 const openRepositoryHistoryButton = requiredElement<HTMLButtonElement>("#open-repository-history");
 const repositoryHistoryStatus = requiredElement<HTMLElement>("#repository-history-status");
 const repositoryHistoryError = requiredElement<HTMLElement>("#repository-history-error");
+
+let unifiedSearchMode: UnifiedSearchMode = "all";
+let shelfSearchFields = new Set<ShelfSearchField>(DEFAULT_SHELF_SEARCH_FIELDS);
+let selectedProjectSearchText: string | null = null;
+let projectSearchInsertionTarget: CapturedInsertionTarget | null = null;
 
 const workbench = new WorkbenchCore(createLocalStorageLayoutStore());
 for (const view of WORKBENCH_VIEW_MANIFEST) workbench.registerView(view);
@@ -508,6 +567,7 @@ controller.setAutosaveCoordinator(autosaveCoordinator);
 let projectController: ProjectNavigationController | undefined;
 const rendererPreferences = createLocalStorageRendererPreferenceStore();
 let previewMediaGeneration = 0;
+let pendingInternalLinkOpen: { readonly fileId: string } | null = null;
 
 const previewApi = typeof window.maginalia.resolveReferences === "function"
   ? { resolveReferences: (request: { readonly text: string }) => window.maginalia.resolveReferences(request) }
@@ -545,7 +605,15 @@ const previewController = new PreviewController({
         if (generation !== previewMediaGeneration || previewController.getMode() !== "preview") return;
         const current = controller.getDocumentState();
         if (current?.currentText !== text) return;
-        renderMarkdownPreview(previewContainer, text, state.quoteMap, state.direction, {}, internalLinks, media);
+        renderMarkdownPreview(previewContainer, text, state.quoteMap, state.direction, {
+          onOpenInternal: ({ fileId }) => {
+            // The renderer only receives an opaque resolved file ID. Routing
+            // through the command keeps the gesture equivalent to Palette and
+            // future context-menu actions.
+            pendingInternalLinkOpen = { fileId };
+            void commandRegistry.execute("maginalia.link.openInTab", commandContext.snapshot());
+          }
+        }, internalLinks, media);
       }).catch(() => undefined);
     }
   }
@@ -553,26 +621,210 @@ const previewController = new PreviewController({
 
 editModeButton.addEventListener("click", () => previewController.setMode("edit"));
 previewModeButton.addEventListener("click", () => previewController.setMode("preview"));
-horizontalDirectionButton.addEventListener("click", () => previewController.setDirection("horizontal"));
-verticalDirectionButton.addEventListener("click", () => previewController.setDirection("vertical"));
+horizontalDirectionButton.addEventListener("click", () => {
+  void commandRegistry.execute("maginalia.renderer.setHorizontal", commandContext.snapshot());
+});
+verticalDirectionButton.addEventListener("click", () => {
+  void commandRegistry.execute("maginalia.renderer.setVertical", commandContext.snapshot());
+});
+
+// Command surfaces are deliberately mounted beside the Workbench rather than
+// into Monaco.  Later toolbar/menu contributions use this same registry.
+const commandContext = new ContextKeyService();
+const commandRegistry = new CommandRegistry();
+const updateCommandContext = (): void => {
+  const current = controller.getDocumentState();
+  const selection = controller.getSelection();
+  const text = current?.currentText ?? "";
+  const lineStart = text.lastIndexOf("\n", Math.max(0, selection.start - 1)) + 1;
+  const lineEnd = text.indexOf("\n", selection.start);
+  const line = text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd);
+  const linkType = /\[\[[^\]]+\]\]/u.test(line)
+    ? "internal"
+    : /\[[^\]]+\]\((?:https?:\/\/)[^)]*\)/u.test(line) ? "external" : "none";
+  const mediaMatch = /!\[\[[^\]]+\]\]|!\[[^\]]*\]\(([^)]+)\)/u.exec(line);
+  const mediaType = mediaMatch === null
+    ? "none"
+    : /\.(?:mp4|webm|ogg)(?:[?#].*)?$/iu.test(mediaMatch[1] ?? line) ? "video" : "image";
+  commandContext.patch({
+    "editor.hasDocument": current !== null,
+    "editor.hasSelection": selection.start !== selection.end,
+    "editor.blockType": /^#{1,6}\s/u.test(line) ? "heading" : line.startsWith("> ") ? "blockquote" : "paragraph",
+    "editor.linkType": linkType,
+    "editor.mediaType": mediaType,
+    "editor.hasQuoteRef": line.includes("<!-- maginalia:quote-ref "),
+    "renderer.orientation": previewController.getDirection(),
+    "document.type": "markdown",
+    "view.id": previewController.getMode()
+  });
+};
+controller.onDocumentChange(() => updateCommandContext());
+controller.onSelectionChange(() => updateCommandContext());
+registerCoreCommands(commandRegistry, {
+  writing: controller,
+  setPreviewDirection: (direction) => {
+    previewController.setDirection(direction);
+    updateCommandContext();
+  },
+  refreshReferences: () => { void referencesController?.refresh(); },
+  exportMarkdown: () => { void exportController?.exportMarkdown(); },
+  contextKeys: commandContext
+});
+commandRegistry.register({
+  id: "maginalia.link.openInTab",
+  title: "Open Internal Link in Tab",
+  category: "Links",
+  keywords: ["wiki", "internal", "tab"],
+  when: "editor.hasDocument"
+}, async () => {
+  const request = pendingInternalLinkOpen;
+  pendingInternalLinkOpen = null;
+  const navigation = projectController;
+  const projectId = navigation?.getState().project?.projectId;
+  if (request === null || navigation === undefined || projectId === undefined
+    || typeof window.maginalia.openInternalLink !== "function") {
+    throw new Error("The internal link is no longer available.");
+  }
+  await navigation.openInternalLink(request.fileId, () => window.maginalia.openInternalLink!({
+    projectId,
+    fileId: request.fileId
+  }));
+});
+let commandPalette: CommandPalette | undefined;
+commandRegistry.register({
+  id: "maginalia.workbench.showCommandPalette",
+  title: "Show Command Palette",
+  category: "Workbench",
+  keywords: ["commands", "actions", "more"]
+}, () => commandPalette?.open());
+commandRegistry.register({
+  id: "maginalia.editor.importImage",
+  title: "Import Image",
+  category: "Editor",
+  keywords: ["image", "asset", "file"],
+  when: "editor.hasDocument"
+}, () => chooseImageForImport());
+commandPalette = new CommandPalette({
+  registry: commandRegistry,
+  getContext: () => commandContext.snapshot(),
+  onError: (message) => {
+    documentStatus.dataset.state = "error";
+    documentStatus.textContent = `Command failed: ${message}`;
+  }
+});
+
+const utilityBar = new UtilityBar({
+  root: editorUtilityBar,
+  commandRegistry,
+  getContext: () => commandContext.snapshot(),
+  onError: (message) => {
+    documentStatus.dataset.state = "error";
+    documentStatus.textContent = `Command failed: ${message}`;
+  }
+});
+
+for (const contribution of [
+  { id: "core.utility.undo", command: "maginalia.editor.undo", group: "history", label: "Undo", title: "Undo" },
+  { id: "core.utility.redo", command: "maginalia.editor.redo", group: "history", label: "Redo", title: "Redo" },
+  { id: "core.utility.paragraph", command: "maginalia.editor.setParagraph", group: "block", label: "Paragraph", title: "Set paragraph" },
+  { id: "core.utility.heading1", command: "maginalia.editor.setHeading1", group: "block", label: "H1", title: "Set Heading 1" },
+  { id: "core.utility.bold", command: "maginalia.editor.toggleBold", group: "inline", label: "B", title: "Toggle bold", when: "editor.hasSelection" },
+  { id: "core.utility.italic", command: "maginalia.editor.toggleItalic", group: "inline", label: "I", title: "Toggle italic", when: "editor.hasSelection" },
+  { id: "core.utility.code", command: "maginalia.editor.toggleInlineCode", group: "inline", label: "`", title: "Toggle inline code", when: "editor.hasSelection" },
+  { id: "core.utility.bullets", command: "maginalia.editor.toggleBulletList", group: "lists", label: "•", title: "Toggle bulleted list" },
+  { id: "core.utility.numbers", command: "maginalia.editor.toggleNumberedList", group: "lists", label: "1.", title: "Toggle numbered list" },
+  { id: "core.utility.quote", command: "maginalia.editor.toggleBlockquote", group: "lists", label: ">", title: "Toggle blockquote" },
+  { id: "core.utility.internal-link", command: "maginalia.editor.insertInternalLink", group: "insert", label: "Internal Link", title: "Insert internal link" },
+  { id: "core.utility.external-link", command: "maginalia.editor.insertExternalLink", group: "insert", label: "External Link", title: "Insert external link" },
+  { id: "core.utility.image", command: "maginalia.editor.importImage", group: "insert", label: "Image", title: "Import image asset" },
+  { id: "core.utility.horizontal", command: "maginalia.renderer.setHorizontal", group: "presentation", label: "Horizontal", title: "Set horizontal writing" },
+  { id: "core.utility.vertical", command: "maginalia.renderer.setVertical", group: "presentation", label: "Vertical", title: "Set vertical writing" },
+  { id: "core.utility.more", command: "maginalia.workbench.showCommandPalette", group: "more", label: "More…", title: "Show command palette" }
+] as const) utilityBar.register(contribution);
+
+const contextMenuRegistry = new ContextMenuRegistry();
+for (const contribution of [
+  { id: "core.menu.caret.undo", location: "editor.caret", command: "maginalia.editor.undo", group: "history", order: 10 },
+  { id: "core.menu.caret.redo", location: "editor.caret", command: "maginalia.editor.redo", group: "history", order: 20 },
+  { id: "core.menu.caret.paragraph", location: "editor.caret", command: "maginalia.editor.setParagraph", group: "block", order: 10 },
+  { id: "core.menu.caret.heading", location: "editor.caret", command: "maginalia.editor.setHeading1", group: "block", order: 20 },
+  { id: "core.menu.caret.bullets", location: "editor.caret", command: "maginalia.editor.toggleBulletList", group: "block", order: 30 },
+  { id: "core.menu.caret.numbered", location: "editor.caret", command: "maginalia.editor.toggleNumberedList", group: "block", order: 40 },
+  { id: "core.menu.caret.quote", location: "editor.caret", command: "maginalia.editor.toggleBlockquote", group: "block", order: 50 },
+  { id: "core.menu.caret.internal", location: "editor.caret", command: "maginalia.editor.insertInternalLink", group: "insert", order: 10 },
+  { id: "core.menu.caret.external", location: "editor.caret", command: "maginalia.editor.insertExternalLink", group: "insert", order: 20 },
+  { id: "core.menu.caret.image", location: "editor.caret", command: "maginalia.editor.importImage", group: "insert", order: 30 },
+  { id: "core.menu.selection.bold", location: "editor.selection", command: "maginalia.editor.toggleBold", group: "format", order: 10 },
+  { id: "core.menu.selection.italic", location: "editor.selection", command: "maginalia.editor.toggleItalic", group: "format", order: 20 },
+  { id: "core.menu.selection.code", location: "editor.selection", command: "maginalia.editor.toggleInlineCode", group: "format", order: 30 },
+  { id: "core.menu.selection.internal", location: "editor.selection", command: "maginalia.editor.insertInternalLink", group: "insert", order: 10 },
+  { id: "core.menu.selection.external", location: "editor.selection", command: "maginalia.editor.insertExternalLink", group: "insert", order: 20 },
+  { id: "core.menu.selection.quote", location: "editor.selection", command: "maginalia.editor.toggleBlockquote", group: "block", order: 10 },
+  { id: "core.menu.selection.bullets", location: "editor.selection", command: "maginalia.editor.toggleBulletList", group: "block", order: 20 },
+  { id: "core.menu.quote.references", location: "editor.quote-ref", command: "maginalia.references.refresh", group: "quote", order: 10 },
+  { id: "core.menu.media.image", location: "editor.media", command: "maginalia.editor.importImage", group: "media", order: 10 }
+] as const) contextMenuRegistry.register(contribution);
+
+const contextMenuSurface = new ContextMenuSurface({
+  menuRegistry: contextMenuRegistry,
+  commandRegistry,
+  getContext: () => commandContext.snapshot(),
+  onError: (message) => {
+    documentStatus.dataset.state = "error";
+    documentStatus.textContent = `Command failed: ${message}`;
+  }
+});
+
+function contextMenuLocation(): string {
+  const context = commandContext.snapshot();
+  if (context["editor.mediaType"] !== "none") return "editor.media";
+  if (context["editor.hasQuoteRef"] === true) return "editor.quote-ref";
+  if (context["editor.linkType"] === "internal") return "editor.link.internal";
+  if (context["editor.linkType"] === "external") return "editor.link.external";
+  return context["editor.hasSelection"] === true ? "editor.selection" : "editor.caret";
+}
+
+function bindWorkbenchContextMenu(target: HTMLElement): void {
+  target.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    contextMenuSurface.open(contextMenuLocation(), event.clientX, event.clientY, document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  });
+}
+
+bindWorkbenchContextMenu(editorContainer);
+bindWorkbenchContextMenu(previewContainer);
+commandContext.onDidChange(() => {
+  utilityBar.refresh();
+  contextMenuSurface.refresh();
+});
+updateCommandContext();
+
+// The bridge is populated only from the Mod host's validated declarative
+// snapshot. It intentionally has no access to a Mod's code or renderer DOM.
+const modContributionBridge = new ModContributionBridge({
+  commands: commandRegistry,
+  menus: contextMenuRegistry,
+  utilityBar,
+  invoke: async (modId, commandId) => modController?.invoke(modId, commandId) ?? null,
+  onError: (message) => {
+    documentStatus.dataset.state = "error";
+    documentStatus.textContent = `Mod contribution unavailable: ${message}`;
+  }
+});
 
 editorContainer.addEventListener("dragover", (event) => {
   const files = event.dataTransfer?.files;
   if (files !== undefined && files.length > 0) event.preventDefault();
 });
-editorContainer.addEventListener("drop", (event) => {
-  const dropped = event.dataTransfer?.files.item(0);
+
+async function importImageFileIntoCurrentDocument(droppedFile: File): Promise<void> {
   const projectId = projectController?.getState().project?.projectId;
-  // Prevent Chromium from navigating the Workbench to a dropped local file.
-  // The actual source path crosses only the bounded import IPC below.
-  if (event.dataTransfer?.files.length) event.preventDefault();
-  if (dropped === null || dropped === undefined || projectId === undefined || typeof window.maginalia.importDroppedImageFile !== "function") {
+  if (projectId === undefined || typeof window.maginalia.importDroppedImageFile !== "function") {
     documentStatus.dataset.state = "error";
-    documentStatus.textContent = "Open a Project document before dropping an image.";
+    documentStatus.textContent = "Open a Project document before importing an image.";
     return;
   }
-  const droppedFile = dropped;
-  void importDroppedImageIntoDocument({
+  const result = await importDroppedImageIntoDocument({
     writing: controller,
     importImage: () => {
       const optimize = rendererPreferences.load().optimizeDroppedImages;
@@ -581,11 +833,40 @@ editorContainer.addEventListener("drop", (event) => {
       // absolute filesystem path.
       return window.maginalia.importDroppedImageFile({ projectId, file: droppedFile, optimize });
     }
-  }).then((result) => {
-    if (result.kind === "inserted") return;
-    documentStatus.dataset.state = "error";
-    documentStatus.textContent = result.message;
   });
+  if (result.kind === "inserted") return;
+  documentStatus.dataset.state = "error";
+  documentStatus.textContent = result.message;
+}
+
+function chooseImageForImport(): Promise<void> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/webp,image/gif";
+    input.addEventListener("change", () => {
+      const file = input.files?.item(0);
+      if (file !== null && file !== undefined) {
+        void importImageFileIntoCurrentDocument(file).finally(resolve);
+      } else {
+        resolve();
+      }
+    }, { once: true });
+    input.click();
+  });
+}
+
+editorContainer.addEventListener("drop", (event) => {
+  const dropped = event.dataTransfer?.files.item(0);
+  // Prevent Chromium from navigating the Workbench to a dropped local file.
+  // The actual source path crosses only the bounded import IPC below.
+  if (event.dataTransfer?.files.length) event.preventDefault();
+  if (dropped === null || dropped === undefined) {
+    documentStatus.dataset.state = "error";
+    documentStatus.textContent = "Open a Project document before dropping an image.";
+    return;
+  }
+  void importImageFileIntoCurrentDocument(dropped);
 });
 
 async function flushAllAutosave(): Promise<boolean> {
@@ -609,6 +890,7 @@ function renderModState(state: ModControllerState): void {
 
   modViewHost.replaceChildren();
   modCommandHost.replaceChildren();
+  modContributionBridge.replace(state.snapshot);
 
   for (const registration of state.snapshot.contributions) {
     const contribution = registration.contribution;
@@ -622,6 +904,7 @@ function renderModState(state: ModControllerState): void {
       continue;
     }
 
+    if (contribution.kind !== "command") continue;
     const command = document.createElement("button");
     command.type = "button";
     command.className = "mod-command";
@@ -630,7 +913,7 @@ function renderModState(state: ModControllerState): void {
     command.textContent = contribution.title;
     command.disabled = state.busy;
     command.addEventListener("click", () => {
-      void modController?.invoke(registration.modId, contribution.id);
+      void commandRegistry.execute(contribution.id, commandContext.snapshot());
     });
     modCommandHost.append(command);
   }
@@ -1112,18 +1395,21 @@ function renderShelfState(state: ShelfViewState): void {
   libraryQuery.disabled = state.status === "searching";
   librarySearchButton.disabled = state.status === "searching";
 
+  const filteredResults = filterShelfResults(state.results, state.query, shelfSearchFields);
+  const filterError = shelfFilterValidation(shelfSearchFields);
+  const reviewerTotal = state.total ?? state.results.length;
   const statusMessage = state.status === "searching"
     ? "Searching Reviewer…"
     : state.status === "ready"
-      ? `${state.results.length} quotation${state.results.length === 1 ? "" : "s"}`
+      ? filterError ?? `${filteredResults.length} matching quotation${filteredResults.length === 1 ? "" : "s"}${reviewerTotal > state.results.length ? ` (first ${state.results.length} of ${reviewerTotal})` : ""}`
       : "Search approved Reviewer quotations.";
   libraryStatus.dataset.state = state.status;
   libraryStatus.textContent = statusMessage;
-  libraryError.textContent = state.error ?? "";
-  libraryError.hidden = state.error === null;
+  libraryError.textContent = filterError ?? state.error ?? "";
+  libraryError.hidden = filterError === null && state.error === null;
 
   libraryResults.replaceChildren();
-  for (const reference of state.results) {
+  for (const reference of filteredResults) {
     const item = document.createElement("li");
     item.className = "library-result";
 
@@ -1165,6 +1451,46 @@ function renderShelfState(state: ShelfViewState): void {
     item.append(details, actions);
     libraryResults.append(item);
   }
+}
+
+function renderProjectSearchState(state: ProjectSearchState): void {
+  projectSearchResults.replaceChildren();
+  projectSearchPanel.hidden = unifiedSearchMode === "shelf" || state.kind === "idle";
+  projectSearchPreview.hidden = selectedProjectSearchText === null;
+  if (state.kind === "searching") {
+    unifiedSearchStatus.textContent = "Searching Project Markdown…";
+    return;
+  }
+  if (state.kind === "error") {
+    unifiedSearchStatus.textContent = state.message;
+    return;
+  }
+  if (state.kind === "results") {
+    unifiedSearchStatus.textContent = `${state.results.length} Project result${state.results.length === 1 ? "" : "s"}${state.total > state.results.length ? ` (first ${state.results.length} of ${state.total})` : ""}`;
+    for (const result of state.results) {
+      const item = document.createElement("li");
+      item.className = "project-search-result";
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "project-search-open";
+      open.textContent = result.displayName;
+      open.title = "Preview raw Markdown";
+      open.addEventListener("click", () => {
+        selectedProjectSearchText = result.text;
+        projectSearchSource.value = result.text;
+        projectSearchInsertionTarget = controller.captureInsertionTarget();
+        projectSearchPreview.hidden = false;
+        projectSearchError.hidden = true;
+      });
+      const excerpt = document.createElement("pre");
+      excerpt.className = "project-search-excerpt";
+      excerpt.textContent = result.excerpt;
+      item.append(open, excerpt);
+      projectSearchResults.append(item);
+    }
+    return;
+  }
+  unifiedSearchStatus.textContent = "";
 }
 
 function renderReferencesState(state: ReferencesViewState): void {
@@ -1321,6 +1647,13 @@ function getShelfApi(): ShelfControllerApi | null {
   };
 }
 
+function getProjectSearchApi(): { searchProjectMarkdown(request: { readonly projectId: string; readonly query: string }): Promise<import("../project-search-ipc").SearchProjectMarkdownResult> } | null {
+  const api = window.maginalia;
+  if (!api || typeof api.searchProjectMarkdown !== "function") return null;
+  const searchProjectMarkdown = api.searchProjectMarkdown;
+  return { searchProjectMarkdown: (request) => searchProjectMarkdown(request) };
+}
+
 function getReferencesApi(): ReferencesControllerApi | null {
   const api = window.maginalia;
   if (!api || typeof api.resolveReferences !== "function") return null;
@@ -1420,6 +1753,7 @@ const repositorySmokeMode = smokeQuery === "repository";
 const shelfSmokeMode = smokeQuery === "shelf";
 const d5SmokeMode = smokeQuery === "d5" || smokeQuery === "d5-restore";
 const exportSmokeMode = smokeQuery === "export";
+const gSmokeMode = smokeQuery === "g";
 const projectSmokeMode = smokeQuery === "project";
 const projectRestoreSmokeMode = smokeQuery === "project-restore" || smokeQuery === "d5-restore";
 const projectCreateSmokeMode = smokeQuery === "project-create";
@@ -1431,7 +1765,8 @@ const projectLikeSmokeMode = projectSmokeMode
   || projectCreateSmokeMode
   || shelfSmokeMode
   || d5SmokeMode
-  || exportSmokeMode;
+  || exportSmokeMode
+  || gSmokeMode;
 openButton.textContent = writingSmokeMode ? "Open" : legacyWorkspaceMode ? "Open Document" : "Open Project";
 repositoryNavigation.hidden = writingSmokeMode;
 projectHeaderActions.hidden = writingSmokeMode || legacyWorkspaceMode;
@@ -1645,6 +1980,87 @@ if (libraryApi) {
 }
 
 let shelfController: ShelfController | undefined;
+let projectSearchController: ProjectSearchController | undefined;
+const projectSearchApi = getProjectSearchApi();
+if (projectSearchApi) {
+  projectSearchController = new ProjectSearchController(projectSearchApi, renderProjectSearchState);
+} else {
+  unifiedSearchStatus.textContent = "Project search is unavailable.";
+}
+
+function updateUnifiedSearchMode(mode: UnifiedSearchMode): void {
+  unifiedSearchMode = mode;
+  for (const button of unifiedSearchModeButtons) {
+    button.setAttribute("aria-pressed", String(button.dataset.unifiedSearchMode === mode));
+  }
+  shelfSearchFieldset.hidden = mode === "project";
+  libraryResults.hidden = mode === "project";
+  if (mode === "shelf") {
+    projectSearchPanel.hidden = true;
+  } else {
+    renderProjectSearchState(projectSearchController?.getState() ?? { kind: "idle" });
+  }
+}
+
+async function runUnifiedSearch(): Promise<void> {
+  const query = libraryQuery.value;
+  if (legacyLibraryActive) {
+    await libraryController?.search();
+    return;
+  }
+  const filterError = shelfFilterValidation(shelfSearchFields);
+  if ((unifiedSearchMode === "all" || unifiedSearchMode === "shelf") && filterError !== null) {
+    libraryError.textContent = filterError;
+    libraryError.hidden = false;
+    return;
+  }
+  libraryError.hidden = true;
+  const jobs: Promise<void>[] = [];
+  if (unifiedSearchMode === "all" || unifiedSearchMode === "shelf") jobs.push(shelfController?.search(query) ?? Promise.resolve());
+  if (unifiedSearchMode === "all" || unifiedSearchMode === "project") {
+    selectedProjectSearchText = null;
+    projectSearchPreview.hidden = true;
+    const projectId = projectController?.getState().project?.projectId ?? null;
+    jobs.push(projectSearchController?.search(projectId, query) ?? Promise.resolve());
+  }
+  await Promise.all(jobs);
+}
+
+for (const button of unifiedSearchModeButtons) {
+  button.addEventListener("click", () => {
+    const mode = button.dataset.unifiedSearchMode;
+    if (mode !== "all" && mode !== "shelf" && mode !== "project") return;
+    updateUnifiedSearchMode(mode);
+    if (libraryQuery.value.length > 0) void runUnifiedSearch();
+  });
+}
+for (const input of shelfSearchFieldInputs) {
+  input.addEventListener("change", () => {
+    const field = input.dataset.shelfSearchField;
+    if (field !== "quote" && field !== "comment" && field !== "title" && field !== "authors" && field !== "pageLabel") return;
+    if (input.checked) shelfSearchFields.add(field);
+    else shelfSearchFields.delete(field);
+    if (shelfController) renderShelfState(shelfController.getState());
+  });
+}
+projectSearchInsert.addEventListener("click", () => {
+  const selected = projectSearchSource.value.slice(projectSearchSource.selectionStart, projectSearchSource.selectionEnd);
+  const result = insertProjectSearchSelection(
+    projectSearchInsertionTarget,
+    selected,
+    (target) => controller.isInsertionTargetCurrent(target),
+    (target, text) => controller.insertMarkdownText(target, text)
+  );
+  if (result === "inserted") {
+    projectSearchError.hidden = true;
+    return;
+  }
+  projectSearchError.textContent = result === "empty-selection"
+    ? "Select text in the source preview before inserting it."
+    : "The destination changed before insertion. Select a Project result again.";
+  projectSearchError.hidden = false;
+});
+
 const shelfApi = getShelfApi();
 if (!shelfApi) {
   libraryQuery.disabled = true;
@@ -1667,11 +2083,7 @@ if (!shelfApi) {
   });
   librarySearchForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (legacyLibraryActive) {
-      void libraryController?.search();
-    } else {
-      void shelfController?.search();
-    }
+    void runUnifiedSearch();
   });
 }
 
@@ -1837,6 +2249,19 @@ saveButton.addEventListener("click", () => {
 });
 
 window.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "p") {
+    event.preventDefault();
+    commandPalette.isOpen() ? commandPalette.close() : commandPalette.open();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && /^[0-6]$/u.test(event.key)) {
+    event.preventDefault();
+    const id = event.key === "0"
+      ? "maginalia.editor.setParagraph"
+      : `maginalia.editor.setHeading${event.key}`;
+    void commandRegistry.execute(id, commandContext.snapshot());
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.shiftKey) {
     const commandByKey: Record<string, Parameters<WorkbenchCore["execute"]>[0]> = {
       a: "maginalia.view.toggleActivityBar",

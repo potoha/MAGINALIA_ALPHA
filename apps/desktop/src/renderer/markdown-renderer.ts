@@ -263,6 +263,11 @@ export function scanLocalMediaTargets(text: string): readonly string[] {
 export interface MarkdownPreviewRenderOptions {
   /** Bound by the host to main-process validated shell.openExternal only. */
   readonly onOpenExternal?: (url: string) => void;
+  /**
+   * Preview-only interaction seam for a main-process-approved internal link.
+   * This carries an opaque file ID, never a Project path or DOM/editor handle.
+   */
+  readonly onOpenInternal?: (link: { readonly target: string; readonly fileId: string }) => void;
 }
 
 function appendInlines(
@@ -304,13 +309,17 @@ function appendInlines(
         break;
       }
       case "internal-link": {
-        // Slice F presents the resolved state and retains the opaque command
-        // payload on the typed node.  It deliberately has no click/double-
-        // click listener: opening a new tab is a Slice G interaction.
         const link = document.createElement("span");
         link.className = `rendered-internal-link ${node.state}`;
         link.dataset.internalLinkState = node.state;
         if (node.state === "unresolved") link.title = "Linked document unavailable";
+        if (node.state === "resolved" && node.fileId !== undefined) {
+          link.dataset.internalLinkTarget = node.target;
+          link.addEventListener("dblclick", (event) => {
+            event.preventDefault();
+            options.onOpenInternal?.({ target: node.target, fileId: node.fileId as string });
+          });
+        }
         appendInlines(link, node.label, options);
         parent.append(link);
         break;

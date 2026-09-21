@@ -12,6 +12,7 @@ const MODEL_URI = monaco.Uri.parse("inmemory://maginalia/current.md");
 export class MonacoMarkdownSurface implements WritingSurface {
   private readonly editor: monaco.editor.IStandaloneCodeEditor;
   private readonly changeListeners = new Set<(text: string) => void>();
+  private readonly selectionListeners = new Set<(range: WritingTextRange) => void>();
   private model: monaco.editor.ITextModel | undefined;
   private modelChangeSubscription: monaco.IDisposable | undefined;
 
@@ -23,6 +24,10 @@ export class MonacoMarkdownSurface implements WritingSurface {
       padding: { top: 16, bottom: 16 },
       scrollBeyondLastLine: false,
       wordWrap: "on"
+    });
+    this.editor.onDidChangeCursorSelection(() => {
+      const range = this.getSelection();
+      for (const listener of this.selectionListeners) listener(range);
     });
     this.replaceDocument("");
   }
@@ -102,15 +107,24 @@ export class MonacoMarkdownSurface implements WritingSurface {
     return () => this.changeListeners.delete(listener);
   }
 
+  public onSelectionChange(listener: (range: WritingTextRange) => void): () => void {
+    this.selectionListeners.add(listener);
+    return () => this.selectionListeners.delete(listener);
+  }
+
   public focus(): void {
     this.editor.focus();
   }
+
+  public undo(): void { this.editor.trigger("maginalia-command", "undo", undefined); }
+  public redo(): void { this.editor.trigger("maginalia-command", "redo", undefined); }
 
   public dispose(): void {
     this.modelChangeSubscription?.dispose();
     this.model?.dispose();
     this.editor.dispose();
     this.changeListeners.clear();
+    this.selectionListeners.clear();
   }
 
   private hasUtf8Bom(): boolean {

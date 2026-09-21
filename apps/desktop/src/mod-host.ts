@@ -44,6 +44,32 @@ export interface ModCommandContribution {
   readonly kind: "command";
   readonly id: string;
   readonly title: string;
+  readonly category?: string;
+  readonly keywords?: readonly string[];
+  readonly when?: string;
+}
+
+/** Declarative only: the renderer decides how and where to draw this item. */
+export interface ModContextMenuContribution {
+  readonly kind: "context-menu";
+  readonly id: string;
+  readonly location: string;
+  readonly command: string;
+  readonly group?: string;
+  readonly order?: number;
+  readonly when?: string;
+}
+
+/** Declarative only: no DOM, Monaco, or Electron object crosses this boundary. */
+export interface ModUtilityBarContribution {
+  readonly kind: "utility-bar";
+  readonly id: string;
+  readonly command: string;
+  readonly group: string;
+  readonly label: string;
+  readonly title?: string;
+  readonly when?: string;
+  readonly order?: number;
 }
 
 export type ModViewRegion = "main" | "secondary";
@@ -56,7 +82,7 @@ export interface ModViewContribution {
   readonly groupId?: string;
 }
 
-export type ModContribution = ModCommandContribution | ModViewContribution;
+export type ModContribution = ModCommandContribution | ModContextMenuContribution | ModUtilityBarContribution | ModViewContribution;
 
 /** A contribution after its owning Mod has been attached. */
 export interface ModContributionRegistration {
@@ -210,12 +236,38 @@ function isExactKeys(value: Record<string, unknown>, keys: readonly string[]): b
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
+function hasOnlyKeys(value: Record<string, unknown>, required: readonly string[], allowed: readonly string[]): boolean {
+  return required.every((key) => Object.hasOwn(value, key))
+    && Object.keys(value).every((key) => allowed.includes(key));
+}
+
 function boundedText(value: unknown, maxLength: number): value is string {
   return typeof value === "string"
     && value.length > 0
     && value.length <= maxLength
     && value.trim() === value
     && !/[\u0000\r\n]/u.test(value);
+}
+
+function boundedOptionalText(value: unknown, maxLength: number): value is string | undefined {
+  return value === undefined || boundedText(value, maxLength);
+}
+
+function validKeywords(value: unknown): value is readonly string[] | undefined {
+  return value === undefined
+    || (Array.isArray(value) && value.length <= 24 && value.every((item) => boundedText(item, 64)));
+}
+
+function validWhen(value: unknown): value is string | undefined {
+  return value === undefined || boundedText(value, 240);
+}
+
+function validOrder(value: unknown): value is number | undefined {
+  return value === undefined || (typeof value === "number" && Number.isSafeInteger(value) && value >= -10_000 && value <= 10_000);
+}
+
+function validLocation(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z][a-z0-9.-]{0,127}$/iu.test(value);
 }
 
 /** Validate the small, versioned manifest without applying defaults. */
@@ -405,14 +457,63 @@ function isWorkerCommandResult(value: unknown): value is WorkerCommandResultMess
     && "result" in value;
 }
 
-function validateContribution(value: unknown): ModContribution | undefined {
+function validateContribution(value: unknown, modId: string): ModContribution | undefined {
   if (!isPlainRecord(value) || typeof value.kind !== "string") return undefined;
   if (value.kind === "command") {
-    if (!isExactKeys(value, ["kind", "id", "title"])
+    if (!hasOnlyKeys(value, ["kind", "id", "title"], ["kind", "id", "title", "category", "keywords", "when"])
       || typeof value.id !== "string"
+      || !value.id.startsWith(`${modId}.`)
       || !CONTRIBUTION_ID_PATTERN.test(value.id)
-      || !boundedText(value.title, MAX_TITLE_LENGTH)) return undefined;
-    return Object.freeze({ kind: "command", id: value.id, title: value.title });
+      || !boundedText(value.title, MAX_TITLE_LENGTH)
+      || !boundedOptionalText(value.category, MAX_TITLE_LENGTH)
+      || !validKeywords(value.keywords)
+      || !validWhen(value.when)) return undefined;
+    return Object.freeze({
+      kind: "command", id: value.id, title: value.title,
+      ...(value.category === undefined ? {} : { category: value.category }),
+      ...(value.keywords === undefined ? {} : { keywords: Object.freeze([...value.keywords]) }),
+      ...(value.when === undefined ? {} : { when: value.when })
+    });
+  }
+  if (value.kind === "context-menu") {
+    if (!hasOnlyKeys(value, ["kind", "id", "location", "command"], ["kind", "id", "location", "command", "group", "order", "when"])
+      || typeof value.id !== "string"
+      || !value.id.startsWith(`${modId}.`)
+      || !CONTRIBUTION_ID_PATTERN.test(value.id)
+      || typeof value.command !== "string"
+      || !value.command.startsWith(`${modId}.`)
+      || !CONTRIBUTION_ID_PATTERN.test(value.command)
+      || !validLocation(value.location)
+      || (value.group !== undefined && (typeof value.group !== "string" || !GROUP_ID_PATTERN.test(value.group)))
+      || !validOrder(value.order)
+      || !validWhen(value.when)) return undefined;
+    return Object.freeze({
+      kind: "context-menu", id: value.id, location: value.location, command: value.command,
+      ...(value.group === undefined ? {} : { group: value.group }),
+      ...(value.order === undefined ? {} : { order: value.order }),
+      ...(value.when === undefined ? {} : { when: value.when })
+    });
+  }
+  if (value.kind === "utility-bar") {
+    if (!hasOnlyKeys(value, ["kind", "id", "command", "group", "label"], ["kind", "id", "command", "group", "label", "title", "when", "order"])
+      || typeof value.id !== "string"
+      || !value.id.startsWith(`${modId}.`)
+      || !CONTRIBUTION_ID_PATTERN.test(value.id)
+      || typeof value.command !== "string"
+      || !value.command.startsWith(`${modId}.`)
+      || !CONTRIBUTION_ID_PATTERN.test(value.command)
+      || typeof value.group !== "string"
+      || !GROUP_ID_PATTERN.test(value.group)
+      || !boundedText(value.label, 80)
+      || !boundedOptionalText(value.title, MAX_TITLE_LENGTH)
+      || !validWhen(value.when)
+      || !validOrder(value.order)) return undefined;
+    return Object.freeze({
+      kind: "utility-bar", id: value.id, command: value.command, group: value.group, label: value.label,
+      ...(value.title === undefined ? {} : { title: value.title }),
+      ...(value.when === undefined ? {} : { when: value.when }),
+      ...(value.order === undefined ? {} : { order: value.order })
+    });
   }
   if (value.kind === "view") {
     if ((!isExactKeys(value, ["kind", "id", "title", "region"])
@@ -439,7 +540,7 @@ function validateCommit(value: WorkerCommitMessage, expectedModId: string): read
   const contributions: ModContribution[] = [];
   const ids = new Set<string>();
   for (const raw of value.contributions) {
-    const contribution = validateContribution(raw);
+    const contribution = validateContribution(raw, expectedModId);
     if (contribution === undefined || ids.has(`${contribution.kind}:${contribution.id}`)) return undefined;
     ids.add(`${contribution.kind}:${contribution.id}`);
     contributions.push(contribution);

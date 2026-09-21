@@ -65,6 +65,21 @@ export type ProjectInternalLinkResult =
   | { readonly kind: "missing"; readonly message: string }
   | { readonly kind: "invalid"; readonly message: string };
 
+export interface ProjectSearchMatch {
+  readonly fileId: string;
+  /** Project-relative display name; never an absolute filesystem path. */
+  readonly displayName: string;
+  readonly excerpt: string;
+  /** Raw Markdown is returned only for a selected file in the current Project. */
+  readonly text: string;
+}
+
+export interface ProjectSearchResult {
+  readonly kind: "results";
+  readonly results: readonly ProjectSearchMatch[];
+  readonly total: number;
+}
+
 export interface ProjectPathStore {
   load(): Promise<string | null>;
   save(canonicalRoot: string): Promise<void>;
@@ -141,6 +156,29 @@ const PROJECT_FILE_CREATE_FAILED: ProjectFailure = {
   message: "The Markdown file could not be created. Try another name."
 };
 
+const PROJECT_SEARCH_FAILED: ProjectFailure = {
+  kind: "error",
+  code: "project-state-unavailable",
+  message: "The Project Markdown could not be searched. Check the Project folder and try again."
+};
+
+const PROJECT_SEARCH_LIMIT = 100;
+
+function normalizedSearch(value: string): string {
+  return value.normalize("NFC").toLocaleLowerCase();
+}
+
+function projectSearchExcerpt(text: string, query: string): string {
+  const normalized = normalizedSearch(text);
+  const index = normalized.indexOf(query);
+  if (index < 0) return text.slice(0, 240);
+  const start = Math.max(0, index - 80);
+  const end = Math.min(text.length, index + query.length + 160);
+  const prefix = start > 0 ? "…" : "";
+  const suffix = end < text.length ? "…" : "";
+  return `${prefix}${text.slice(start, end)}${suffix}`;
+}
+
 function isDocumentType(value: unknown): value is ProjectDocumentType {
   return typeof value === "string" && (PROJECT_DOCUMENT_TYPES as readonly string[]).includes(value);
 }
@@ -214,6 +252,42 @@ export class ProjectService {
     const resolved = await this.workspace.resolveManuscriptPath(owner, projectId, fileId);
     if (resolved.kind !== "resolved") return resolved;
     return this.markdown.openForOwner(owner, resolved.canonicalPath);
+  }
+
+  /** Literal, current-Project-only Markdown search. No paths cross this API. */
+  public async searchMarkdownForOwner(
+    owner: object,
+    projectId: string,
+    query: string
+  ): Promise<ProjectSearchResult> {
+    const needle = normalizedSearch(query);
+    const records = await this.workspace.listProjectMarkdownForOwner(owner, projectId);
+    if (!Array.isArray(records)) {
+      const failure = records as DocumentWorkspaceFailure;
+      throw new Error(failure.message);
+    }
+    const matches: ProjectSearchMatch[] = [];
+    let total = 0;
+    for (const record of records) {
+      let text: string;
+      try {
+        text = await readFile(record.canonicalPath, "utf8");
+      } catch {
+        // A concurrently removed file is not a search failure for the rest of
+        // the Project. It simply cannot contribute a stale result.
+        continue;
+      }
+      if (needle.length > 0 && !normalizedSearch(text).includes(needle)) continue;
+      total += 1;
+      if (matches.length >= PROJECT_SEARCH_LIMIT) continue;
+      matches.push(Object.freeze({
+        fileId: record.manuscriptId,
+        displayName: record.displayName,
+        excerpt: projectSearchExcerpt(text, needle),
+        text
+      }));
+    }
+    return Object.freeze({ kind: "results", results: Object.freeze(matches), total });
   }
 
   /** Resolve a validated authoring link to an opaque file ID, never a path. */

@@ -20,6 +20,7 @@
     "smoke:shelf": "npm run smoke:shelf --workspace @maginalia/desktop",
     "smoke:d5": "npm run smoke:d5 --workspace @maginalia/desktop",
     "smoke:export": "npm run smoke:export --workspace @maginalia/desktop",
+    "smoke:g": "npm run smoke:g --workspace @maginalia/desktop",
     "start": "npm run start --workspace @maginalia/desktop"
   }
 }

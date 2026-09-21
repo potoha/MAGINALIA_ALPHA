@@ -15,8 +15,10 @@ export function activate(api) {
 
   api.registerCommand(
     {
-      id: "open-active-document-in-secondary",
-      title: "Open Active Markdown in Secondary Pane"
+      id: "dev.maginalia.secondary-markdown.open-active-document-in-secondary",
+      title: "Open Active Markdown in Secondary Pane",
+      category: "Secondary Markdown",
+      keywords: ["secondary", "markdown", "pane"]
     },
     async () => {
       const active = await api.getActiveDocument();
@@ -35,4 +37,20 @@ export function activate(api) {
       });
     }
   );
+
+  api.registerContextMenu({
+    id: "dev.maginalia.secondary-markdown.menu.open-active-document-in-secondary",
+    location: "editor.caret",
+    command: "dev.maginalia.secondary-markdown.open-active-document-in-secondary",
+    group: "mod",
+    order: 100
+  });
+  api.registerUtilityBar({
+    id: "dev.maginalia.secondary-markdown.utility.open-active-document-in-secondary",
+    command: "dev.maginalia.secondary-markdown.open-active-document-in-secondary",
+    group: "more",
+    label: "Secondary",
+    title: "Open active Markdown in secondary pane",
+    order: 100
+  });
 }

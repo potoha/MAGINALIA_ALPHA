@@ -34,7 +34,11 @@ export interface WritingSurface {
   getSelection(): WritingTextRange;
   applyEdit(range: WritingTextRange, text: string, selection: WritingTextRange): void;
   onTextChange(listener: (text: string) => void): () => void;
+  onSelectionChange?(listener: (range: WritingTextRange) => void): () => void;
   focus(): void;
+  /** Optional editor command capability; the controller never exposes Monaco. */
+  undo?(): void;
+  redo?(): void;
 }
 
 /** UTF-16 offsets shared by Writing Core and the Monaco adapter. */
@@ -118,6 +122,7 @@ export class WritingController {
   private readonly view: WritingView;
   private readonly confirmReplace: WritingControllerOptions["confirmReplace"];
   private readonly removeTextListener: () => void;
+  private readonly removeSelectionListener: (() => void) | undefined;
   private readonly store: DocumentSessionStore;
   private autosave: WritingAutosavePort | undefined;
   private removeAutosaveStatusListener: (() => void) | undefined;
@@ -133,6 +138,7 @@ export class WritingController {
   private errorMessage: string | undefined;
   private readonly documentChangeListeners = new Set<WritingDocumentChangeListener>();
   private readonly sessionChangeListeners = new Set<(change: DocumentSessionChange) => void>();
+  private readonly selectionChangeListeners = new Set<(range: WritingTextRange) => void>();
 
   public constructor(options: WritingControllerOptions) {
     this.api = options.api;
@@ -141,6 +147,7 @@ export class WritingController {
     this.confirmReplace = options.confirmReplace;
     this.store = options.sessionStore ?? new DocumentSessionStore();
     this.removeTextListener = this.surface.onTextChange((text) => this.handleTextChange(text));
+    this.removeSelectionListener = this.surface.onSelectionChange?.((range) => this.notifySelectionChange(range));
     this.removeStoreListener = this.store.onDidChange((change) => this.handleStoreChange(change));
     this.setAutosaveCoordinator(options.autosave ?? null);
     this.render();
@@ -171,6 +178,12 @@ export class WritingController {
     this.sessionChangeListeners.add(listener);
     listener(this.store.snapshot());
     return () => this.sessionChangeListeners.delete(listener);
+  }
+
+  public onSelectionChange(listener: (range: WritingTextRange) => void): () => void {
+    this.selectionChangeListeners.add(listener);
+    listener(this.surface.getSelection());
+    return () => this.selectionChangeListeners.delete(listener);
   }
 
   /** Attach the already-created coordinator after the controller is constructed. */
@@ -272,6 +285,24 @@ export class WritingController {
       revision: current.revision,
       range: { start: range.start, end: range.end }
     };
+  }
+
+  /** A primitive UTF-16 selection snapshot for command handlers. */
+  public getSelection(): WritingTextRange {
+    return this.surface.getSelection();
+  }
+
+  /** Monaco remains behind WritingSurface; undo follows its normal edit stack. */
+  public undo(): boolean {
+    if (this.getActiveSession() === null || this.surface.undo === undefined) return false;
+    this.surface.undo();
+    return true;
+  }
+
+  public redo(): boolean {
+    if (this.getActiveSession() === null || this.surface.redo === undefined) return false;
+    this.surface.redo();
+    return true;
   }
 
   public isInsertionTargetCurrent(target: CapturedInsertionTarget | null): boolean {
@@ -614,6 +645,7 @@ export class WritingController {
 
   public dispose(): void {
     this.removeTextListener();
+    this.removeSelectionListener?.();
     this.removeStoreListener();
     this.removeAutosaveStatusListener?.();
     this.removeAutosaveStatusListener = undefined;
@@ -667,6 +699,12 @@ export class WritingController {
       } catch {
         // A view listener must not interrupt editor state transitions.
       }
+    }
+  }
+
+  private notifySelectionChange(range: WritingTextRange): void {
+    for (const listener of this.selectionChangeListeners) {
+      try { listener(range); } catch { /* selection observers are isolated */ }
     }
   }
 

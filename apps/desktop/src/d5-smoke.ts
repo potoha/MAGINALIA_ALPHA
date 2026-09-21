@@ -5,6 +5,7 @@ import type { BrowserWindow } from "electron";
 const POLL_INTERVAL_MS = 25;
 const STATE_TIMEOUT_MS = 20_000;
 const FIRST_MOD_ID = "dev.maginalia.secondary-markdown";
+const SECONDARY_MARKDOWN_COMMAND_ID = `${FIRST_MOD_ID}.open-active-document-in-secondary`;
 
 interface D5TabState {
   readonly documentId: string;
@@ -181,7 +182,7 @@ async function waitForModContribution(window: BrowserWindow): Promise<D5Renderer
   return waitForState(
     window,
     (state) => state.modsStatus.includes("1 Mod active")
-      && state.modCommandIds.includes("open-active-document-in-secondary")
+      && state.modCommandIds.includes(SECONDARY_MARKDOWN_COMMAND_ID)
       && state.modViewIds.includes("secondary-markdown"),
     "the first-party Secondary Markdown Mod contribution"
   );
@@ -300,7 +301,7 @@ export async function runD5Smoke(
 
   const contribution = await waitForModContribution(window);
   assert(contribution.hasShelf && contribution.referencesStatus !== "error", "Shelf or References disappeared with the Mod");
-  await clickButton(window, "#mod-command-host button[data-mod-command-id='open-active-document-in-secondary']", "invoke Secondary Markdown");
+  await clickButton(window, `#mod-command-host button[data-mod-command-id='${SECONDARY_MARKDOWN_COMMAND_ID}']`, "invoke Secondary Markdown");
   const rejected = await waitForState(
     window,
     (state) => state.modsStatus.includes("already open in the central editor")

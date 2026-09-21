@@ -25,6 +25,10 @@ import {
   createProjectHandlers
 } from "./project-ipc";
 import { FileProjectPathStore, ProjectService } from "./project-service";
+import {
+  SEARCH_PROJECT_MARKDOWN_CHANNEL,
+  createProjectSearchHandlers
+} from "./project-search-ipc";
 import { ProjectAssetService } from "./project-assets";
 import {
   IMPORT_DROPPED_IMAGE_CHANNEL,
@@ -91,6 +95,7 @@ import {
   parseQuotationSmokeMode,
   parseD5SmokeMode,
   parseExportSmokeMode,
+  parseGSmokeMode,
   parseProjectSmokeMode,
   parseRepositorySmokeMode,
   parseShelfSmokeMode,
@@ -105,6 +110,7 @@ import { runWorkspaceSmoke } from "./workspace-smoke";
 import { runWritingSmoke } from "./writing-smoke";
 import { runD5Smoke, runD5RestoreSmoke } from "./d5-smoke";
 import { runExportSmoke } from "./export-smoke";
+import { runGSmoke } from "./g-smoke";
 import {
   LOAD_WORKSPACE_STATE_CHANNEL,
   SAVE_WORKSPACE_STATE_CHANNEL,
@@ -147,6 +153,7 @@ const repositorySmoke = parseRepositorySmokeMode(process.argv);
 const shelfSmoke = parseShelfSmokeMode(process.argv);
 const d5Smoke = parseD5SmokeMode(process.argv);
 const exportSmoke = parseExportSmokeMode(process.argv);
+const gSmoke = parseGSmokeMode(process.argv);
 const smokeMode = quickSmokeMode
   || writingSmoke.requested
   || workspaceSmoke.requested
@@ -155,7 +162,8 @@ const smokeMode = quickSmokeMode
   || repositorySmoke.requested
   || shelfSmoke.requested
   || d5Smoke.requested
-  || exportSmoke.requested;
+  || exportSmoke.requested
+  || gSmoke.requested;
 const markdownFileService = new MarkdownFileService();
 const workspaceStateStore = new FileWorkspaceStateStore(path.join(app.getPath("userData"), "workspace-state.json"));
 const workspaceStateHandlers = createWorkspaceStateHandlers({
@@ -241,7 +249,8 @@ const projectHandlers = createProjectHandlers({
   pickProjectFolder: () => ((projectSmoke.requested && !projectSmoke.restore)
       || shelfSmoke.requested
       || (d5Smoke.requested && !d5Smoke.restore)
-      || exportSmoke.requested)
+      || exportSmoke.requested
+      || gSmoke.requested)
     ? Promise.resolve({
       canceled: false,
       filePaths: projectSmoke.requested && !projectSmoke.restore
@@ -250,7 +259,9 @@ const projectHandlers = createProjectHandlers({
           ? shelfSmoke.rootPath ? [shelfSmoke.rootPath] : []
           : d5Smoke.requested
             ? d5Smoke.rootPath ? [d5Smoke.rootPath] : []
-            : exportSmoke.rootPath ? [exportSmoke.rootPath] : []
+            : exportSmoke.requested
+              ? exportSmoke.rootPath ? [exportSmoke.rootPath] : []
+              : gSmoke.rootPath ? [gSmoke.rootPath] : []
     })
     : dialog.showOpenDialog({
       title: "Open Project",
@@ -280,6 +291,9 @@ const projectLinkHandlers = createProjectLinkHandlers({
   openExternal: async (url) => {
     await shell.openExternal(url, { activate: true });
   }
+});
+const projectSearchHandlers = createProjectSearchHandlers({
+  searchProjectMarkdown: (owner, projectId, query) => projectService.searchMarkdownForOwner(owner, projectId, query)
 });
 const projectAssetHandlers = createProjectAssetHandlers({
   resolve: (owner, projectId, relativePath) => projectAssetService.resolveForOwner(owner, projectId, relativePath),
@@ -465,6 +479,7 @@ let repositorySmokeFinished = false;
 let shelfSmokeFinished = false;
 let d5SmokeFinished = false;
 let exportSmokeFinished = false;
+let gSmokeFinished = false;
 
 const CLOUD_USER_CODE_PATTERN = /^[A-Za-z0-9-]+$/u;
 const MAX_CLOUD_USER_CODE_LENGTH = 64;
@@ -669,6 +684,21 @@ function completeExportSmoke(): void {
   app.quit();
 }
 
+function failGSmoke(error: unknown): void {
+  if (gSmokeFinished) return;
+  gSmokeFinished = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`MAGINALIA_ELECTRON_G_SMOKE_FAILED ${message}`);
+  app.exit(1);
+}
+
+function completeGSmoke(): void {
+  if (gSmokeFinished) return;
+  gSmokeFinished = true;
+  console.log("MAGINALIA_ELECTRON_G_SMOKE_OK");
+  app.quit();
+}
+
 async function handleOpenMarkdown(event: IpcMainInvokeEvent): Promise<OpenMarkdownResult> {
   if (writingSmoke.requested) {
     if (!writingSmoke.filePath) {
@@ -784,6 +814,7 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(RESOLVE_INTERNAL_LINK_CHANNEL, projectLinkHandlers.resolveInternalLink);
   ipcMain.handle(OPEN_INTERNAL_LINK_CHANNEL, projectLinkHandlers.openInternalLink);
   ipcMain.handle(OPEN_EXTERNAL_LINK_CHANNEL, projectLinkHandlers.openExternalLink);
+  ipcMain.handle(SEARCH_PROJECT_MARKDOWN_CHANNEL, projectSearchHandlers.searchProjectMarkdown);
   ipcMain.handle(RESOLVE_PROJECT_ASSET_CHANNEL, projectAssetHandlers.resolveAsset);
   ipcMain.handle(IMPORT_DROPPED_IMAGE_CHANNEL, projectAssetHandlers.importDroppedImage);
   ipcMain.handle(OPEN_LIBRARY_CHANNEL, libraryHandlers.openLibrary);
@@ -872,6 +903,7 @@ function createMainWindow(): BrowserWindow {
       || shelfSmoke.requested
       || d5Smoke.requested
       || exportSmoke.requested
+      || gSmoke.requested
       || !smokeMode,
     webPreferences: createSecureWebPreferences(path.join(__dirname, "preload.js"))
   });
@@ -1136,6 +1168,34 @@ function createMainWindow(): BrowserWindow {
         }
       });
     }
+  } else if (gSmoke.requested) {
+    if (!gSmoke.rootPath) {
+      failGSmoke(new Error("The G smoke fixture root was not provided."));
+    } else {
+      window.webContents.once("did-finish-load", () => {
+        void runGSmoke(window, gSmoke.rootPath!).then(
+          () => completeGSmoke(),
+          (error: unknown) => failGSmoke(error)
+        );
+      });
+      window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) failGSmoke(new Error(`Renderer load failed (${errorCode}): ${errorDescription}`));
+      });
+      window.webContents.on("preload-error", (_event, preloadPath, error) => {
+        failGSmoke(new Error(`Preload failed (${preloadPath}): ${error.message}`));
+      });
+      window.webContents.on("render-process-gone", (_event, details) => {
+        failGSmoke(new Error(`Renderer process exited: ${details.reason}`));
+      });
+      window.webContents.on("unresponsive", () => {
+        failGSmoke(new Error("Renderer became unresponsive."));
+      });
+      window.webContents.on("console-message", (event) => {
+        if (event.level === "error") {
+          failGSmoke(new Error(`Renderer console error at ${event.sourceId}:${event.lineNumber}: ${event.message}`));
+        }
+      });
+    }
   } else if (quickSmokeMode) {
     window.webContents.once("did-finish-load", () => {
       console.log("MAGINALIA_ELECTRON_SMOKE_OK");
@@ -1163,7 +1223,9 @@ function createMainWindow(): BrowserWindow {
               ? { query: { smoke: d5Smoke.restore ? "d5-restore" : "d5" } }
               : exportSmoke.requested
                 ? { query: { smoke: "export" } }
-                : undefined;
+                : gSmoke.requested
+                  ? { query: { smoke: "g" } }
+                  : undefined;
   void window.loadFile(rendererPath, loadOptions).catch((error: unknown) => {
     console.error("MAGINALIA renderer failed to load", error);
     if (writingSmoke.requested) {
@@ -1182,6 +1244,8 @@ function createMainWindow(): BrowserWindow {
       failD5Smoke(error);
     } else if (exportSmoke.requested) {
       failExportSmoke(error);
+    } else if (gSmoke.requested) {
+      failGSmoke(error);
     } else if (quickSmokeMode) {
       app.exit(1);
     }
@@ -1212,6 +1276,9 @@ function createMainWindow(): BrowserWindow {
     }
     if (exportSmoke.requested && !exportSmokeFinished) {
       failExportSmoke(new Error("Export smoke window closed before completion."));
+    }
+    if (gSmoke.requested && !gSmokeFinished) {
+      failGSmoke(new Error("G smoke window closed before completion."));
     }
     if (mainWindow === window) {
       mainWindow = null;

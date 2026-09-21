@@ -24,6 +24,8 @@ export interface ShelfViewState {
   readonly query: string;
   readonly status: ShelfStatus;
   readonly results: readonly ReviewerQuotation[];
+  /** Broad Reviewer total; may exceed the bounded result page. */
+  readonly total?: number;
   readonly selectedAnnotationId: string | null;
   readonly error: string | null;
 }
@@ -42,6 +44,7 @@ const EMPTY_STATE: ShelfViewState = Object.freeze({
   query: "",
   status: "idle",
   results: Object.freeze([]),
+  total: 0,
   selectedAnnotationId: null,
   error: null
 });
@@ -77,6 +80,7 @@ function copyState(state: ShelfViewState): ShelfViewState {
     query: state.query,
     status: state.status,
     results: copyResults(state.results),
+    total: state.total,
     selectedAnnotationId: state.selectedAnnotationId,
     error: state.error
   });
@@ -106,6 +110,7 @@ export class ShelfController {
     this.replaceState({
       query,
       results: [],
+      total: 0,
       selectedAnnotationId: null,
       status: "idle",
       error: null
@@ -123,7 +128,7 @@ export class ShelfController {
     if (query !== undefined && query !== this.state.query) this.setQuery(query);
     const operation = ++this.generation;
     const request: SearchShelfRequest = { query: this.state.query };
-    this.replaceState({ results: [], selectedAnnotationId: null, status: "searching", error: null });
+    this.replaceState({ results: [], total: 0, selectedAnnotationId: null, status: "searching", error: null });
     return this.searchOperation(operation, request);
   }
 
@@ -192,6 +197,7 @@ export class ShelfController {
     }
     this.replaceState({
       results: copyResults(result.results),
+      total: result.total,
       selectedAnnotationId: null,
       status: "ready",
       error: null

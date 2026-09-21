@@ -95,4 +95,26 @@ describe("Project service", () => {
       expect(stats.isDirectory()).toBe(true);
     });
   });
+
+  it("searches only the current Project Markdown with opaque ids and literal Unicode matching", async () => {
+    await withTempDirectory(async (directory) => {
+      const root = path.join(directory, "searchable");
+      const otherRoot = path.join(directory, "other");
+      await mkdir(path.join(root, "notes"), { recursive: true });
+      await mkdir(otherRoot);
+      await writeFile(path.join(root, "notes", "eco.md"), "# エーコ\n作品の開放性について。", "utf8");
+      await writeFile(path.join(root, "miss.md"), "different", "utf8");
+      await writeFile(path.join(otherRoot, "outside.md"), "作品の開放性", "utf8");
+      const owner = {};
+      const service = new ProjectService(new DocumentWorkspaceService(), new MarkdownFileService(), new MemoryProjectPathStore());
+      const project = opened(await service.openForOwner(owner, root));
+      const result = await service.searchMarkdownForOwner(owner, project.project.projectId, "作品の開放性");
+      expect(result.total).toBe(1);
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0]).toMatchObject({ displayName: "notes/eco.md" });
+      expect(result.results[0]?.excerpt).toContain("作品の開放性");
+      expect(JSON.stringify(result)).not.toContain(root);
+      expect(JSON.stringify(result)).not.toContain(otherRoot);
+    });
+  });
 });

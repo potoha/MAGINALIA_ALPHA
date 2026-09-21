@@ -152,4 +152,28 @@ describe("ProjectNavigationController", () => {
     expect(test.view.state.project).toEqual(project);
     expect(test.view.error).toBe("Save or discard the current manuscript before switching.");
   });
+
+  it("uses the opaque internal-link target once and then activates its existing tab", async () => {
+    const test = harness("cancel", (file) => opened(file), true);
+    await test.navigation.openProject();
+    const load = vi.fn(async () => opened(files[1]));
+    await test.navigation.openInternalLink(files[1].fileId, load);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(test.view.state.activeFileId).toBe(files[1].fileId);
+    test.surface.edit("linked edit");
+    await test.navigation.openInternalLink(files[1].fileId, load);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(test.surface.text).toBe("linked edit");
+    expect(test.writing.getDocumentSessions()).toHaveLength(2);
+  });
+
+  it("keeps the current source/session intact when an internal target is missing", async () => {
+    const test = harness("cancel", (file) => opened(file), true);
+    await test.navigation.openProject();
+    test.surface.edit("source remains");
+    await test.navigation.openInternalLink(files[1].fileId, async () => ({ kind: "error", message: "Linked document unavailable" }));
+    expect(test.surface.text).toBe("source remains");
+    expect(test.view.state.activeFileId).toBe(files[0].fileId);
+    expect(test.view.error).toBe("Linked document unavailable");
+  });
 });

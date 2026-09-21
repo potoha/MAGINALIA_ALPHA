@@ -9,6 +9,7 @@ export const SHELF_SMOKE_FLAG = "--smoke-shelf";
 export const D5_SMOKE_FLAG = "--smoke-d5";
 export const D5_RESTORE_SMOKE_FLAG = "--smoke-d5-restore";
 export const EXPORT_SMOKE_FLAG = "--smoke-export";
+export const G_SMOKE_FLAG = "--smoke-g";
 
 export interface WritingSmokeMode {
   readonly requested: boolean;
@@ -50,6 +51,11 @@ export interface D5SmokeMode {
 }
 
 export interface ExportSmokeMode {
+  readonly requested: boolean;
+  readonly rootPath?: string;
+}
+
+export interface GSmokeMode {
   readonly requested: boolean;
   readonly rootPath?: string;
 }
@@ -141,6 +147,14 @@ export function parseExportSmokeMode(args: readonly string[]): ExportSmokeMode {
   const flagIndex = args.indexOf(EXPORT_SMOKE_FLAG);
   if (flagIndex < 0) return { requested: false };
 
+  const candidate = args[flagIndex + 1];
+  if (!candidate || candidate.startsWith("--")) return { requested: true };
+  return { requested: true, rootPath: candidate };
+}
+
+export function parseGSmokeMode(args: readonly string[]): GSmokeMode {
+  const flagIndex = args.indexOf(G_SMOKE_FLAG);
+  if (flagIndex < 0) return { requested: false };
   const candidate = args[flagIndex + 1];
   if (!candidate || candidate.startsWith("--")) return { requested: true };
   return { requested: true, rootPath: candidate };

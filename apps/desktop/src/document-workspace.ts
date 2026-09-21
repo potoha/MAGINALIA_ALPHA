@@ -61,6 +61,13 @@ export interface ResolvedProjectManuscript {
   readonly canonicalPath: string;
 }
 
+/** Main-process-only nested Project Markdown inventory for bounded services. */
+export interface ProjectMarkdownRecord {
+  readonly manuscriptId: string;
+  readonly displayName: string;
+  readonly canonicalPath: string;
+}
+
 export type ResolveProjectManuscriptResult = ResolvedProjectManuscript | DocumentWorkspaceFailure;
 
 /** Main-process-only root handle used by the Project adapter. */
@@ -444,6 +451,31 @@ export class DocumentWorkspaceService {
       displayName: match.relativeName,
       canonicalPath: match.canonicalPath
     };
+  }
+
+  /**
+   * Return nested Markdown records only to another main-process Project
+   * service. The renderer receives neither canonical paths nor this method.
+   */
+  public async listProjectMarkdownForOwner(
+    owner: unknown,
+    documentId: unknown
+  ): Promise<readonly ProjectMarkdownRecord[] | DocumentWorkspaceFailure> {
+    const document = this.findDocument(owner, documentId);
+    if ("kind" in document) return document;
+    const root = await this.resolveDocumentRoot(owner, documentId);
+    if (root.kind !== "resolved") return root;
+    let entries: readonly { readonly relativeName: string; readonly canonicalPath: string }[];
+    try {
+      entries = await listNestedMarkdownEntries(root.canonicalRoot);
+    } catch (error: unknown) {
+      return rootFailure(error);
+    }
+    return entries.map((entry) => Object.freeze({
+      manuscriptId: manuscriptIdForPath(root.canonicalRoot, entry.relativeName),
+      displayName: entry.relativeName,
+      canonicalPath: entry.canonicalPath
+    }));
   }
 
   /** Refresh the root-level Markdown registry while retaining existing IDs. */

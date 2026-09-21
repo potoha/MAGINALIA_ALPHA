@@ -128,6 +128,11 @@ import {
   type ProjectAssetIpcResult,
   type ResolveProjectAssetRequest
 } from "./project-assets-ipc";
+import {
+  SEARCH_PROJECT_MARKDOWN_CHANNEL,
+  type SearchProjectMarkdownRequest,
+  type SearchProjectMarkdownResult
+} from "./project-search-ipc";
 
 export const OPEN_MARKDOWN_CHANNEL = "maginalia:open-markdown";
 export const SAVE_MARKDOWN_CHANNEL = "maginalia:save-markdown";
@@ -149,6 +154,7 @@ export { RESOLVE_REFERENCES_CHANNEL } from "./reference-ipc";
 export { RESOLVE_EXPORT_CHANNEL, WRITE_EXPORT_CHANNEL } from "./export-contract";
 export { RESOLVE_INTERNAL_LINK_CHANNEL, OPEN_INTERNAL_LINK_CHANNEL, OPEN_EXTERNAL_LINK_CHANNEL } from "./project-link-ipc";
 export { RESOLVE_PROJECT_ASSET_CHANNEL, IMPORT_DROPPED_IMAGE_CHANNEL } from "./project-assets-ipc";
+export { SEARCH_PROJECT_MARKDOWN_CHANNEL } from "./project-search-ipc";
 export {
   INVOKE_MOD_COMMAND_CHANNEL,
   LOAD_MODS_CHANNEL,
@@ -191,6 +197,7 @@ export type {
   SearchShelfRequest,
   SearchShelfResult
 } from "./reviewer-ipc";
+export type { SearchProjectMarkdownRequest, SearchProjectMarkdownResult } from "./project-search-ipc";
 export type {
   ResolveReferencesRequest,
   ResolveReferencesResult
@@ -286,6 +293,7 @@ export interface MarkdownPreloadApi {
   resolveProjectAsset?(request: ResolveProjectAssetRequest): Promise<ProjectAssetIpcResult>;
   /** Resolves an OS-dropped File inside preload, never in renderer code. */
   importDroppedImageFile?(request: { readonly projectId: string; readonly file: File; readonly optimize: boolean }): Promise<ProjectAssetIpcResult>;
+  searchProjectMarkdown?(request: SearchProjectMarkdownRequest): Promise<SearchProjectMarkdownResult>;
   loadMods?(): Promise<ModSnapshotResult>;
   reloadMods?(): Promise<ModSnapshotResult>;
   openModsFolder?(): Promise<OpenModsFolderResult>;
@@ -447,6 +455,8 @@ export function createMarkdownPreloadApi(
         optimize: request.optimize
       }) as Promise<ProjectAssetIpcResult>;
     },
+    searchProjectMarkdown: (request) =>
+      invoke(SEARCH_PROJECT_MARKDOWN_CHANNEL, request) as Promise<SearchProjectMarkdownResult>,
     loadMods: () => invoke(LOAD_MODS_CHANNEL) as Promise<ModSnapshotResult>,
     reloadMods: () => invoke(RELOAD_MODS_CHANNEL) as Promise<ModSnapshotResult>,
     openModsFolder: () => invoke(OPEN_MODS_FOLDER_CHANNEL) as Promise<OpenModsFolderResult>,

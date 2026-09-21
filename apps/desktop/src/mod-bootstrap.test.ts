@@ -76,7 +76,30 @@ describe("Mod bootstrap protocol", () => {
       modId: firstPartyManifest.id,
       contributions: [
         { kind: "view", id: "secondary-markdown", title: "Secondary Markdown", region: "secondary", groupId: "sidebar-group-1" },
-        { kind: "command", id: "open-active-document-in-secondary", title: "Open Active Markdown in Secondary Pane" }
+        {
+          kind: "command",
+          id: "dev.maginalia.secondary-markdown.open-active-document-in-secondary",
+          title: "Open Active Markdown in Secondary Pane",
+          category: "Secondary Markdown",
+          keywords: ["secondary", "markdown", "pane"]
+        },
+        {
+          kind: "context-menu",
+          id: "dev.maginalia.secondary-markdown.menu.open-active-document-in-secondary",
+          location: "editor.caret",
+          command: "dev.maginalia.secondary-markdown.open-active-document-in-secondary",
+          group: "mod",
+          order: 100
+        },
+        {
+          kind: "utility-bar",
+          id: "dev.maginalia.secondary-markdown.utility.open-active-document-in-secondary",
+          command: "dev.maginalia.secondary-markdown.open-active-document-in-secondary",
+          group: "more",
+          label: "Secondary",
+          title: "Open active Markdown in secondary pane",
+          order: 100
+        }
       ]
     });
   });
@@ -87,7 +110,7 @@ describe("Mod bootstrap protocol", () => {
       await writeFile(entry, [
         "export function activate(api) {",
         "  api.registerView({ id: 'secondary', title: 'Secondary', region: 'secondary' });",
-        "  api.registerCommand({ id: 'open', title: 'Open' }, () => ({ kind: 'opened' }));",
+        "  api.registerCommand({ id: 'dev.example.test.open', title: 'Open' }, () => ({ kind: 'opened' }));",
         "}"
       ].join("\n"), "utf8");
       const port = new FakePort();
@@ -108,7 +131,7 @@ describe("Mod bootstrap protocol", () => {
         modId: manifest.id,
         contributions: [
           { kind: "view", id: "secondary", title: "Secondary", region: "secondary" },
-          { kind: "command", id: "open", title: "Open" }
+        { kind: "command", id: "dev.example.test.open", title: "Open" }
         ]
       });
     });
