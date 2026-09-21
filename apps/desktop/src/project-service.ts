@@ -17,6 +17,7 @@ import {
   PROJECT_DOCUMENT_TYPES,
   type ProjectDocumentType,
 } from "./project-metadata";
+import { validateInternalLinkTarget } from "./project-links";
 
 export interface ProjectSummary {
   readonly projectId: string;
@@ -58,6 +59,11 @@ export interface ProjectFailure {
 export type ProjectResult = ProjectOpened | DocumentWorkspaceFailure | ProjectFailure;
 export type ProjectCreateResult = ProjectOpened | DocumentWorkspaceFailure | ProjectFailure;
 export type ProjectFileCreateResult = ProjectFileCreated | DocumentWorkspaceFailure | ProjectFailure;
+
+export type ProjectInternalLinkResult =
+  | { readonly kind: "resolved"; readonly fileId: string; readonly displayName: string }
+  | { readonly kind: "missing"; readonly message: string }
+  | { readonly kind: "invalid"; readonly message: string };
 
 export interface ProjectPathStore {
   load(): Promise<string | null>;
@@ -206,6 +212,32 @@ export class ProjectService {
     fileId: string,
   ): Promise<OpenMarkdownResult | DocumentWorkspaceFailure> {
     const resolved = await this.workspace.resolveManuscriptPath(owner, projectId, fileId);
+    if (resolved.kind !== "resolved") return resolved;
+    return this.markdown.openForOwner(owner, resolved.canonicalPath);
+  }
+
+  /** Resolve a validated authoring link to an opaque file ID, never a path. */
+  public async resolveInternalLinkForOwner(
+    owner: object,
+    projectId: string,
+    target: string
+  ): Promise<ProjectInternalLinkResult> {
+    const validation = validateInternalLinkTarget(target);
+    if (validation.kind !== "valid") {
+      return { kind: "invalid", message: "That internal link target is not a Project-relative Markdown path." };
+    }
+    const resolved = await this.workspace.resolveProjectManuscriptByRelativeName(owner, projectId, validation.target);
+    if (resolved.kind !== "resolved") return { kind: "missing", message: "The linked Markdown document was not found in this Project." };
+    return { kind: "resolved", fileId: resolved.manuscriptId, displayName: resolved.displayName };
+  }
+
+  /** Open a target which was previously represented by an opaque resolver ID. */
+  public async openInternalLinkedFileForOwner(
+    owner: object,
+    projectId: string,
+    fileId: string
+  ): Promise<OpenMarkdownResult | DocumentWorkspaceFailure> {
+    const resolved = await this.workspace.resolveProjectManuscriptPath(owner, projectId, fileId);
     if (resolved.kind !== "resolved") return resolved;
     return this.markdown.openForOwner(owner, resolved.canonicalPath);
   }

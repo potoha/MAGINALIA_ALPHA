@@ -3,6 +3,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  shell,
   type IpcMainInvokeEvent,
   type WebContents
 } from "electron";
@@ -24,6 +25,18 @@ import {
   createProjectHandlers
 } from "./project-ipc";
 import { FileProjectPathStore, ProjectService } from "./project-service";
+import { ProjectAssetService } from "./project-assets";
+import {
+  IMPORT_DROPPED_IMAGE_CHANNEL,
+  RESOLVE_PROJECT_ASSET_CHANNEL,
+  createProjectAssetHandlers
+} from "./project-assets-ipc";
+import {
+  OPEN_EXTERNAL_LINK_CHANNEL,
+  OPEN_INTERNAL_LINK_CHANNEL,
+  RESOLVE_INTERNAL_LINK_CHANNEL,
+  createProjectLinkHandlers
+} from "./project-link-ipc";
 import {
   OPEN_LIBRARY_CHANNEL,
   OPEN_MARKDOWN_CHANNEL,
@@ -155,6 +168,7 @@ const projectService = new ProjectService(
   markdownFileService,
   new FileProjectPathStore(path.join(app.getPath("userData"), "last-project.json"))
 );
+const projectAssetService = new ProjectAssetService(documentWorkspaceService);
 const libraryService = new LibraryService();
 const repositoryService = new LocalRepositoryService();
 let quotationResolveCount = 0;
@@ -259,6 +273,18 @@ const projectHandlers = createProjectHandlers({
     request.title,
     request.documentType
   )
+});
+const projectLinkHandlers = createProjectLinkHandlers({
+  resolveInternalLink: (owner, projectId, target) => projectService.resolveInternalLinkForOwner(owner, projectId, target),
+  openInternalLink: (owner, projectId, fileId) => projectService.openInternalLinkedFileForOwner(owner, projectId, fileId),
+  openExternal: async (url) => {
+    await shell.openExternal(url, { activate: true });
+  }
+});
+const projectAssetHandlers = createProjectAssetHandlers({
+  resolve: (owner, projectId, relativePath) => projectAssetService.resolveForOwner(owner, projectId, relativePath),
+  importDroppedImage: (owner, projectId, sourcePath, optimize) =>
+    projectAssetService.importDroppedImageForOwner(owner, projectId, sourcePath, optimize)
 });
 const libraryHandlers = createLibraryHandlers({
   pickLibraryFolder: () => quotationSmoke.requested
@@ -755,6 +781,11 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(RESTORE_PROJECT_CHANNEL, projectHandlers.restoreProject);
   ipcMain.handle(OPEN_PROJECT_FILE_CHANNEL, projectHandlers.openProjectFile);
   ipcMain.handle(CREATE_PROJECT_FILE_CHANNEL, projectHandlers.createProjectFile);
+  ipcMain.handle(RESOLVE_INTERNAL_LINK_CHANNEL, projectLinkHandlers.resolveInternalLink);
+  ipcMain.handle(OPEN_INTERNAL_LINK_CHANNEL, projectLinkHandlers.openInternalLink);
+  ipcMain.handle(OPEN_EXTERNAL_LINK_CHANNEL, projectLinkHandlers.openExternalLink);
+  ipcMain.handle(RESOLVE_PROJECT_ASSET_CHANNEL, projectAssetHandlers.resolveAsset);
+  ipcMain.handle(IMPORT_DROPPED_IMAGE_CHANNEL, projectAssetHandlers.importDroppedImage);
   ipcMain.handle(OPEN_LIBRARY_CHANNEL, libraryHandlers.openLibrary);
   ipcMain.handle(SEARCH_LIBRARY_CHANNEL, libraryHandlers.searchLibrary);
   ipcMain.handle(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL, libraryHandlers.resolveQuotationForInsert);
@@ -793,6 +824,11 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(RESTORE_PROJECT_CHANNEL);
   ipcMain.removeHandler(OPEN_PROJECT_FILE_CHANNEL);
   ipcMain.removeHandler(CREATE_PROJECT_FILE_CHANNEL);
+  ipcMain.removeHandler(RESOLVE_INTERNAL_LINK_CHANNEL);
+  ipcMain.removeHandler(OPEN_INTERNAL_LINK_CHANNEL);
+  ipcMain.removeHandler(OPEN_EXTERNAL_LINK_CHANNEL);
+  ipcMain.removeHandler(RESOLVE_PROJECT_ASSET_CHANNEL);
+  ipcMain.removeHandler(IMPORT_DROPPED_IMAGE_CHANNEL);
   ipcMain.removeHandler(OPEN_LIBRARY_CHANNEL);
   ipcMain.removeHandler(SEARCH_LIBRARY_CHANNEL);
   ipcMain.removeHandler(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL);

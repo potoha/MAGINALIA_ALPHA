@@ -15,6 +15,12 @@ import {
   type ShelfViewState
 } from "./shelf-controller";
 import { MonacoMarkdownSurface } from "./monaco-surface";
+import { renderMarkdownPreview } from "./markdown-renderer";
+import { PreviewController } from "./preview-controller";
+import { createLocalStorageRendererPreferenceStore } from "./renderer-preferences";
+import { resolvePreviewMedia } from "./project-media";
+import { resolvePreviewInternalLinks } from "./preview-links";
+import { importDroppedImageIntoDocument } from "./dropped-image";
 import type { DocumentSessionChange } from "./document-sessions";
 import type { WorkspaceState } from "../workspace-state-ipc";
 import { ModController, type ModControllerState } from "./mod-controller";
@@ -193,7 +199,15 @@ app.innerHTML = `
       </aside>
       <section class="editor-area" aria-label="Editor Area">
         <nav id="document-tabs" class="document-tabs" role="tablist" aria-label="Open documents"></nav>
+        <div id="document-presentation-controls" class="document-presentation-controls" aria-label="Document presentation">
+          <button id="document-edit-mode" type="button" aria-pressed="true">Edit</button>
+          <button id="document-preview-mode" type="button" aria-pressed="false">Preview</button>
+          <span class="presentation-divider" aria-hidden="true"></span>
+          <button id="document-horizontal" type="button" aria-pressed="true">Horizontal</button>
+          <button id="document-vertical" type="button" aria-pressed="false">Vertical</button>
+        </div>
         <section id="editor" class="editor" aria-label="Markdown editor"></section>
+        <section id="markdown-preview" class="markdown-preview" aria-label="Markdown preview" hidden></section>
       </section>
       <aside id="secondary-sidebar" class="workbench-sidebar secondary-sidebar" data-workbench-region="secondary-sidebar" aria-label="Secondary sidebar">
         <div id="secondary-sidebar-resizer" class="sidebar-resizer" data-workbench-resize="secondary-sidebar" role="separator" aria-label="Resize secondary sidebar" aria-orientation="vertical" tabindex="0"></div>
@@ -303,6 +317,11 @@ const libraryResults = requiredElement<HTMLUListElement>("#library-results");
 const modViewHost = requiredElement<HTMLElement>("#mod-view-host");
 const modCommandHost = requiredElement<HTMLElement>("#mod-command-host");
 const editorContainer = requiredElement<HTMLElement>("#editor");
+const previewContainer = requiredElement<HTMLElement>("#markdown-preview");
+const editModeButton = requiredElement<HTMLButtonElement>("#document-edit-mode");
+const previewModeButton = requiredElement<HTMLButtonElement>("#document-preview-mode");
+const horizontalDirectionButton = requiredElement<HTMLButtonElement>("#document-horizontal");
+const verticalDirectionButton = requiredElement<HTMLButtonElement>("#document-vertical");
 const projectHeaderActions = requiredElement<HTMLElement>("#project-header-actions");
 const projectNewButton = requiredElement<HTMLButtonElement>("#project-new");
 const projectNewMenu = requiredElement<HTMLElement>("#project-new-menu");
@@ -483,6 +502,91 @@ const controller = new WritingController({
 
 const autosaveCoordinator = new AutosaveCoordinator({ writing: controller });
 controller.setAutosaveCoordinator(autosaveCoordinator);
+
+// Declared before PreviewController's immediate initial render. Project
+// activation fills it later; previews without a Project show safe fallbacks.
+let projectController: ProjectNavigationController | undefined;
+const rendererPreferences = createLocalStorageRendererPreferenceStore();
+let previewMediaGeneration = 0;
+
+const previewApi = typeof window.maginalia.resolveReferences === "function"
+  ? { resolveReferences: (request: { readonly text: string }) => window.maginalia.resolveReferences(request) }
+  : null;
+const previewController = new PreviewController({
+  writing: controller,
+  api: previewApi,
+  preferences: rendererPreferences,
+  view: {
+    setPreviewState(state): void {
+      const previewing = state.mode === "preview";
+      editorContainer.hidden = previewing;
+      previewContainer.hidden = !previewing;
+      editModeButton.setAttribute("aria-pressed", String(!previewing));
+      previewModeButton.setAttribute("aria-pressed", String(previewing));
+      horizontalDirectionButton.setAttribute("aria-pressed", String(state.direction === "horizontal"));
+      verticalDirectionButton.setAttribute("aria-pressed", String(state.direction === "vertical"));
+      horizontalDirectionButton.disabled = state.document === null;
+      verticalDirectionButton.disabled = state.document === null;
+      if (!previewing) return;
+      const text = state.document?.currentText ?? "";
+      const generation = ++previewMediaGeneration;
+      const projectId = projectController?.getState().project?.projectId ?? null;
+      renderMarkdownPreview(previewContainer, text, state.quoteMap, state.direction);
+      const linkApi = typeof window.maginalia.resolveInternalLink === "function"
+        ? { resolveInternalLink: (request: { readonly projectId: string; readonly target: string }) => window.maginalia.resolveInternalLink(request) }
+        : null;
+      const mediaApi = typeof window.maginalia.resolveProjectAsset === "function"
+        ? { resolveProjectAsset: (request: { readonly projectId: string; readonly relativePath: string }) => window.maginalia.resolveProjectAsset(request) }
+        : null;
+      void Promise.all([
+        resolvePreviewInternalLinks(linkApi, projectId, text),
+        resolvePreviewMedia(mediaApi, projectId, text)
+      ]).then(([internalLinks, media]) => {
+        if (generation !== previewMediaGeneration || previewController.getMode() !== "preview") return;
+        const current = controller.getDocumentState();
+        if (current?.currentText !== text) return;
+        renderMarkdownPreview(previewContainer, text, state.quoteMap, state.direction, {}, internalLinks, media);
+      }).catch(() => undefined);
+    }
+  }
+});
+
+editModeButton.addEventListener("click", () => previewController.setMode("edit"));
+previewModeButton.addEventListener("click", () => previewController.setMode("preview"));
+horizontalDirectionButton.addEventListener("click", () => previewController.setDirection("horizontal"));
+verticalDirectionButton.addEventListener("click", () => previewController.setDirection("vertical"));
+
+editorContainer.addEventListener("dragover", (event) => {
+  const files = event.dataTransfer?.files;
+  if (files !== undefined && files.length > 0) event.preventDefault();
+});
+editorContainer.addEventListener("drop", (event) => {
+  const dropped = event.dataTransfer?.files.item(0);
+  const projectId = projectController?.getState().project?.projectId;
+  // Prevent Chromium from navigating the Workbench to a dropped local file.
+  // The actual source path crosses only the bounded import IPC below.
+  if (event.dataTransfer?.files.length) event.preventDefault();
+  if (dropped === null || dropped === undefined || projectId === undefined || typeof window.maginalia.importDroppedImageFile !== "function") {
+    documentStatus.dataset.state = "error";
+    documentStatus.textContent = "Open a Project document before dropping an image.";
+    return;
+  }
+  const droppedFile = dropped;
+  void importDroppedImageIntoDocument({
+    writing: controller,
+    importImage: () => {
+      const optimize = rendererPreferences.load().optimizeDroppedImages;
+      // Electron 32+ intentionally removed File.path. The preload helper
+      // uses webUtils.getPathForFile, so renderer code never receives an
+      // absolute filesystem path.
+      return window.maginalia.importDroppedImageFile({ projectId, file: droppedFile, optimize });
+    }
+  }).then((result) => {
+    if (result.kind === "inserted") return;
+    documentStatus.dataset.state = "error";
+    documentStatus.textContent = result.message;
+  });
+});
 
 async function flushAllAutosave(): Promise<boolean> {
   const results = await autosaveCoordinator.flushAll();
@@ -810,7 +914,6 @@ function bindProjectMenuTriggerKeyboard(menu: HTMLElement, trigger: HTMLButtonEl
   });
 }
 
-let projectController: ProjectNavigationController | undefined;
 let workspaceController: WorkspaceNavigationController | undefined;
 let persistedWorkspaceState: WorkspaceState | null = null;
 

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { createMarkdownPreloadApi, type MarkdownEventSubscribe } from "./preload-api";
 
 const subscribe: MarkdownEventSubscribe = (channel, listener) => {
@@ -15,6 +15,7 @@ const subscribe: MarkdownEventSubscribe = (channel, listener) => {
 const api = createMarkdownPreloadApi(
   (channel, ...args) => ipcRenderer.invoke(channel, ...args),
   subscribe,
+  (file) => webUtils.getPathForFile(file),
 );
 
 contextBridge.exposeInMainWorld("maginalia", api);

@@ -53,6 +53,16 @@ export interface ResolvedManuscriptPath {
 
 export type ResolveManuscriptPathResult = ResolvedManuscriptPath | DocumentWorkspaceFailure;
 
+/** Main-process-only nested Markdown resolution for Project wiki links. */
+export interface ResolvedProjectManuscript {
+  readonly kind: "resolved";
+  readonly manuscriptId: string;
+  readonly displayName: string;
+  readonly canonicalPath: string;
+}
+
+export type ResolveProjectManuscriptResult = ResolvedProjectManuscript | DocumentWorkspaceFailure;
+
 /** Main-process-only root handle used by the Project adapter. */
 export interface ResolvedDocumentRoot {
   readonly kind: "resolved";
@@ -251,6 +261,33 @@ function isDirectChild(rootPath: string, candidatePath: string): boolean {
     && !relativePath.includes(path.sep);
 }
 
+function projectRelativeName(rootPath: string, candidatePath: string): string | null {
+  const relative = path.relative(rootPath, candidatePath);
+  if (relative.length === 0 || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+  return relative.split(path.sep).join("/");
+}
+
+async function listNestedMarkdownEntries(canonicalRoot: string): Promise<readonly { readonly relativeName: string; readonly canonicalPath: string }[]> {
+  const found: { relativeName: string; canonicalPath: string }[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true, encoding: "utf8" });
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const candidate = path.join(directory, entry.name);
+      // Do not follow a symlink even if Dirent reports a matching type.
+      const stats = await lstat(candidate);
+      if (stats.isSymbolicLink()) continue;
+      if (stats.isDirectory()) { await visit(candidate); continue; }
+      if (!stats.isFile() || !isMarkdownName(entry.name)) continue;
+      const canonicalPath = await realpath(candidate);
+      const relativeName = projectRelativeName(canonicalRoot, canonicalPath);
+      if (relativeName !== null) found.push({ relativeName, canonicalPath });
+    }
+  };
+  await visit(canonicalRoot);
+  return found.sort((left, right) => compareNames(left.relativeName, right.relativeName));
+}
+
 async function listManuscriptEntries(canonicalRoot: string): Promise<Dirent[]> {
   const entries = await readdir(canonicalRoot, { withFileTypes: true, encoding: "utf8" });
   return entries
@@ -346,6 +383,67 @@ export class DocumentWorkspaceService {
     } catch (error: unknown) {
       return rootFailure(error);
     }
+  }
+
+  /**
+   * Resolve an opaque ID from a project-relative Markdown link.  This does not
+   * affect the root-only Registry and never exposes a filesystem path outside
+   * main-process callers.
+   */
+  public async resolveProjectManuscriptPath(
+    owner: unknown,
+    documentId: unknown,
+    manuscriptId: unknown
+  ): Promise<ResolveProjectManuscriptResult> {
+    const document = this.findDocument(owner, documentId);
+    if ("kind" in document) return document;
+    if (!isOpaqueId(manuscriptId)) return { kind: "error", code: "invalid-manuscript-id", message: "The Project link is invalid." };
+    const root = await this.resolveDocumentRoot(owner, documentId);
+    if (root.kind !== "resolved") return root;
+    let entries: readonly { readonly relativeName: string; readonly canonicalPath: string }[];
+    try {
+      entries = await listNestedMarkdownEntries(root.canonicalRoot);
+    } catch (error: unknown) {
+      return rootFailure(error);
+    }
+    const match = entries.find((entry) => manuscriptIdForPath(root.canonicalRoot, entry.relativeName) === manuscriptId);
+    if (match === undefined) return MANUSCRIPT_UNAVAILABLE;
+    return {
+      kind: "resolved",
+      manuscriptId,
+      displayName: match.relativeName,
+      canonicalPath: match.canonicalPath
+    };
+  }
+
+  public async resolveProjectManuscriptByRelativeName(
+    owner: unknown,
+    documentId: unknown,
+    relativeName: string
+  ): Promise<ResolveProjectManuscriptResult> {
+    const document = this.findDocument(owner, documentId);
+    if ("kind" in document) return document;
+    const root = await this.resolveDocumentRoot(owner, documentId);
+    if (root.kind !== "resolved") return root;
+    let entries: readonly { readonly relativeName: string; readonly canonicalPath: string }[];
+    try {
+      entries = await listNestedMarkdownEntries(root.canonicalRoot);
+    } catch (error: unknown) {
+      return rootFailure(error);
+    }
+    const exact = entries.filter((entry) => entry.relativeName === relativeName);
+    const extensionless = !/\.(?:md|markdown)$/iu.test(relativeName);
+    const candidates = extensionless
+      ? entries.filter((entry) => entry.relativeName.replace(/\.(?:md|markdown)$/iu, "") === relativeName)
+      : exact;
+    if (candidates.length !== 1) return MANUSCRIPT_UNAVAILABLE;
+    const match = candidates[0];
+    return {
+      kind: "resolved",
+      manuscriptId: manuscriptIdForPath(root.canonicalRoot, match.relativeName),
+      displayName: match.relativeName,
+      canonicalPath: match.canonicalPath
+    };
   }
 
   /** Refresh the root-level Markdown registry while retaining existing IDs. */

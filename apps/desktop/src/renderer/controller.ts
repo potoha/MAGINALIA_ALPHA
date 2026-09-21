@@ -310,6 +310,37 @@ export class WritingController {
     );
   }
 
+  /**
+   * Insert a renderer-owned, already-validated Markdown token through the
+   * same captured selection and WritingSurface path as QuoteRef insertion.
+   * This is intentionally not a filesystem capability: callers supply text
+   * only, so DnD imports still enter DocumentSession/Autosave normally.
+   */
+  public insertMarkdownText(target: CapturedInsertionTarget, text: string): boolean {
+    const current = this.getActiveSession();
+    if (current === null || !this.isInsertionTargetCurrent(target) || typeof text !== "string") return false;
+    const range = target.range;
+    const nextText = `${current.currentText.slice(0, range.start)}${text}${current.currentText.slice(range.end)}`;
+    const revisionBeforeEdit = current.revision;
+    try {
+      this.surface.applyEdit(range, text, {
+        start: range.start + text.length,
+        end: range.start + text.length
+      });
+    } catch {
+      return false;
+    }
+    const surfaceEmittedChange = this.getActiveSession()?.revision !== revisionBeforeEdit;
+    if (!surfaceEmittedChange) {
+      this.store.updateText(current.documentId, nextText);
+      this.saveErrors.delete(current.documentId);
+    }
+    this.errorMessage = undefined;
+    this.render();
+    if (!surfaceEmittedChange) this.notifyDocumentChange();
+    return true;
+  }
+
   private applyInsertion(
     target: CapturedInsertionTarget,
     createInsertion: (

@@ -12,6 +12,7 @@ import {
   refreshReferenceList,
   type ReferenceListConflictReason
 } from "./reference-list";
+import { renderInternalLinksForExport } from "../project-links";
 
 /** The immutable input captured from the active DocumentSession at export start. */
 export interface ExportDocumentSnapshot {
@@ -399,7 +400,10 @@ export function renderResolvedMarkdown(
     );
   }
 
-  const output = removeReferenceMarkers(references.text);
+  // Project identity is authoring-only.  This final pure pass preserves the
+  // visible wording while stripping wiki targets, including in a dirty export
+  // snapshot; code spans and fenced code are intentionally left untouched.
+  const output = renderInternalLinksForExport(removeReferenceMarkers(references.text));
   return Object.freeze({
     kind: "rendered",
     documentId: snapshot.documentId,

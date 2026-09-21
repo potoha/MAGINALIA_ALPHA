@@ -17,6 +17,11 @@ import {
   RESOLVE_REFERENCES_CHANNEL,
   RESOLVE_EXPORT_CHANNEL,
   WRITE_EXPORT_CHANNEL,
+  RESOLVE_INTERNAL_LINK_CHANNEL,
+  OPEN_INTERNAL_LINK_CHANNEL,
+  OPEN_EXTERNAL_LINK_CHANNEL,
+  RESOLVE_PROJECT_ASSET_CHANNEL,
+  IMPORT_DROPPED_IMAGE_CHANNEL,
   LOAD_MODS_CHANNEL,
   RELOAD_MODS_CHANNEL,
   OPEN_MODS_FOLDER_CHANNEL,
@@ -42,7 +47,7 @@ describe("preload boundary", () => {
     const api = createMarkdownPreloadApi(async (channel, ...args) => {
       calls.push({ channel, args: [...args] });
       return { kind: "cancelled" };
-    });
+    }, undefined, () => "C:\\drop\\figure.png");
 
     expect(Object.keys(api)).toEqual([
       "openMarkdown",
@@ -61,6 +66,11 @@ describe("preload boundary", () => {
       "resolveReferences",
       "resolveExport",
       "writeExport",
+      "resolveInternalLink",
+      "openInternalLink",
+      "openExternalLink",
+      "resolveProjectAsset",
+      "importDroppedImageFile",
       "loadMods",
       "reloadMods",
       "openModsFolder",
@@ -113,6 +123,11 @@ describe("preload boundary", () => {
     await api.resolveReferences({ text: "# Draft" });
     await api.resolveExport({ documentId: "opaque-session", revision: 1, currentText: "# Draft" });
     await api.writeExport({ exportId: "opaque-export", documentId: "opaque-session", revision: 1, text: "# Output" });
+    await api.resolveInternalLink({ projectId: "77777777-7777-4777-8777-777777777777", target: "notes/eco.md" });
+    await api.openInternalLink({ projectId: "77777777-7777-4777-8777-777777777777", fileId: "88888888-8888-4888-8888-888888888888" });
+    await api.openExternalLink({ url: "https://example.test/" });
+    await api.resolveProjectAsset({ projectId: "77777777-7777-4777-8777-777777777777", relativePath: "assets/figure.png" });
+    await api.importDroppedImageFile({ projectId: "77777777-7777-4777-8777-777777777777", file: {} as File, optimize: true });
     await api.loadMods();
     await api.reloadMods();
     await api.openModsFolder();
@@ -197,6 +212,23 @@ describe("preload boundary", () => {
       {
         channel: WRITE_EXPORT_CHANNEL,
         args: [{ exportId: "opaque-export", documentId: "opaque-session", revision: 1, text: "# Output" }]
+      },
+      {
+        channel: RESOLVE_INTERNAL_LINK_CHANNEL,
+        args: [{ projectId: "77777777-7777-4777-8777-777777777777", target: "notes/eco.md" }]
+      },
+      {
+        channel: OPEN_INTERNAL_LINK_CHANNEL,
+        args: [{ projectId: "77777777-7777-4777-8777-777777777777", fileId: "88888888-8888-4888-8888-888888888888" }]
+      },
+      { channel: OPEN_EXTERNAL_LINK_CHANNEL, args: [{ url: "https://example.test/" }] },
+      {
+        channel: RESOLVE_PROJECT_ASSET_CHANNEL,
+        args: [{ projectId: "77777777-7777-4777-8777-777777777777", relativePath: "assets/figure.png" }]
+      },
+      {
+        channel: IMPORT_DROPPED_IMAGE_CHANNEL,
+        args: [{ projectId: "77777777-7777-4777-8777-777777777777", sourcePath: "C:\\drop\\figure.png", optimize: true }]
       },
       { channel: LOAD_MODS_CHANNEL, args: [] },
       { channel: RELOAD_MODS_CHANNEL, args: [] },

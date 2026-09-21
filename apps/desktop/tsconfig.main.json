@@ -29,6 +29,8 @@
     "src/project-metadata.ts",
     "src/project-service.ts",
     "src/project-ipc.ts",
+    "src/project-links.ts",
+    "src/project-link-ipc.ts",
     "src/library-service.ts",
     "src/reviewer-ipc.ts",
     "src/reference-ipc.ts",

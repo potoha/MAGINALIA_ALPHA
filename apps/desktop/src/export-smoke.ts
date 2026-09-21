@@ -25,6 +25,17 @@ interface ExportRendererState {
   readonly tabs: readonly { readonly name: string; readonly active: boolean }[];
 }
 
+interface PreviewRendererState {
+  readonly visible: boolean;
+  readonly direction: string | null;
+  readonly quoteState: string | null;
+  readonly internalStates: readonly string[];
+  readonly embedKinds: readonly string[];
+  readonly imageCount: number;
+  readonly videoCount: number;
+  readonly hasExecutableScript: boolean;
+}
+
 const READ_STATE_SCRIPT = `(() => {
   const editor = document.querySelector("#editor");
   const project = document.querySelector("#workspace-document-name");
@@ -55,6 +66,22 @@ const READ_STATE_SCRIPT = `(() => {
   };
 })()`;
 
+const READ_PREVIEW_SCRIPT = `(() => {
+  const preview = document.querySelector("#markdown-preview");
+  const root = preview?.querySelector(".markdown-preview-document");
+  if (!(preview instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+  return {
+    visible: !preview.hidden,
+    direction: root.dataset.writingDirection ?? null,
+    quoteState: root.querySelector(".rendered-quote-ref")?.getAttribute("data-quote-state") ?? null,
+    internalStates: [...root.querySelectorAll(".rendered-internal-link")].map((link) => link.getAttribute("data-internal-link-state") ?? ""),
+    embedKinds: [...root.querySelectorAll(".rendered-embed-card")].map((card) => card.getAttribute("data-embed-kind") ?? ""),
+    imageCount: root.querySelectorAll("img.rendered-local-media").length,
+    videoCount: root.querySelectorAll("video.rendered-local-media").length,
+    hasExecutableScript: root.querySelector("script") !== null
+  };
+})()`;
+
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -62,6 +89,14 @@ function delay(milliseconds: number): Promise<void> {
 async function readState(window: BrowserWindow): Promise<ExportRendererState | null> {
   try {
     return await window.webContents.executeJavaScript(READ_STATE_SCRIPT, true) as ExportRendererState | null;
+  } catch {
+    return null;
+  }
+}
+
+async function readPreviewState(window: BrowserWindow): Promise<PreviewRendererState | null> {
+  try {
+    return await window.webContents.executeJavaScript(READ_PREVIEW_SCRIPT, true) as PreviewRendererState | null;
   } catch {
     return null;
   }
@@ -82,6 +117,21 @@ async function waitForState(
   throw new Error(
     `Export smoke timed out waiting for ${description}. Last state: ${last ? JSON.stringify(last) : "unavailable"}.`
   );
+}
+
+async function waitForPreviewState(
+  window: BrowserWindow,
+  predicate: (state: PreviewRendererState) => boolean,
+  description: string
+): Promise<PreviewRendererState> {
+  const deadline = Date.now() + STATE_TIMEOUT_MS;
+  let last: PreviewRendererState | null = null;
+  while (Date.now() < deadline) {
+    last = await readPreviewState(window);
+    if (last !== null && predicate(last)) return last;
+    await delay(POLL_INTERVAL_MS);
+  }
+  throw new Error(`Export smoke timed out waiting for ${description}. Last preview: ${last ? JSON.stringify(last) : "unavailable"}.`);
 }
 
 async function runScript(window: BrowserWindow, script: string, description: string): Promise<void> {
@@ -148,6 +198,42 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
     "the first Markdown document"
   );
   assert(opened.saveEnabled === false, "initial document unexpectedly dirty");
+
+  // Slice F is a presentation projection: it must resolve the existing
+  // quotation boundary, links and Project media without touching source text.
+  const initialPreviewText = opened.text;
+  await clickButton(window, "#document-preview-mode", "open Preview");
+  const horizontal = await waitForPreviewState(
+    window,
+    (state) => state.visible
+      && state.direction === "horizontal"
+      && state.quoteState === "resolved"
+      && state.internalStates.includes("resolved")
+      && state.internalStates.includes("unresolved")
+      && state.embedKinds.includes("generic-web")
+      && state.embedKinds.includes("youtube")
+      && state.embedKinds.includes("sns")
+      && state.imageCount === 1
+      && state.videoCount === 1,
+    "resolved horizontal Markdown Preview"
+  );
+  assert(!horizontal.hasExecutableScript, "authoring HTML created an executable script in Preview");
+  await clickButton(window, "#document-vertical", "switch Preview to vertical");
+  const vertical = await waitForPreviewState(
+    window,
+    (state) => state.visible && state.direction === "vertical" && state.imageCount === 1 && state.videoCount === 1,
+    "vertical Markdown Preview"
+  );
+  assert(vertical.imageCount === 1 && vertical.videoCount === 1, "vertical Preview lost Project media");
+  await clickButton(window, "#document-horizontal", "switch Preview to horizontal");
+  await waitForPreviewState(window, (state) => state.visible && state.direction === "horizontal", "horizontal Markdown Preview restoration");
+  await clickButton(window, "#document-edit-mode", "return to Edit");
+  const afterPresentation = await waitForState(
+    window,
+    (state) => state.status === "saved" && !state.saveEnabled && state.text === initialPreviewText,
+    "non-mutating Preview presentation"
+  );
+  assert(afterPresentation.text === initialPreviewText, "Preview changed authoring text");
 
   await editActive(window, dirtySentinel);
   const dirty = await waitForState(

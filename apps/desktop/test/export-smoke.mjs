@@ -29,7 +29,7 @@ const captureId = "capture-export-smoke";
 const quoteMarker = `<!-- maginalia:quote-ref v1 {"quoteId":"${annotationId}","mode":"normal"} -->`;
 const referenceStart = "<!-- maginalia:reference-list-start v1 -->";
 const referenceEnd = "<!-- maginalia:reference-list-end v1 -->";
-const initialA = `\uFEFF# Export A\r\n\r\n${quoteMarker}\r\n\r\n## 参考文献\r\n\r\n${referenceStart}\r\n- old generated entry\r\n${referenceEnd}\r\n\r\n手書きの参考メモです。\r\n`;
+const initialA = `\uFEFF# Export A\r\n\r\n${quoteMarker}\r\n\r\n[[b.md|Second document]] [[missing.md]]\r\n[Generic](https://example.com/article) [YouTube](https://youtu.be/dQw4w9WgXcQ) [X](https://x.com/example/status/123456)\r\n![Figure](assets/figure.png) ![[assets/movie.mp4]]\r\n<script>window.MAGINALIA_F_SMOKE_XSS = true</script>\r\n\r\n## 参考文献\r\n\r\n${referenceStart}\r\n- old generated entry\r\n${referenceEnd}\r\n\r\n手書きの参考メモです。\r\n`;
 const initialB = "\uFEFF# Export B\r\n\r\nB-only document.\r\n";
 
 function startReviewerFixture() {
@@ -149,8 +149,13 @@ try {
   const projectRoot = path.join(temporaryDirectory, "project-root");
   const userDataRoot = path.join(temporaryDirectory, "electron-user-data");
   await mkdir(projectRoot);
+  await mkdir(path.join(projectRoot, "assets"));
   await writeFile(path.join(projectRoot, "a.md"), Buffer.from(initialA, "utf8"));
   await writeFile(path.join(projectRoot, "b.md"), Buffer.from(initialB, "utf8"));
+  // Valid signatures are enough for the bounded Project-media resolver; the
+  // smoke verifies renderer element creation rather than media playback.
+  await writeFile(path.join(projectRoot, "assets", "figure.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Jf5sAAAAASUVORK5CYII=", "base64"));
+  await writeFile(path.join(projectRoot, "assets", "movie.mp4"), Buffer.from([0, 0, 0, 12, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]));
 
   reviewerFixture = await startReviewerFixture();
   const result = await runElectron(projectRoot, userDataRoot, reviewerFixture.baseUrl);
@@ -189,7 +194,8 @@ try {
     || outputA.includes(captureId)
     || outputA.includes("page-export-smoke")
     || outputA.includes("source-page-internal")
-    || outputA.includes("book:isbn13:")) {
+    || outputA.includes("book:isbn13:")
+    || outputA.includes("[[b.md")) {
     throw new Error("Export smoke output A was not a safe ordinary Markdown projection.");
   }
 

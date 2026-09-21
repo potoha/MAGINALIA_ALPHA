@@ -267,4 +267,18 @@ describe("resolved Markdown renderer", () => {
     if (secondResult.kind !== "rendered") return;
     expect(secondResult.text).toBe(firstResult.text);
   });
+
+  it("exports internal-link labels without leaking project targets or touching code", () => {
+    const text = "# Draft\n\n[[notes/eco.md]] [[notes/eco.md|エーコについて]] [[../secret.md|bad]]\n\n`[[code]]`\n```\n[[fenced]]\n```\n";
+    const result = renderResolvedMarkdown(snapshot(text), {
+      kind: "resolved", sources: [], resolved: [], unresolved: []
+    });
+    expect(result.kind).toBe("rendered");
+    if (result.kind !== "rendered") return;
+    expect(result.text).toContain("eco エーコについて unresolved link");
+    expect(result.text).not.toContain("notes/eco.md");
+    expect(result.text).not.toContain("secret.md");
+    expect(result.text).toContain("`[[code]]`");
+    expect(result.text).toContain("[[fenced]]");
+  });
 });

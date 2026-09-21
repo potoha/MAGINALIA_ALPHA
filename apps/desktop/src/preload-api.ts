@@ -111,6 +111,23 @@ import {
   type AutosaveFlushRequest,
   type AutosaveFlushResponseRequest
 } from "./autosave-ipc";
+import {
+  OPEN_EXTERNAL_LINK_CHANNEL,
+  OPEN_INTERNAL_LINK_CHANNEL,
+  RESOLVE_INTERNAL_LINK_CHANNEL,
+  type OpenExternalLinkRequest,
+  type OpenExternalLinkResult,
+  type OpenInternalLinkRequest,
+  type OpenInternalLinkResult,
+  type ResolveInternalLinkRequest,
+  type ResolveInternalLinkResult
+} from "./project-link-ipc";
+import {
+  IMPORT_DROPPED_IMAGE_CHANNEL,
+  RESOLVE_PROJECT_ASSET_CHANNEL,
+  type ProjectAssetIpcResult,
+  type ResolveProjectAssetRequest
+} from "./project-assets-ipc";
 
 export const OPEN_MARKDOWN_CHANNEL = "maginalia:open-markdown";
 export const SAVE_MARKDOWN_CHANNEL = "maginalia:save-markdown";
@@ -130,6 +147,8 @@ export {
 export { SEARCH_SHELF_CHANNEL } from "./reviewer-ipc";
 export { RESOLVE_REFERENCES_CHANNEL } from "./reference-ipc";
 export { RESOLVE_EXPORT_CHANNEL, WRITE_EXPORT_CHANNEL } from "./export-contract";
+export { RESOLVE_INTERNAL_LINK_CHANNEL, OPEN_INTERNAL_LINK_CHANNEL, OPEN_EXTERNAL_LINK_CHANNEL } from "./project-link-ipc";
+export { RESOLVE_PROJECT_ASSET_CHANNEL, IMPORT_DROPPED_IMAGE_CHANNEL } from "./project-assets-ipc";
 export {
   INVOKE_MOD_COMMAND_CHANNEL,
   LOAD_MODS_CHANNEL,
@@ -227,6 +246,15 @@ export type {
   AutosaveFlushRequest,
   AutosaveFlushResponseRequest
 } from "./autosave-ipc";
+export type {
+  ResolveInternalLinkRequest,
+  ResolveInternalLinkResult,
+  OpenInternalLinkRequest,
+  OpenInternalLinkResult,
+  OpenExternalLinkRequest,
+  OpenExternalLinkResult
+} from "./project-link-ipc";
+export type { ResolveProjectAssetRequest, ImportDroppedImageRequest, ProjectAssetIpcResult } from "./project-assets-ipc";
 
 export type DevicePromptCallback = (prompt: RepositoryCloudDevicePrompt) => void;
 export type DevicePromptUnsubscribe = () => void;
@@ -252,6 +280,12 @@ export interface MarkdownPreloadApi {
   resolveReferences?(request: ResolveReferencesRequest): Promise<ResolveReferencesResult>;
   resolveExport?(request: ResolveExportRequest): Promise<ResolveExportResult>;
   writeExport?(request: WriteExportRequest): Promise<WriteExportResult>;
+  resolveInternalLink?(request: ResolveInternalLinkRequest): Promise<ResolveInternalLinkResult>;
+  openInternalLink?(request: OpenInternalLinkRequest): Promise<OpenInternalLinkResult>;
+  openExternalLink?(request: OpenExternalLinkRequest): Promise<OpenExternalLinkResult>;
+  resolveProjectAsset?(request: ResolveProjectAssetRequest): Promise<ProjectAssetIpcResult>;
+  /** Resolves an OS-dropped File inside preload, never in renderer code. */
+  importDroppedImageFile?(request: { readonly projectId: string; readonly file: File; readonly optimize: boolean }): Promise<ProjectAssetIpcResult>;
   loadMods?(): Promise<ModSnapshotResult>;
   reloadMods?(): Promise<ModSnapshotResult>;
   openModsFolder?(): Promise<OpenModsFolderResult>;
@@ -287,6 +321,11 @@ export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   resolveReferences(request: ResolveReferencesRequest): Promise<ResolveReferencesResult>;
   resolveExport(request: ResolveExportRequest): Promise<ResolveExportResult>;
   writeExport(request: WriteExportRequest): Promise<WriteExportResult>;
+  resolveInternalLink(request: ResolveInternalLinkRequest): Promise<ResolveInternalLinkResult>;
+  openInternalLink(request: OpenInternalLinkRequest): Promise<OpenInternalLinkResult>;
+  openExternalLink(request: OpenExternalLinkRequest): Promise<OpenExternalLinkResult>;
+  resolveProjectAsset(request: ResolveProjectAssetRequest): Promise<ProjectAssetIpcResult>;
+  importDroppedImageFile(request: { readonly projectId: string; readonly file: File; readonly optimize: boolean }): Promise<ProjectAssetIpcResult>;
   loadMods(): Promise<ModSnapshotResult>;
   reloadMods(): Promise<ModSnapshotResult>;
   openModsFolder(): Promise<OpenModsFolderResult>;
@@ -312,6 +351,7 @@ export type MarkdownEventSubscribe = (
   channel: string,
   listener: (value: unknown) => void,
 ) => DevicePromptUnsubscribe;
+export type DroppedFilePathProvider = (file: File) => string;
 
 const DEVICE_USER_CODE_PATTERN = /^[A-Za-z0-9-]+$/u;
 const MAX_DEVICE_USER_CODE_LENGTH = 64;
@@ -364,6 +404,7 @@ const noEventSubscription: MarkdownEventSubscribe = () => () => undefined;
 export function createMarkdownPreloadApi(
   invoke: MarkdownInvoke,
   subscribe: MarkdownEventSubscribe = noEventSubscription,
+  droppedFilePath: DroppedFilePathProvider = () => "",
 ): CompleteMarkdownPreloadApi {
   return {
     openMarkdown: () => invoke(OPEN_MARKDOWN_CHANNEL) as Promise<OpenMarkdownResult>,
@@ -386,6 +427,26 @@ export function createMarkdownPreloadApi(
       invoke(RESOLVE_EXPORT_CHANNEL, request) as Promise<ResolveExportResult>,
     writeExport: (request) =>
       invoke(WRITE_EXPORT_CHANNEL, request) as Promise<WriteExportResult>,
+    resolveInternalLink: (request) =>
+      invoke(RESOLVE_INTERNAL_LINK_CHANNEL, request) as Promise<ResolveInternalLinkResult>,
+    openInternalLink: (request) =>
+      invoke(OPEN_INTERNAL_LINK_CHANNEL, request) as Promise<OpenInternalLinkResult>,
+    openExternalLink: (request) =>
+      invoke(OPEN_EXTERNAL_LINK_CHANNEL, request) as Promise<OpenExternalLinkResult>,
+    resolveProjectAsset: (request) =>
+      invoke(RESOLVE_PROJECT_ASSET_CHANNEL, request) as Promise<ProjectAssetIpcResult>,
+    importDroppedImageFile: (request) => {
+      let sourcePath = "";
+      try { sourcePath = droppedFilePath(request.file); } catch { sourcePath = ""; }
+      if (typeof sourcePath !== "string" || sourcePath.length === 0) {
+        return Promise.resolve({ kind: "error", code: "invalid-request", message: "The dropped image is unavailable." });
+      }
+      return invoke(IMPORT_DROPPED_IMAGE_CHANNEL, {
+        projectId: request.projectId,
+        sourcePath,
+        optimize: request.optimize
+      }) as Promise<ProjectAssetIpcResult>;
+    },
     loadMods: () => invoke(LOAD_MODS_CHANNEL) as Promise<ModSnapshotResult>,
     reloadMods: () => invoke(RELOAD_MODS_CHANNEL) as Promise<ModSnapshotResult>,
     openModsFolder: () => invoke(OPEN_MODS_FOLDER_CHANNEL) as Promise<OpenModsFolderResult>,
