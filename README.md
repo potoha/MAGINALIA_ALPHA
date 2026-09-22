@@ -107,4 +107,10 @@ The absence of cloud connectivity must not make local writing unavailable, and c
 
 ## License / distribution
 
-Pre-alpha repository. Distribution, installer, third-party notices, and stable Mod compatibility are not yet declared release guarantees. Check current planning and license files before redistributing builds.
+MAGINALIA_ALPHA code owned by **beyond the Word. / MAGINALIA PROJECT** is released under the [MIT License](LICENSE), unless a file or component states otherwise.
+
+The **MAGINALIA** name, wordmark, logo, visual identity, and other project/product branding are not granted by the MIT License. See [NOTICE](NOTICE).
+
+Third-party components remain under their respective licenses. User-created manuscripts, notes, quotations, images, Project data, and other research content are not relicensed merely by being created or processed with MAGINALIA.
+
+This is still a pre-alpha repository; installer support and stable Mod compatibility are not yet release guarantees.
