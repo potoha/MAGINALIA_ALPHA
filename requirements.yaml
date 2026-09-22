@@ -1,0 +1,169 @@
+schema: maginalia.alpha.requirements/v1
+
+project:
+  name: MAGINALIA
+  repository: potoha/MAGINALIA_ALPHA
+  status: pre-alpha
+  version: "alpha-0.01"
+  codename: Before Kaldi
+  implementation_cycle: coffee Sapling
+  implementation_target: this repository
+  canonical_decisions:
+    repository: potoha/MAGINALIA_IDE
+    decision_log: plan/09_DECISION_LOG.md
+    accepted_adrs: docs/decisions/
+
+product:
+  primary_users:
+    - humanities students
+    - researchers
+    - writers
+  baseline:
+    desktop_runtime: Electron
+    editor_surface: Monaco Editor
+    primary_language: TypeScript
+    package_manager: npm
+    ai_runtime_required: false
+  durable_data:
+    authoritative_formats:
+      - Markdown
+      - YAML
+      - JSON
+      - images
+      - Git history
+    rule: application databases and caches must not become the only authoritative copy of research data
+
+architecture_requirements:
+  - id: ARCH-001
+    requirement: MAGINALIA Desktop is an independent Electron application, not a Code-OSS distribution.
+    authority: ADR-0007 / D030
+  - id: ARCH-002
+    requirement: Electron and Monaco are replaceable implementation details; portable files remain authoritative.
+    authority: ADR-0007 / D004
+  - id: ARCH-003
+    requirement: External systems and specialist tools are accessed through bounded adapters or capabilities.
+    authority: project architecture policy
+  - id: ARCH-004
+    requirement: Mods must not receive unrestricted private Electron, Monaco, filesystem, shell, or process objects as a stable public API.
+    authority: ADR-0007
+  - id: ARCH-005
+    requirement: Project content must never auto-activate as executable Mod code.
+    authority: Mod host plan
+
+persistence_requirements:
+  - id: DATA-001
+    requirement: Ordinary local-file autosave is required for Desktop editing.
+    authority: ADR-0008 / D031
+  - id: DATA-002
+    requirement: Autosave does not create a Git commit for every edit.
+    authority: ADR-0008 / D031
+  - id: DATA-003
+    requirement: Local writing must remain available without GitHub or other cloud connectivity.
+    authority: local-first policy
+  - id: DATA-004
+    requirement: Credentials, access tokens, and authentication sessions must never be written into portable research repositories.
+    authority: repository security policy
+  - id: DATA-005
+    requirement: Git/GitHub production sync implementation remains gated until a human programmer can review its state machine, failure paths, tests, and security boundaries.
+    authority: D032
+
+ux_requirements:
+  - id: UX-001
+    requirement: Normal UI is designed first for users who should not need Git, terminal, or general-purpose IDE knowledge.
+    authority: D007 / ADR-0007
+  - id: UX-002
+    requirement: Git implementation terminology should not be a prerequisite for ordinary research and writing workflows.
+    authority: D008
+  - id: UX-003
+    requirement: Core reading, writing, quotation, search, and local project work must not require Mods or an AI provider.
+    authority: ADR-0007
+
+repository_model:
+  current_user_concepts:
+    workdesk:
+      role: primary desk and index for loose non-body Markdown and independent Projects
+      absorbs_project_history: false
+      authority: D033
+    project:
+      role: independent research/writing repository
+    private_shelf:
+      role: independent private quotation/source store
+  rule: Workdesk, Project, and Private Shelf boundaries must not be collapsed merely for implementation convenience.
+
+current_pre_alpha_capabilities:
+  - Workdesk shell and Project parent index
+  - Registry explorer and Project UX
+  - Shelf search and QuoteRef insertion
+  - generic Source model and automatic references
+  - multi-document tabs and Mod host substrate
+  - resolved Markdown export
+  - autosave and local persistence
+  - rich renderer and vertical writing
+  - unified editor commands and Command Palette
+
+workspace:
+  root_package: package.json
+  packages:
+    - packages/format
+    - packages/repository-core
+    - packages/source-core
+    - packages/writing-core
+    - apps/desktop
+
+commands:
+  install: npm ci
+  typecheck: npm run typecheck
+  build: npm run build
+  test: npm test
+  start: npm start
+  smoke:
+    - npm run smoke
+    - npm run smoke:writing
+    - npm run smoke:workspace
+    - npm run smoke:quotation
+    - npm run smoke:repository
+    - npm run smoke:shelf
+    - npm run smoke:export
+
+verification:
+  minimum_before_merge:
+    - npm run typecheck
+    - npm run build
+    - npm test
+  additional:
+    - run the smoke suite relevant to the changed behavior
+    - preserve or add tests for changed contracts and failure paths
+    - review accepted ADRs before changing data, security, repository topology, or Mod capability boundaries
+
+source_precedence:
+  - current explicit user instruction
+  - accepted ADRs and canonical contracts in potoha/MAGINALIA_IDE
+  - current active plan and approved specification
+  - current implementation and tests in potoha/MAGINALIA_ALPHA
+  - active PR or branch proposal
+  - historical planning documents
+  - toybox historical context
+
+salvage_sources:
+  - repository: potoha/MAGINALIA_IDE
+    purpose: canonical decisions, contracts, Writing Core, Repository Core
+  - repository: potoha/MY_marginallia
+    purpose: Quote Capture and Reviewer
+  - repository: potoha/Uttate-writer
+    purpose: MAGINALIA Input legacy implementation
+  - repository: potoha/toybox
+    purpose: historical design context
+    write_policy: read-only from MAGINALIA Workspace project
+
+change_policy:
+  before_implementation:
+    - identify the existing core that owns the behavior
+    - read the relevant canonical decision or contract
+    - inspect relevant implementation and tests
+    - classify reusable assets as KEEP, ADAPT, REWRITE, or DROP
+  forbidden_shortcuts:
+    - reintroducing Code-OSS as the normal Desktop host without a superseding accepted ADR
+    - making AI mandatory for ordinary document work
+    - storing secrets in research repositories
+    - treating Project content as trusted executable Mod code
+    - silently replacing portable files with an opaque primary database
