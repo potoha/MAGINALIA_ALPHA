@@ -51,7 +51,7 @@ MAGINALIA_ALPHA/
 ├─ mods/                    # first-party / development Mods
 ├─ plan/                    # planning and implementation history
 ├─ readme-first.md          # salvage/source rules
-├─ requirements.yaml        # machine-readable project requirements
+├─ requirements.yaml        # dependency overview
 ├─ package.json
 └─ package-lock.json
 ```
@@ -85,7 +85,7 @@ For exact dependency versions, use `package-lock.json` and package manifests as 
 ## Read before changing architecture
 
 - [`readme-first.md`](readme-first.md) — salvage rules and upstream source map
-- [`requirements.yaml`](requirements.yaml) — compact machine-readable invariants and verification commands
+- [`requirements.yaml`](requirements.yaml) — dependency overview; package manifests and lockfile remain authoritative
 - [`plan/README.md`](plan/README.md) — planning index
 
 Canonical cross-product decisions still live in `potoha/MAGINALIA_IDE`, especially accepted ADRs and `plan/09_DECISION_LOG.md`. When old implementation and an accepted decision disagree, the accepted decision wins.
