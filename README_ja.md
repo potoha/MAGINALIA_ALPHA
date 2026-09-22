@@ -109,4 +109,10 @@ Git/GitHubのproduction同期実装は、人間のプログラマがstate machin
 
 ## ライセンス / 配布
 
-現在はpre-alphaです。配布、installer、third-party notice、安定したMod互換性は、まだrelease guaranteeとして宣言されていません。buildを再配布する前に、最新の計画文書とlicense fileを確認してください。
+**beyond the Word. / MAGINALIA PROJECT** が権利を持つ MAGINALIA_ALPHA のコードは、個別のファイルやコンポーネントに別の記載がない限り [MIT License](LICENSE) で公開します。
+
+**MAGINALIA** の名称、ワードマーク、ロゴ、ビジュアルアイデンティティその他のプロジェクト／製品ブランドは、MIT License の許諾対象には含まれません。詳細は [NOTICE](NOTICE) を参照してください。
+
+third-party component はそれぞれのライセンスに従います。また、MAGINALIAで作成・編集・保存・処理された原稿、ノート、引用、画像、Projectデータその他のユーザー作成コンテンツに、このソフトウェアライセンスが自動的に適用されることはありません。
+
+現在はpre-alphaであり、installer supportや安定したMod互換性はまだrelease guaranteeではありません。
