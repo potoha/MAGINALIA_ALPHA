@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "revision": "4b4bc530-08ca-4d7f-9bcc-071639a97b31",
+  "updatedAtMs": 1786118400000,
+  "book": {
+    "isbn13": "9784000000000",
+    "title": "Fixture Book",
+    "subtitle": null,
+    "authors": [],
+    "publisher": null,
+    "publishedDate": null,
+    "toc": null,
+    "coverUrl": null,
+    "provenance": {}
+  },
+  "highlights": [],
+  "pageImage": "pages/secret.jpg"
+}

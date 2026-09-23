@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "exportedAtMs": 1786118400000,
+  "book": {
+    "isbn13": "9784000000000",
+    "orientation": "HORIZONTAL",
+    "metadata": {
+      "title": "Fixture Book",
+      "subtitle": null,
+      "authors": ["Fixture Author"],
+      "publisher": "Fixture Press",
+      "publishedDate": "2026-08-08",
+      "description": null,
+      "toc": "1. Fixture chapter",
+      "coverUrl": null,
+      "provenance": { "title": "openBD", "authors": "openBD", "publisher": "openBD", "publishedDate": "openBD", "toc": "openBD" }
+    }
+  },
+  "pages": [
+    {
+      "id": "c5dd9d85-00cb-48f1-ae7a-0aa95826db67",
+      "imagePath": "pages/c5dd9d85-00cb-48f1-ae7a-0aa95826db67.jpg",
+      "width": 1,
+      "height": 1,
+      "capturedAtMs": 1786118400000,
+      "imageSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "mobileOcr": {
+        "state": "SUCCEEDED",
+        "errorSummary": null,
+        "attemptAtMs": 1786118400000,
+        "regions": [
+          {
+            "id": "mobile:c5dd9d85-00cb-48f1-ae7a-0aa95826db67:1",
+            "left": 0.1,
+            "top": 0.1,
+            "right": 0.9,
+            "bottom": 0.2,
+            "kind": "LINE",
+            "text": "Fixture text"
+          }
+        ]
+      },
+      "annotations": [
+        {
+          "id": "f82d8f9b-e173-4ef4-8f44-509f2e68f7c6",
+          "comment": "Fixture comment",
+          "createdAtMs": 1786118400000,
+          "updatedAtMs": 1786118400000,
+          "strokePoints": [
+            { "order": 0, "x": 0.1, "y": 0.3 },
+            { "order": 1, "x": 0.9, "y": 0.3 }
+          ]
+        }
+      ]
+    }
+  ]
+}

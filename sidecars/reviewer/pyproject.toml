@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "marginalia-pc-reviewer"
+version = "0.1.0"
+description = "Loopback-only reviewer for Digital Marginalia DB export bundles"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "jsonschema[format]>=4.23,<5",
+  "keyring>=25,<26",
+  "Pillow>=11,<12",
+  "python-multipart>=0.0.18,<1",
+  "uvicorn>=0.30,<1",
+]
+
+[project.optional-dependencies]
+test = ["httpx>=0.27,<1", "pytest>=8,<9"]
+
+[project.scripts]
+marginalia-review = "marginalia_reviewer.__main__:main"
+marginalia-reviewer = "marginalia_reviewer.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "--basetemp=.pytest-tmp -o cache_dir=.pytest_cache"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/marginalia_reviewer"]

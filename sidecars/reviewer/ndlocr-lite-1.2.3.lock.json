@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/ndl-lab/ndlocr-lite",
+  "release": "1.2.3",
+  "commit": "c3cc7676e7f4613c6b5d51bfae7ca764098424d2",
+  "windowsAsset": {
+    "name": "ndlocr_lite_v1.2.3_windows.zip",
+    "url": "https://github.com/ndl-lab/ndlocr-lite/releases/download/1.2.3/ndlocr_lite_v1.2.3_windows.zip",
+    "size": 250694802,
+    "sha256": "f9e615ca1bba70c48fee156e685631cc2ef413f5c18c06fcbb9a949382519668"
+  }
+}

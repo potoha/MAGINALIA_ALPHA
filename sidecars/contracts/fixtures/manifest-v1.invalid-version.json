@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 2,
+  "exportedAtMs": 1786118400000,
+  "book": {
+    "isbn13": "9784000000000",
+    "orientation": "HORIZONTAL",
+    "metadata": {
+      "title": null,
+      "subtitle": null,
+      "authors": [],
+      "publisher": null,
+      "publishedDate": null,
+      "description": null,
+      "toc": null,
+      "coverUrl": null,
+      "provenance": {}
+    }
+  },
+  "pages": []
+}

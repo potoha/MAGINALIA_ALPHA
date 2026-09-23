@@ -1,3 +1,13 @@
 node_modules/
 apps/desktop/dist/
 *.log
+.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-tmp/
+*.sqlite3
+sidecars/reviewer/.venv/
+sidecars/reviewer/.pytest-tmp/
+sidecars/reviewer/.pytest_cache/
+

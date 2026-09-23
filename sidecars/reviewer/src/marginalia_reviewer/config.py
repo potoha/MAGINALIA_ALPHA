@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class Settings:
+    workspace: Path
+    ndlocr_config: Path | None = None
+    max_zip_bytes: int = 512 * 1024 * 1024
+    max_uncompressed_bytes: int = 2 * 1024 * 1024 * 1024
+    max_entries: int = 5_000
+    max_entry_bytes: int = 256 * 1024 * 1024
+    max_compression_ratio: float = 200.0
+    ocr_timeout_seconds: int = 600
+
+    @property
+    def database_path(self) -> Path:
+        return self.workspace / "reviewer.sqlite3"
+
+    @property
+    def imports_path(self) -> Path:
+        return self.workspace / "imports"
+
+    @property
+    def uploads_path(self) -> Path:
+        return self.workspace / "uploads"
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        workspace = Path(
+            os.environ.get(
+                "MARGINALIA_REVIEWER_WORKSPACE",
+                str(Path.home() / "AppData" / "Local" / "MarginaliaReviewer"),
+            )
+        )
+        raw_config = os.environ.get("MARGINALIA_NDLOCR_CONFIG")
+        return cls(workspace=workspace, ndlocr_config=Path(raw_config) if raw_config else None)
+
+
+def load_json_object(path: Path) -> dict[str, object]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"JSON object required: {path}")
+    return value
