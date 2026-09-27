@@ -32,7 +32,7 @@ Authority order:
 
 Repository: `potoha/MAGINALIA_ALPHA`
 
-Verified `main` HEAD when this memory was created:
+Implementation baseline immediately before the memory bootstrap commit:
 
 `6e5514592544416ec4b9c2d6bb88bf92491b7519`
 
@@ -40,7 +40,7 @@ Commit message:
 
 `reviewer 実装 進行中`
 
-This is **not a completed H.5 commit**.
+This is **not a completed H.5 commit**. The memory/bootstrap documentation itself advances HEAD, so always verify the actual current HEAD before implementation.
 
 The last accepted completed product slice before that unfinished work is:
 
@@ -58,7 +58,7 @@ Important completed slices and known commits:
 - C Shelf + QuoteRef: `d5d79b8a6c9beb9b84d97bc07562181011df3698`
 - D Generic Source + Automatic References: `85691b660993a826ef5994486219f77408a99138`
 - D.5 multi-document tabs + Mod host: `37add8ce748138f3128ce4143521f0d22210c85e`
-- E resolved Markdown Export: `6caff6ac280302e9a344f6c7a64c1ef22db5a46`
+- E resolved Markdown Export: `6caff6ac280302e9a344f6c7a64c1ef22dbf5a46`
 - P0+1 Autosave: `095c95f4b95fe4f3826dabd12a47166c7cf4ba4f`
 - F Rich Renderer / vertical preview / media: `b6c398c9e03f4edc8caeaf7ed1f0eb019605fb4e`
 - G Command Registry / Palette / Unified Search: `0cc0bbd6259693643cc87abd0f6929f01fa5c490`
@@ -141,7 +141,7 @@ See `memory/ANTIGRAVITY_DEBT.md`.
 
 Recommended next implementation action:
 
-**Harness 00 recovery on exact current HEAD**, first repairing/verifying the sidecar foundation with a real Python-sidecar integration smoke, then continuing main-process adapter + central View + Shelf refresh work.
+**Harness 00 recovery on the exact HEAD verified at execution time**, first repairing/verifying the sidecar foundation with a real Python-sidecar integration smoke, then continuing main-process adapter + central View + Shelf refresh work.
 
 Do not call H.5 complete until real sidecar lifecycle, import/review/approval, Shelf visibility, shutdown, and required regressions are verified.
 
