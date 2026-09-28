@@ -1,0 +1,278 @@
+{
+  "schemaVersion": 1,
+  "retrieval": {
+    "defaultMaxRecords": 5,
+    "defaultMaxChars": 16000,
+    "scoring": {
+      "exactKeyword": 6,
+      "tag": 4,
+      "relatedPath": 5,
+      "summaryToken": 2,
+      "activeBoost": 3,
+      "priorityDivisor": 25
+    }
+  },
+  "records": [
+    {
+      "id": "repo.current-state",
+      "path": "memory/records/repo-current-state.md",
+      "status": "active",
+      "priority": 100,
+      "summary": "Current MAGINALIA_ALPHA implementation baseline, completed slices, and repository handoff state.",
+      "tags": [
+        "repo",
+        "baseline",
+        "head",
+        "current-state",
+        "slices",
+        "regression"
+      ],
+      "keywords": [
+        "HEAD",
+        "baseline",
+        "commit",
+        "slice",
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "regression"
+      ],
+      "relatedPaths": [
+        "apps/desktop",
+        "packages",
+        "sidecars",
+        "mods"
+      ]
+    },
+    {
+      "id": "architecture.core-invariants",
+      "path": "memory/records/core-invariants.md",
+      "status": "active",
+      "priority": 95,
+      "summary": "Local-first data ownership, contracts, Workdesk/Project/Shelf boundaries, QuoteRef identity, and D032.",
+      "tags": [
+        "architecture",
+        "data",
+        "contracts",
+        "workdesk",
+        "project",
+        "shelf",
+        "git",
+        "security"
+      ],
+      "keywords": [
+        "local-first",
+        "portable",
+        "Workdesk",
+        "Project",
+        "Private Shelf",
+        "QuoteRef",
+        "annotationId",
+        "D032",
+        "GitHub",
+        "contract"
+      ],
+      "relatedPaths": [
+        "packages",
+        "apps/desktop/src/workdesk-service.ts",
+        "apps/desktop/src/reviewer-resolution.ts"
+      ]
+    },
+    {
+      "id": "active.h5-reviewer",
+      "path": "memory/records/h5-reviewer.md",
+      "status": "active",
+      "priority": 100,
+      "summary": "H.5 Reviewer sidecar architecture, responsibilities, completion requirements, and current recovery direction.",
+      "tags": [
+        "H.5",
+        "reviewer",
+        "shelf",
+        "sidecar",
+        "python",
+        "fastapi",
+        "ocr",
+        "magicap"
+      ],
+      "keywords": [
+        "H.5",
+        "ReviewerProcessManager",
+        "Reviewer",
+        "sidecar",
+        "FastAPI",
+        "SQLite",
+        "NDLOCR",
+        ".magicap",
+        "Shelf",
+        "approval"
+      ],
+      "relatedPaths": [
+        "sidecars/reviewer",
+        "apps/desktop/src/reviewer-ipc.ts",
+        "apps/desktop/src/reviewer-resolution.ts",
+        "apps/desktop/src/reviewer-process-manager.ts"
+      ]
+    },
+    {
+      "id": "debt.antigravity-h5",
+      "path": "memory/records/antigravity-h5-debt.md",
+      "status": "active",
+      "priority": 100,
+      "summary": "Known defects and salvage guidance for unfinished Antigravity H.5 commit 6e551459.",
+      "tags": [
+        "debt",
+        "antigravity",
+        "H.5",
+        "reviewer",
+        "recovery",
+        "security"
+      ],
+      "keywords": [
+        "Antigravity",
+        "6e551459",
+        "ndlocr.json",
+        "absolute path",
+        "contractVersion",
+        "taskkill",
+        "duplicate contracts",
+        "real sidecar smoke"
+      ],
+      "relatedPaths": [
+        "sidecars/reviewer/ndlocr.json",
+        "apps/desktop/src/reviewer-process-manager.ts",
+        "apps/desktop/tsconfig.main.json",
+        "sidecars/contracts",
+        "sidecars/reviewer/contracts"
+      ]
+    },
+    {
+      "id": "planned.h6-renderer",
+      "path": "memory/records/h6-renderer.md",
+      "status": "planned",
+      "priority": 85,
+      "summary": "H.6 renderer/editor refinements: practical vertical writing, live outline/figures/tables, Japanese paragraph indent.",
+      "tags": [
+        "H.6",
+        "renderer",
+        "editor",
+        "vertical-writing",
+        "japanese",
+        "table",
+        "outline"
+      ],
+      "keywords": [
+        "H.6",
+        "vertical",
+        "writing",
+        "renderer",
+        "outline",
+        "heading",
+        "table",
+        "figure",
+        "live render",
+        "一字下げ",
+        "1em"
+      ],
+      "relatedPaths": [
+        "apps/desktop/src/renderer"
+      ]
+    },
+    {
+      "id": "planned.h7-authoring-freeze",
+      "path": "memory/records/h7-authoring-freeze.md",
+      "status": "planned",
+      "priority": 80,
+      "summary": "H.7 Authoring Architecture Freeze before installer hardening.",
+      "tags": [
+        "H.7",
+        "authoring",
+        "preview",
+        "table",
+        "properties",
+        "synced-block",
+        "bibliography"
+      ],
+      "keywords": [
+        "H.7",
+        "live preview",
+        "editable preview",
+        "Synced Block",
+        "front matter",
+        "Properties",
+        "Bibliography View",
+        "tab reorder"
+      ],
+      "relatedPaths": [
+        "apps/desktop/src/renderer",
+        "apps/desktop/src"
+      ]
+    },
+    {
+      "id": "roadmap.distribution",
+      "path": "memory/records/distribution-roadmap.md",
+      "status": "active",
+      "priority": 80,
+      "summary": "Near-term order through H.5/H.6/H.7, installer readiness, Windows Installer, and optional Browser Mod.",
+      "tags": [
+        "roadmap",
+        "installer",
+        "browser",
+        "distribution",
+        "alpha",
+        "Ethiopia"
+      ],
+      "keywords": [
+        "installer",
+        "Browser",
+        "Web View",
+        "optional Mod",
+        "alpha",
+        "Ethiopia",
+        "PDF",
+        "DOCX",
+        "Harness 01"
+      ],
+      "relatedPaths": [
+        "docs",
+        "plan"
+      ]
+    },
+    {
+      "id": "runtime.opencode",
+      "path": "memory/records/opencode-runtime.md",
+      "status": "active",
+      "priority": 90,
+      "summary": "Chat to OpenCode Development Request Contract, Harness responsibilities, model-routing conventions, quota/checkpoint behavior.",
+      "tags": [
+        "opencode",
+        "runtime",
+        "harness",
+        "handoff",
+        "models",
+        "quota"
+      ],
+      "keywords": [
+        "OpenCode",
+        "Harness 00",
+        "Harness 01",
+        "Harness 02",
+        "Development Request Contract",
+        "handoff",
+        "quota",
+        "Luna",
+        "Terra",
+        "Sol"
+      ],
+      "relatedPaths": [
+        ".opencode",
+        "opencode.json",
+        "AGENTS.md"
+      ]
+    }
+  ]
+}

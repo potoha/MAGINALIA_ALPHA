@@ -1,3 +1,11 @@
+---
+id: debt.antigravity-h5
+updated: 2026-09-28
+status: active
+kind: debt
+source_commit: 6e5514592544416ec4b9c2d6bb88bf92491b7519
+---
+
 # Antigravity Reviewer Integration Debt
 
 **Recorded:** 2026-09-27  
