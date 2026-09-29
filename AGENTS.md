@@ -1,100 +1,227 @@
-# MAGINALIA_ALPHA — OpenCode project instructions
+# MAGINALIA_ALPHA — Codex repository instructions
 
-## Instant-memory retrieval bootstrap
+## Purpose
 
-Do **not** preload the whole `memory/` directory.
+This repository is the active MAGINALIA Desktop implementation target.
 
-At the start of a task:
+Codex may directly inspect, edit, test, run, and commit implementation work when the user gives an explicit work order.
 
-1. Verify the actual Git base/HEAD.
-2. Read `memory/README.md` and `memory/index.json` only.
-3. Turn the task into a short retrieval query containing the feature/slice, affected paths, and important constraints.
-4. Run:
-   ```text
-   node memory/query.mjs "<query>"
-   ```
-5. Load only the highest-scoring memory records needed for the task.
-6. Follow any canonical-source pointers in those records when the task depends on current product truth.
-7. If an `expected_base_commit` is supplied and differs from the verified base, stop with `STALE_BASE_COMMIT`.
+Do not treat historical chat context as product truth when current repository evidence or accepted MAGINALIA_IDE decisions exist.
 
-Default memory budget:
-- prefer 3–5 records;
-- avoid loading unrelated records;
-- treat memory as retrieval hints, not authority.
+## Task bootstrap
 
-Memory authority is always below:
+Before implementation:
+
+1. Verify the actual Git HEAD and worktree state.
+2. If the work order specifies an `expected_base_commit`, require an exact match.
+   - If it differs, stop with `STALE_BASE_COMMIT`.
+   - Do not silently reset, rebase, or reinterpret the task against another base.
+3. Read this file first.
+4. Read `memory/README.md` and `memory/index.json`.
+5. Retrieve only the memory records relevant to the current task.
+6. Inspect the current implementation and tests before making assumptions.
+7. Read only the relevant canonical MAGINALIA_IDE plans/ADRs needed for the task.
+
+Do not preload the entire `memory/` directory.
+
+## Structured memory
+
+The repository uses retrieval-oriented project memory.
+
+Use:
+
+```text
+node memory/query.mjs "<task query>"
+```
+
+Prefer a small relevant set of records rather than loading every record.
+
+Memory is derived context, not specification.
+
+Authority order:
+
 1. latest explicit Product Owner instruction;
-2. accepted MAGINALIA_IDE ADR / Decision Log / active plan;
-3. current source, tests, and verified Git state.
+2. accepted MAGINALIA_IDE Product Spec / ADR / Decision Log / active plan;
+3. current repository implementation and tests;
+4. structured external memory;
+5. previous Implementation Handoff Report;
+6. historical notes or conversational recollection.
 
-## Source of truth
+When memory conflicts with maintained specifications or current implementation evidence, memory loses.
 
-Cross-product architecture and accepted product decisions:
-- `potoha/MAGINALIA_IDE`
-- especially `plan/09_DECISION_LOG.md`, accepted ADRs, and active plans.
+## Repository roles
 
-Implementation target for Desktop:
-- this repository: `potoha/MAGINALIA_ALPHA`.
+### MAGINALIA_ALPHA
 
-Salvage/reference only where explicitly named:
-- `potoha/MY_marginallia` for Quote Capture / legacy Reviewer implementation.
+This repository is the Desktop implementation target.
 
-Do not reconstruct product truth from old chat summaries when a canonical repository source exists.
+Implementation, tests, integration changes, and product-facing Desktop work belong here.
 
-## Current execution model
+### MAGINALIA_IDE
 
-Development execution uses **Chat -> OpenCode Runtime**.
+Canonical architecture, product decisions, ADRs, milestone plans, and cross-product contracts.
 
-Canonical execution-process sources:
-- `MAGINALIA_IDE/plan/05_DEVELOPMENT_CADENCE.md`
-- `MAGINALIA_IDE/plan/25_DEVELOPMENT_RUNTIME_HARNESSES.md`
+Use only the relevant files for the active task.
 
-Chat/Product Owner owns product intent, scope, settled decisions, constraints, acceptance, and human UX judgment.
-Runtime owns harness selection, decomposition, model routing, retries, verification ordering, quota supervision, checkpoint/handoff, and resume.
+### MY_marginallia
 
-Registered roles:
-- Harness 00: standard implementation.
-- Harness 01: review-only large-scale audit / Installer Readiness.
-- Harness 02: installed-build UI/UX improvement.
+Quote Capture / legacy Reviewer salvage and behavioral reference where explicitly requested.
+
+It is not automatically:
+- a runtime dependency;
+- current Desktop architecture;
+- source of truth over accepted MAGINALIA_IDE decisions.
+
+Do not introduce a runtime dependency on another local repository unless the Product Owner explicitly changes that architecture.
 
 ## Engineering language
 
-Engineering/runtime artifacts are English by default.
-Do **not** translate legitimate Japanese product UI, installer text, user-facing messages, fixtures, or content merely to make engineering artifacts English.
-Do not impose ASCII-only constraints.
+Engineering artifacts are English-first:
+- technical plans;
+- implementation notes;
+- code comments where appropriate;
+- commit messages;
+- Implementation Handoff Reports.
 
-## Core invariants
+Do not translate exact Japanese product data for engineering convenience.
+
+Preserve Japanese where semantically relevant, including:
+- UI strings;
+- user-facing messages;
+- document contents;
+- quotations;
+- filenames/directories;
+- Japanese search/input behavior;
+- fixtures/corpora.
+
+Text handling is Unicode-first / UTF-8.
+
+ASCII-only assumptions are prohibited unless an unavoidable external limitation is documented.
+
+## Core product invariants
 
 - Local-first research data.
-- Durable user data remains ordinary Markdown/YAML/JSON/images and explicit repository contracts.
-- Product boundaries use versioned contracts + adapters.
+- Durable user data remains in ordinary portable formats such as Markdown/YAML/JSON/images and explicit contracts.
+- Cross-product integration uses versioned contracts + adapters rather than internal implementation coupling.
 - Workdesk organizes Projects but does not own child Project contents/history.
-- Project, Workdesk, and Private Shelf authorities remain distinct.
-- QuoteRef identity remains opaque Reviewer `annotationId`.
+- Project, Workdesk, and Private Shelf remain distinct authorities.
+- QuoteRef identity remains the opaque Reviewer `annotationId`.
 - Renderer/presentation changes must not silently mutate Markdown source semantics.
-- Normal-user flows must not require Git, Node, Python, PowerShell, PATH editing, npm, pip, or developer setup.
+- Normal-user flows must not require Git, Node, Python, PowerShell, PATH editing, npm, pip, or other developer setup in the final product.
+- Machine-local absolute paths must not become canonical portable project/user data.
 
 ## Git/GitHub freeze
 
-Decision D032 remains authoritative:
-production Git/GitHub fetch/pull/push/auth/conflict orchestration is frozen until a human programmer can review that state machine.
+Decision D032 remains authoritative.
 
-Do not reopen production Sync opportunistically.
+Do not implement or reopen production Git/GitHub fetch/pull/push/auth/conflict orchestration unless the Product Owner explicitly changes that decision.
+
+Local development Git operations required to implement and commit work are allowed.
+
+## Implementation behavior
+
+For substantial work:
+
+- inspect before editing;
+- preserve working behavior outside the requested scope;
+- prefer narrow changes over broad rewrites;
+- reuse existing contracts and adapters;
+- do not introduce parallel sources of truth without an explicit product decision;
+- do not opportunistically implement adjacent roadmap slices;
+- treat user-visible security/data/identity boundaries as product constraints, not optional cleanup.
+
+When an existing generated or partial implementation is present, audit it before trusting it.
+
+## Testing and evidence
+
+Choose an efficient verification order.
+
+Use fast unit/contract tests where useful, but do not let mocks substitute for evidence that requires:
+- a real child process;
+- real Electron/Desktop behavior;
+- persistence across restart;
+- OS/path behavior;
+- packaging/runtime boundaries.
+
+Report acceptance using exactly:
+
+- PASS
+- FAIL
+- NOT VERIFIED
+
+Missing evidence is NOT VERIFIED, never PASS.
+
+Do not fabricate real-world smoke evidence.
 
 ## Definition of Done
 
-Never call a slice complete because code exists.
+A substantial slice is complete only when:
 
-A substantial implementation is complete only when required scope is implemented, relevant unit/contract/integration tests pass, required Electron/real-world smoke evidence is collected, acceptance is reported as PASS/FAIL/NOT VERIFIED, the result commit exists, and repository/worktree state is explicitly reported.
+- required behavior is implemented;
+- relevant tests pass;
+- required real-world/smoke evidence is obtained where needed;
+- security/data/identity invariants remain intact;
+- unrelated regressions are not introduced;
+- a coherent result commit exists;
+- final worktree state is reported;
+- an Implementation Handoff Report is produced.
 
-Missing evidence is not PASS.
+Source code merely existing is not completion.
+
+Mock tests merely passing is not completion.
+
+## Commit discipline
+
+Before committing:
+
+- inspect the full diff;
+- remove secrets, machine-specific paths, temporary files, and accidental generated artifacts;
+- confirm unrelated files were not changed;
+- confirm known failures or unverified behavior are explicitly reported.
+
+Do not rewrite unrelated history.
+
+Use a normal feature commit unless the user explicitly requests another Git workflow.
 
 ## Handoff discipline
 
-Independent agent/session contexts exchange work through bounded artifacts:
-- Development Request Contract,
-- exact commit SHA,
-- Implementation Handoff Report,
-- explicit review/audit artifacts.
+At the end of a substantial task, return an English Implementation Handoff Report containing at least:
 
-Do not rely on hidden conversational continuity.
+- required/verified base commit;
+- actual result commit;
+- branch/worktree state;
+- implemented scope;
+- important architectural behavior;
+- verification actually executed;
+- real-world/smoke evidence;
+- acceptance items as PASS / FAIL / NOT VERIFIED;
+- remaining debt;
+- deferred scope;
+- next recommended action.
+
+The Handoff is not a substitute for repository evidence.
+
+## Scope control
+
+Stop and reconsider if work begins to:
+- violate an accepted Product Owner decision;
+- expand into an unrelated roadmap slice;
+- introduce a new source of truth without approval;
+- broaden renderer/process privileges unnecessarily;
+- depend on ASCII-only path assumptions;
+- make another local repository a hidden runtime dependency;
+- reopen production GitHub synchronization;
+- perform a large unrelated refactor.
+
+Keep the requested slice bounded.
+
+## Current H.5 note
+
+The repository contains unfinished Reviewer integration work originating from the Antigravity attempt.
+
+For Reviewer/H.5 work:
+- retrieve the relevant H.5 and Antigravity debt memory records;
+- audit the current source before extending it;
+- preserve sound salvage;
+- do not treat the unfinished implementation as accepted;
+- prove the real Reviewer lifecycle rather than relying only on mocked tests.
