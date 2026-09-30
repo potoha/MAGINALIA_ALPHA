@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  WebContentsView,
   dialog,
   ipcMain,
   shell,
@@ -73,6 +74,14 @@ import { createLibraryHandlers } from "./library-ipc";
 import { createReviewerHandlers, createReviewerSearchAdapter } from "./reviewer-ipc";
 import { createReferenceHandlers } from "./reference-ipc";
 import { createReviewerResolutionAdapter } from "./reviewer-resolution";
+import { ReviewerProcessManager, UserDataReviewerWorkspaceLocator } from "./reviewer-process-manager";
+import { createReviewerEmbeddedHost, isSafeReviewerViewBounds } from "./reviewer-embedded-view-host";
+import {
+  CLOSE_REVIEWER_VIEW_CHANNEL,
+  OPEN_REVIEWER_VIEW_CHANNEL,
+  SET_REVIEWER_VIEW_BOUNDS_CHANNEL,
+  ReviewerViewController
+} from "./reviewer-view-controller";
 import {
   RESOLVE_EXPORT_CHANNEL,
   WRITE_EXPORT_CHANNEL,
@@ -108,6 +117,7 @@ import {
   parseD5SmokeMode,
   parseExportSmokeMode,
   parseGSmokeMode,
+  parseH5SmokeMode,
   parseHSmokeMode,
   parseProjectSmokeMode,
   parseRepositorySmokeMode,
@@ -125,6 +135,7 @@ import { runD5Smoke, runD5RestoreSmoke } from "./d5-smoke";
 import { runExportSmoke } from "./export-smoke";
 import { runGSmoke } from "./g-smoke";
 import { runHSmoke } from "./h-smoke";
+import { runH5Smoke } from "./h5-smoke";
 import {
   LOAD_WORKSPACE_STATE_CHANNEL,
   SAVE_WORKSPACE_STATE_CHANNEL,
@@ -169,6 +180,7 @@ const d5Smoke = parseD5SmokeMode(process.argv);
 const exportSmoke = parseExportSmokeMode(process.argv);
 const gSmoke = parseGSmokeMode(process.argv);
 const hSmoke = parseHSmokeMode(process.argv);
+const h5Smoke = parseH5SmokeMode(process.argv);
 const smokeMode = quickSmokeMode
   || writingSmoke.requested
   || workspaceSmoke.requested
@@ -179,7 +191,8 @@ const smokeMode = quickSmokeMode
   || d5Smoke.requested
   || exportSmoke.requested
   || gSmoke.requested
-  || hSmoke.requested;
+  || hSmoke.requested
+  || h5Smoke.requested;
 const markdownFileService = new MarkdownFileService();
 const workspaceStateStore = new FileWorkspaceStateStore(path.join(app.getPath("userData"), "workspace-state.json"));
 const workspaceStateHandlers = createWorkspaceStateHandlers({
@@ -194,6 +207,56 @@ const projectService = new ProjectService(
 );
 const projectAssetService = new ProjectAssetService(documentWorkspaceService);
 const libraryService = new LibraryService();
+// The main process is the only owner of the Reviewer process, workspace, and
+// loopback origin.  It is deliberately lazy: ordinary Project/Workdesk work
+// never needs a Python runtime merely to open MAGINALIA.
+let reviewerProcessManager: ReviewerProcessManager | undefined;
+function getReviewerProcessManager(): ReviewerProcessManager {
+  reviewerProcessManager ??= new ReviewerProcessManager({
+    workspaceLocator: new UserDataReviewerWorkspaceLocator(app.getPath("userData")),
+    // Normal Desktop operation never adopts a renderer- or developer-selected
+    // endpoint. The two pre-existing deterministic Electron smoke harnesses
+    // are the sole exception: their process command line explicitly selects
+    // a local fixture server, and this is never exposed to product renderers.
+    envOverrideUrl: (shelfSmoke.requested || exportSmoke.requested)
+      ? (process.env.MAGINALIA_REVIEWER_BASE_URL ?? "")
+      : ""
+  });
+  return reviewerProcessManager;
+}
+
+async function getManagedReviewerBaseUrl(): Promise<string> {
+  return (await getReviewerProcessManager().ensureReady()).href;
+}
+
+// A Reviewer window is deliberately separate from DocumentSession/tabs. It has
+// no preload and receives only the manager-selected loopback origin.
+let reviewerViewController: ReviewerViewController | undefined;
+function getReviewerViewController(): ReviewerViewController {
+  reviewerViewController ??= new ReviewerViewController({
+    getManagedReviewerBaseUrl,
+    hostFactory: {
+      create: () => createReviewerEmbeddedHostForMain()
+    }
+  });
+  return reviewerViewController;
+}
+
+/**
+ * Mount the Reviewer as one bounded central service View inside the existing
+ * Workbench window. It never becomes a BrowserWindow or DocumentSession.
+ */
+function createReviewerEmbeddedHostForMain() {
+  const owner = mainWindow;
+  if (owner === null || owner.isDestroyed()) throw new Error("No Workbench window is available.");
+  return createReviewerEmbeddedHost<WebContentsView>(owner, () => new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  }));
+}
 const workdeskService = new WorkdeskService(
   new FileWorkdeskPathStore(path.join(app.getPath("userData"), "workdesk-paths.json"))
 );
@@ -362,15 +425,15 @@ const libraryHandlers = createLibraryHandlers({
   }
 });
 const reviewerSearch = createReviewerSearchAdapter({
-  // This value is main-process configuration. The renderer can provide only
-  // the search string and can never select a destination URL or DB path.
-  baseUrl: process.env.MAGINALIA_REVIEWER_BASE_URL
+  // The renderer can provide only a search string.  Main starts/verifies the
+  // managed loopback Reviewer and never exposes its workspace or URL choice.
+  getBaseUrl: getManagedReviewerBaseUrl
 });
 const reviewerHandlers = createReviewerHandlers({ search: reviewerSearch });
 const referenceResolution = createReviewerResolutionAdapter({
-  // This value is main-process configuration. The renderer supplies document
-  // text only and cannot select a URL, port, or Reviewer database path.
-  baseUrl: process.env.MAGINALIA_REVIEWER_BASE_URL
+  // The resolver calls this only when a valid QuoteRef is present, so normal
+  // Markdown export does not acquire a Reviewer dependency.
+  getBaseUrl: getManagedReviewerBaseUrl
 });
 const referenceHandlers = createReferenceHandlers({ resolve: referenceResolution });
 let exportDialogSequence = 0;
@@ -525,6 +588,7 @@ let d5SmokeFinished = false;
 let exportSmokeFinished = false;
 let gSmokeFinished = false;
 let hSmokeFinished = false;
+let h5SmokeFinished = false;
 
 const CLOUD_USER_CODE_PATTERN = /^[A-Za-z0-9-]+$/u;
 const MAX_CLOUD_USER_CODE_LENGTH = 64;
@@ -759,6 +823,22 @@ function completeHSmoke(): void {
   app.quit();
 }
 
+function failH5Smoke(error: unknown): void {
+  if (h5SmokeFinished) return;
+  h5SmokeFinished = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`MAGINALIA_ELECTRON_H5_SMOKE_FAILED ${message}`);
+  // H.5 may already own Python. Stop it through the production graceful path
+  // before failing the smoke process, rather than using immediate app.exit.
+  void getReviewerProcessManager().shutdown().finally(() => app.exit(1));
+}
+
+function completeH5Smoke(): void {
+  if (h5SmokeFinished) return;
+  h5SmokeFinished = true;
+  app.quit();
+}
+
 async function handleOpenMarkdown(event: IpcMainInvokeEvent): Promise<OpenMarkdownResult> {
   if (writingSmoke.requested) {
     if (!writingSmoke.filePath) {
@@ -895,6 +975,12 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(SEARCH_LIBRARY_CHANNEL, libraryHandlers.searchLibrary);
   ipcMain.handle(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL, libraryHandlers.resolveQuotationForInsert);
   ipcMain.handle(SEARCH_SHELF_CHANNEL, reviewerHandlers.searchShelf);
+  ipcMain.handle(OPEN_REVIEWER_VIEW_CHANNEL, () => getReviewerViewController().open());
+  ipcMain.handle(CLOSE_REVIEWER_VIEW_CHANNEL, () => getReviewerViewController().close());
+  ipcMain.handle(SET_REVIEWER_VIEW_BOUNDS_CHANNEL, (event, bounds: unknown) => {
+    if (event.sender !== mainWindow?.webContents || !isSafeReviewerViewBounds(bounds)) return;
+    getReviewerViewController().setBounds(bounds);
+  });
   ipcMain.handle(RESOLVE_REFERENCES_CHANNEL, referenceHandlers.resolveReferences);
   ipcMain.handle(RESOLVE_EXPORT_CHANNEL, exportHandlers.resolveExport);
   ipcMain.handle(WRITE_EXPORT_CHANNEL, exportHandlers.writeExport);
@@ -942,6 +1028,9 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(SEARCH_LIBRARY_CHANNEL);
   ipcMain.removeHandler(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL);
   ipcMain.removeHandler(SEARCH_SHELF_CHANNEL);
+  ipcMain.removeHandler(OPEN_REVIEWER_VIEW_CHANNEL);
+  ipcMain.removeHandler(CLOSE_REVIEWER_VIEW_CHANNEL);
+  ipcMain.removeHandler(SET_REVIEWER_VIEW_BOUNDS_CHANNEL);
   ipcMain.removeHandler(RESOLVE_REFERENCES_CHANNEL);
   ipcMain.removeHandler(RESOLVE_EXPORT_CHANNEL);
   ipcMain.removeHandler(WRITE_EXPORT_CHANNEL);
@@ -982,6 +1071,7 @@ function createMainWindow(): BrowserWindow {
       || d5Smoke.requested
       || exportSmoke.requested
       || gSmoke.requested
+      || h5Smoke.requested
       || !smokeMode,
     webPreferences: createSecureWebPreferences(path.join(__dirname, "preload.js"))
   });
@@ -1246,6 +1336,26 @@ function createMainWindow(): BrowserWindow {
         }
       });
     }
+  } else if (h5Smoke.requested) {
+    window.webContents.once("did-finish-load", () => {
+      void runH5Smoke({
+        reviewer: getReviewerProcessManager(),
+        reviewerView: getReviewerViewController(),
+        userDataPath: app.getPath("userData")
+      }).then(
+        () => completeH5Smoke(),
+        (error: unknown) => failH5Smoke(error)
+      );
+    });
+    window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+      if (isMainFrame) failH5Smoke(new Error(`Renderer load failed (${errorCode}): ${errorDescription}`));
+    });
+    window.webContents.on("preload-error", (_event, preloadPath, error) => {
+      failH5Smoke(new Error(`Preload failed (${preloadPath}): ${error.message}`));
+    });
+    window.webContents.on("render-process-gone", (_event, details) => {
+      failH5Smoke(new Error(`Renderer process exited: ${details.reason}`));
+    });
   } else if (hSmoke.requested) {
     if (!hSmoke.rootPath) {
       failHSmoke(new Error("The Workdesk smoke fixture root was not provided."));
@@ -1328,6 +1438,8 @@ function createMainWindow(): BrowserWindow {
               ? { query: { smoke: d5Smoke.restore ? "d5-restore" : "d5" } }
               : exportSmoke.requested
                 ? { query: { smoke: "export" } }
+                : h5Smoke.requested
+                  ? { query: { smoke: "h5" } }
                 : hSmoke.requested
                   ? { query: { smoke: "h" } }
                 : gSmoke.requested
@@ -1353,6 +1465,8 @@ function createMainWindow(): BrowserWindow {
       failExportSmoke(error);
     } else if (hSmoke.requested) {
       failHSmoke(error);
+    } else if (h5Smoke.requested) {
+      failH5Smoke(error);
     } else if (gSmoke.requested) {
       failGSmoke(error);
     } else if (quickSmokeMode) {
@@ -1388,6 +1502,9 @@ function createMainWindow(): BrowserWindow {
     }
     if (hSmoke.requested && !hSmokeFinished) {
       failHSmoke(new Error("Workdesk smoke window closed before completion."));
+    }
+    if (h5Smoke.requested && !h5SmokeFinished) {
+      failH5Smoke(new Error("Reviewer smoke window closed before completion."));
     }
     if (gSmoke.requested && !gSmokeFinished) {
       failGSmoke(new Error("G smoke window closed before completion."));
@@ -1431,11 +1548,20 @@ function requestRendererAutosaveFlush(window: BrowserWindow): Promise<boolean> {
 }
 
 const autosaveShutdown = new AutosaveShutdownCoordinator({
-  requestFlush: () => {
+  requestFlush: async () => {
     const window = mainWindow;
-    return window === null || window.isDestroyed()
+    const autosaveFlushed = window === null || window.isDestroyed()
       ? true
-      : requestRendererAutosaveFlush(window);
+      : await requestRendererAutosaveFlush(window);
+    if (!autosaveFlushed) return false;
+    // before-quit is the real awaitable lifecycle boundary. The manager first
+    // requests graceful sidecar shutdown and escalates only after its bound.
+    try {
+      await reviewerProcessManager?.shutdown();
+      return true;
+    } catch {
+      return false;
+    }
   },
   quit: () => app.quit(),
   onFailure: () => {
@@ -1459,6 +1585,9 @@ void app.whenReady().then(() => {
 });
 
 app.on("will-quit", () => {
+  // Normally shutdown completed in the before-quit coordinator. This is a
+  // final best-effort guard for platform-forced paths; it never starts one.
+  if (reviewerProcessManager !== undefined) void reviewerProcessManager.shutdown();
   void modHost.dispose();
   unregisterMarkdownIpc();
 });

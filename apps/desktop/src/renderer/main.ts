@@ -84,7 +84,7 @@ import {
   type LayoutState,
   type ViewRegion
 } from "./workbench-core";
-import { WORKBENCH_VIEW_MANIFEST } from "./workbench-views";
+import { CENTRAL_SERVICE_VIEW_MANIFEST, WORKBENCH_VIEW_MANIFEST } from "./workbench-views";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -240,6 +240,14 @@ app.innerHTML = `
         </div>
         <section id="editor" class="editor" aria-label="Markdown editor"></section>
         <section id="markdown-preview" class="markdown-preview" aria-label="Markdown preview" hidden></section>
+        <section id="central-service-view" class="central-service-view" data-workbench-service-view="reviewer" aria-label="Reviewer" hidden>
+          <header class="central-service-header">
+            <strong>Reviewer</strong>
+            <span>取り込み・確認・OCR・承認</span>
+            <button id="close-reviewer-view" type="button">エディターに戻る</button>
+          </header>
+          <div id="reviewer-service-slot" class="central-service-slot" aria-label="Reviewer service content"></div>
+        </section>
       </section>
       <aside id="secondary-sidebar" class="workbench-sidebar secondary-sidebar" data-workbench-region="secondary-sidebar" aria-label="Secondary sidebar">
         <div id="secondary-sidebar-resizer" class="sidebar-resizer" data-workbench-resize="secondary-sidebar" role="separator" aria-label="Resize secondary sidebar" aria-orientation="vertical" tabindex="0"></div>
@@ -248,6 +256,8 @@ app.innerHTML = `
             <div class="library-heading-row">
               <h2 id="library-heading">Shelf</h2>
               <strong id="library-name">Reviewer Shelf</strong>
+              <button id="open-reviewer" type="button" title="取り込む・確認する">取り込む・確認する</button>
+              <button id="refresh-shelf" type="button" title="Refresh approved quotations">Shelfを更新</button>
               <button id="choose-library" type="button" hidden aria-hidden="true">Choose local Library</button>
               <button id="refresh-references" type="button" disabled>Refresh References</button>
             </div>
@@ -367,6 +377,8 @@ const newFileTitle = requiredElement<HTMLInputElement>("#new-file-title");
 const newFileType = requiredElement<HTMLSelectElement>("#new-file-type");
 const chooseLibraryButton = requiredElement<HTMLButtonElement>("#choose-library");
 const libraryName = requiredElement<HTMLElement>("#library-name");
+const openReviewerButton = requiredElement<HTMLButtonElement>("#open-reviewer");
+const refreshShelfButton = requiredElement<HTMLButtonElement>("#refresh-shelf");
 const refreshReferencesButton = requiredElement<HTMLButtonElement>("#refresh-references");
 const librarySearchForm = requiredElement<HTMLFormElement>("#library-search-form");
 const libraryQuery = requiredElement<HTMLInputElement>("#library-query");
@@ -390,6 +402,9 @@ const modViewHost = requiredElement<HTMLElement>("#mod-view-host");
 const modCommandHost = requiredElement<HTMLElement>("#mod-command-host");
 const editorContainer = requiredElement<HTMLElement>("#editor");
 const previewContainer = requiredElement<HTMLElement>("#markdown-preview");
+const centralServiceView = requiredElement<HTMLElement>("#central-service-view");
+const reviewerServiceSlot = requiredElement<HTMLElement>("#reviewer-service-slot");
+const closeReviewerViewButton = requiredElement<HTMLButtonElement>("#close-reviewer-view");
 const editorUtilityBar = requiredElement<HTMLElement>("#editor-utility-bar");
 const editModeButton = requiredElement<HTMLButtonElement>("#document-edit-mode");
 const previewModeButton = requiredElement<HTMLButtonElement>("#document-preview-mode");
@@ -430,6 +445,32 @@ let projectSearchInsertionTarget: CapturedInsertionTarget | null = null;
 
 const workbench = new WorkbenchCore(createLocalStorageLayoutStore());
 for (const view of WORKBENCH_VIEW_MANIFEST) workbench.registerView(view);
+const reviewerServiceDescriptor = CENTRAL_SERVICE_VIEW_MANIFEST.find((view) => view.id === "reviewer");
+if (reviewerServiceDescriptor === undefined
+  || reviewerServiceDescriptor.panelId !== centralServiceView.id
+  || reviewerServiceDescriptor.slotId !== reviewerServiceSlot.id) {
+  throw new Error("Reviewer central service View is not registered correctly.");
+}
+let reviewerServiceViewOpen = false;
+
+function sendReviewerServiceBounds(): void {
+  if (!reviewerServiceViewOpen || typeof window.maginalia.setReviewerViewBounds !== "function") return;
+  const bounds = reviewerServiceSlot.getBoundingClientRect();
+  if (bounds.width < 160 || bounds.height < 120) return;
+  void window.maginalia.setReviewerViewBounds({
+    x: Math.round(bounds.x),
+    y: Math.round(bounds.y),
+    width: Math.round(bounds.width),
+    height: Math.round(bounds.height)
+  });
+}
+
+function setReviewerServiceViewOpen(open: boolean): void {
+  reviewerServiceViewOpen = open;
+  centralServiceView.hidden = !open;
+  if (open) requestAnimationFrame(sendReviewerServiceBounds);
+}
+window.addEventListener("resize", sendReviewerServiceBounds);
 
 function updateViewPanels(state: LayoutState): void {
   for (const panel of viewPanels) {
@@ -689,6 +730,61 @@ registerCoreCommands(commandRegistry, {
   refreshReferences: () => { void referencesController?.refresh(); },
   exportMarkdown: () => { void exportController?.exportMarkdown(); },
   contextKeys: commandContext
+});
+commandRegistry.register({
+  id: "maginalia.shelf.openReviewer",
+  title: "取り込む・確認する",
+  category: "Shelf",
+  keywords: ["reviewer", "import", "OCR", "quotation", "取り込む", "確認する"]
+}, async () => {
+  const openReviewerView = window.maginalia.openReviewerView;
+  if (typeof openReviewerView !== "function") {
+    libraryStatus.dataset.state = "error";
+    libraryStatus.textContent = "Reviewer is unavailable.";
+    libraryError.textContent = "Reviewer View is unavailable in this Desktop runtime.";
+    libraryError.hidden = false;
+    return;
+  }
+  const result = await openReviewerView();
+  if (result.kind === "unavailable") {
+    setReviewerServiceViewOpen(false);
+    libraryStatus.dataset.state = "error";
+    libraryStatus.textContent = "Reviewer unavailable.";
+    libraryError.textContent = result.message;
+    libraryError.hidden = false;
+    return;
+  }
+  setReviewerServiceViewOpen(true);
+  libraryStatus.dataset.state = "ready";
+  libraryStatus.textContent = result.kind === "activated"
+    ? "Reviewer is already open."
+    : "Reviewer opened. Approve quotations there, then refresh Shelf.";
+  libraryError.hidden = true;
+});
+commandRegistry.register({
+  id: "maginalia.shelf.closeReviewer",
+  title: "エディターに戻る",
+  category: "Shelf",
+  keywords: ["reviewer", "close", "return", "editor", "戻る"]
+}, async () => {
+  const closeReviewerView = window.maginalia.closeReviewerView;
+  if (typeof closeReviewerView === "function") await closeReviewerView();
+  setReviewerServiceViewOpen(false);
+  libraryStatus.dataset.state = "ready";
+  libraryStatus.textContent = "Reviewer closed. Shelf can be refreshed.";
+  libraryError.hidden = true;
+});
+commandRegistry.register({
+  id: "maginalia.shelf.refresh",
+  title: "Refresh Shelf",
+  category: "Shelf",
+  keywords: ["reviewer", "approved", "quotation", "refresh"]
+}, async () => {
+  if (legacyLibraryActive) {
+    await libraryController?.search();
+  } else {
+    await shelfController?.search(libraryQuery.value);
+  }
 });
 commandRegistry.register({
   id: "maginalia.link.openInTab",
@@ -2354,7 +2450,7 @@ if (!shelfApi) {
   libraryQuery.disabled = true;
   librarySearchButton.disabled = true;
   libraryStatus.textContent = "Shelf is unavailable.";
-  libraryError.textContent = "Reviewer unavailable. Set MAGINALIA_REVIEWER_BASE_URL and start Reviewer.";
+  libraryError.textContent = "Reviewer is unavailable. Try opening 取り込む・確認する again.";
   libraryError.hidden = false;
 } else {
   shelfController = new ShelfController({
@@ -2374,6 +2470,22 @@ if (!shelfApi) {
     void runUnifiedSearch();
   });
 }
+
+function executeShelfCommand(command: string): void {
+  void commandRegistry.execute(command, commandContext.snapshot()).then((result) => {
+    if (result.kind !== "failed") return;
+    libraryStatus.dataset.state = "error";
+    libraryStatus.textContent = "Shelf action failed.";
+    libraryError.textContent = result.error.message;
+    libraryError.hidden = false;
+  });
+}
+
+// Shelf-facing controls only dispatch command IDs. They never invoke the
+// process manager, view controller, or search implementation directly.
+openReviewerButton.addEventListener("click", () => executeShelfCommand("maginalia.shelf.openReviewer"));
+refreshShelfButton.addEventListener("click", () => executeShelfCommand("maginalia.shelf.refresh"));
+closeReviewerViewButton.addEventListener("click", () => executeShelfCommand("maginalia.shelf.closeReviewer"));
 
 const referencesView: ReferencesControllerView = {
   setReferencesState(state: ReferencesViewState): void {

@@ -95,6 +95,18 @@ function startReviewerFixture() {
       return;
     }
 
+    // Slice H.5 accepts fixture overrides only after the same service identity
+    // and contract handshake required for a managed sidecar.
+    if (requestUrl.pathname === "/api/health") {
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({
+        status: "ok",
+        service: "maginalia-reviewer",
+        contractVersion: 1
+      }));
+      return;
+    }
+
     if (requestUrl.pathname === "/api/books/9780000000002/publication"
       || requestUrl.pathname === "/api/books/9780000000019/publication") {
       const secondBook = requestUrl.pathname.endsWith(secondIsbn13 + "/publication");

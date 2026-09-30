@@ -75,7 +75,7 @@ const INVALID_REQUEST: SearchShelfFailure = {
 const REVIEWER_UNAVAILABLE: SearchShelfFailure = {
   kind: "error",
   code: "reviewer-unavailable",
-  message: "Reviewer unavailable. Start the local Reviewer and try again."
+  message: "Reviewer unavailable. Try again from Shelf Review."
 };
 
 const REVIEWER_ERROR: SearchShelfFailure = {
@@ -193,6 +193,12 @@ export function createReviewerHandlers(dependencies: ReviewerSearchDependencies)
 export interface ReviewerSearchAdapterOptions {
   /** Main-process configuration; never supplied by the renderer. */
   readonly baseUrl?: string;
+  /**
+   * Main-process-only lazy locator for the managed sidecar.  This lets Shelf
+   * ask Desktop to start/verify its one owned Reviewer without giving the
+   * renderer any origin or workspace authority.
+   */
+  readonly getBaseUrl?: () => string | URL | null | Promise<string | URL | null>;
   readonly fetcher?: typeof fetch;
 }
 
@@ -233,9 +239,18 @@ function reviewerUnavailable(): SearchShelfFailure {
  * into the renderer and never fall back to a local database.
  */
 export function createReviewerSearchAdapter(options: ReviewerSearchAdapterOptions = {}) {
-  const baseUrl = parseReviewerBaseUrl(options.baseUrl);
+  const configuredBaseUrl = parseReviewerBaseUrl(options.baseUrl);
   const fetcher = options.fetcher ?? fetch;
   return async (query: string): Promise<SearchShelfResult> => {
+    let baseUrl = configuredBaseUrl;
+    if (baseUrl === null && options.getBaseUrl !== undefined) {
+      try {
+        const resolved = await options.getBaseUrl();
+        baseUrl = parseReviewerBaseUrl(resolved instanceof URL ? resolved.href : resolved ?? undefined);
+      } catch {
+        return reviewerUnavailable();
+      }
+    }
     if (baseUrl === null) return reviewerUnavailable();
     const endpoint = new URL("api/search", baseUrl);
     endpoint.searchParams.set("q", query);

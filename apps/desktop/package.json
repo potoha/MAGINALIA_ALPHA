@@ -21,7 +21,7 @@
     "build:main": "tsc -p tsconfig.main.json && npm run build:preload",
     "build:preload": "vite build --mode preload",
     "build:renderer": "vite build",
-    "test": "vitest run --root .",
+    "test": "vitest run --config vitest.config.mts",
     "test:github:live-auth": "node test/github-device-preflight.mjs",
     "smoke": "npm run build && electron dist/main/main.js --smoke",
     "smoke:writing": "npm run build && node test/writing-smoke.mjs",
@@ -34,6 +34,7 @@
     "smoke:export": "npm run build && node test/export-smoke.mjs",
     "smoke:g": "npm run build && node test/g-smoke.mjs",
     "smoke:h": "npm run build && node test/h-smoke.mjs",
+    "smoke:h5": "npm run build && node test/h5-smoke.mjs",
     "smoke:worker-job": "npm run build:main && electron dist/main/repository-materialization-worker-smoke.js",
     "start": "npm run build && electron dist/main/main.js"
   },

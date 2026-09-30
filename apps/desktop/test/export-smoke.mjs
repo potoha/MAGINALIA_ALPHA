@@ -41,6 +41,18 @@ function startReviewerFixture() {
       return;
     }
 
+    // The managed Reviewer bridge verifies these fields even for the explicit
+    // loopback fixture used by this deterministic export regression test.
+    if (requestUrl.pathname === "/api/health") {
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({
+        status: "ok",
+        service: "maginalia-reviewer",
+        contractVersion: 1
+      }));
+      return;
+    }
+
     if (requestUrl.pathname === `/api/books/${isbn13}/publication`) {
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({

@@ -89,6 +89,27 @@ describe("Reviewer Shelf IPC", () => {
     await expect(unavailable("q")).resolves.toMatchObject({ kind: "error", code: "reviewer-unavailable" });
   });
 
+  it("obtains the loopback origin lazily from the main-process managed sidecar", async () => {
+    const getBaseUrl = vi.fn(async () => new URL("http://127.0.0.1:8765/"));
+    const calls: string[] = [];
+    const fetcher: typeof fetch = async (input) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ results: [quotation], total: 1 }), { status: 200 });
+    };
+    const search = createReviewerSearchAdapter({ getBaseUrl, fetcher });
+
+    await expect(search("日本語")).resolves.toMatchObject({ kind: "results", total: 1 });
+    expect(getBaseUrl).toHaveBeenCalledTimes(1);
+    expect(new URL(calls[0]!).origin).toBe("http://127.0.0.1:8765");
+  });
+
+  it("does not accept a non-loopback URL returned by a managed locator", async () => {
+    const fetcher = vi.fn();
+    const search = createReviewerSearchAdapter({ getBaseUrl: () => "https://example.test", fetcher });
+    await expect(search("q")).resolves.toMatchObject({ kind: "error", code: "reviewer-unavailable" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("keeps the main-process adapter behind a semantic handler", async () => {
     const search = vi.fn(async (query: string) => normalizeReviewerSearchResponse({
       results: query.length === 0 ? [] : [quotation],

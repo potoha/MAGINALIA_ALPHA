@@ -4,6 +4,7 @@ import {
   parseD5SmokeMode,
   parseExportSmokeMode,
   parseGSmokeMode,
+  parseH5SmokeMode,
   parseHSmokeMode,
   parseRepositorySmokeMode,
   parseShelfSmokeMode,
@@ -219,5 +220,12 @@ describe("H smoke mode", () => {
       restore: true,
       rootPath: "C:\\Temp\\h-smoke"
     });
+  });
+});
+
+describe("H.5 smoke mode", () => {
+  it("requires the explicit Reviewer lifecycle flag", () => {
+    expect(parseH5SmokeMode(["electron", "dist/main/main.js"])).toEqual({ requested: false });
+    expect(parseH5SmokeMode(["electron", "dist/main/main.js", "--smoke-h5"])).toEqual({ requested: true });
   });
 });

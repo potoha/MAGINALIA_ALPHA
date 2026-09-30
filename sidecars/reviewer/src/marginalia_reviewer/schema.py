@@ -18,14 +18,9 @@ def contracts_dir() -> Path:
     configured = os.environ.get("MARGINALIA_CONTRACTS_DIR")
     if configured:
         return Path(configured)
-    for candidate in (
-        Path(__file__).resolve().parents[2] / "contracts",
-        Path(__file__).resolve().parents[3] / "contracts",
-        Path(__file__).resolve().parent / "contracts",
-    ):
-        if candidate.is_dir():
-            return candidate
-    return Path(__file__).resolve().parents[2] / "contracts"
+    # Source-tree authority is one explicit location. Packaged runtimes may
+    # supply a generated copy through MARGINALIA_CONTRACTS_DIR.
+    return Path(__file__).resolve().parents[3] / "contracts"
 
 
 @lru_cache(maxsize=2)

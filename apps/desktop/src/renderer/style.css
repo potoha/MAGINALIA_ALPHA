@@ -1162,6 +1162,45 @@ button:focus-visible {
   border-radius: 0;
 }
 
+.central-service-view {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: #fff;
+}
+
+.central-service-view[hidden] {
+  display: none;
+}
+
+.central-service-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.5rem;
+  padding: 0.3rem 0.65rem;
+  border-bottom: 1px solid #d5cec3;
+  background: #faf8f3;
+}
+
+.central-service-header span {
+  flex: 1 1 auto;
+  color: #5f6c76;
+  font-size: 0.82rem;
+}
+
+.central-service-slot {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  background: #fff;
+}
+
 .document-presentation-controls {
   display: flex;
   flex: 0 0 auto;

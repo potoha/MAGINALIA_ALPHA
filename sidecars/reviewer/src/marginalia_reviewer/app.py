@@ -7,9 +7,9 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
-from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -43,23 +43,36 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
 
 
 class BrowserSecurityMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: FastAPI, csrf_token: str) -> None:
+    def __init__(self, app: FastAPI, csrf_token: str, desktop_shutdown_token: str | None = None) -> None:
         super().__init__(app)
         self.csrf_token = csrf_token
+        self.desktop_shutdown_token = desktop_shutdown_token
 
     async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
         host = request.headers.get("host", "")
         hostname = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]", 1)[0] + "]"
         if hostname.casefold() not in LOOPBACK_HOSTS:
             return JSONResponse({"detail": "invalid Host header"}, status_code=400)
+        # The Desktop-owned shutdown request has no browser session. Permit it
+        # to reach its route only with the high-entropy per-launch secret; the
+        # route repeats this validation and has no effect without a callback.
+        is_desktop_shutdown = request.url.path == "/api/desktop/shutdown"
+        supplied_shutdown_token = request.headers.get("x-maginalia-reviewer-shutdown-token")
+        has_valid_desktop_shutdown_token = (
+            is_desktop_shutdown
+            and self.desktop_shutdown_token is not None
+            and supplied_shutdown_token is not None
+            and secrets.compare_digest(supplied_shutdown_token, self.desktop_shutdown_token)
+        )
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
-            origin = request.headers.get("origin")
-            if origin is not None and origin.rstrip("/").casefold() != f"http://{host}".casefold():
-                return JSONResponse({"detail": "cross-origin request rejected"}, status_code=403)
-            cookie = request.cookies.get("marginalia_csrf", "")
-            header = request.headers.get("x-csrf-token", "")
-            if not hmac.compare_digest(cookie, self.csrf_token) or not hmac.compare_digest(header, self.csrf_token):
-                return JSONResponse({"detail": "CSRF token required"}, status_code=403)
+            if not has_valid_desktop_shutdown_token:
+                origin = request.headers.get("origin")
+                if origin is not None and origin.rstrip("/").casefold() != f"http://{host}".casefold():
+                    return JSONResponse({"detail": "cross-origin request rejected"}, status_code=403)
+                cookie = request.cookies.get("marginalia_csrf", "")
+                header = request.headers.get("x-csrf-token", "")
+                if not hmac.compare_digest(cookie, self.csrf_token) or not hmac.compare_digest(header, self.csrf_token):
+                    return JSONResponse({"detail": "CSRF token required"}, status_code=403)
         return await call_next(request)
 
 
@@ -108,7 +121,11 @@ class PublishRequest(BaseModel):
     previewDigest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    desktop_shutdown: Callable[[], None] | None = None,
+) -> FastAPI:
     settings = settings or Settings.from_env()
     settings.workspace.mkdir(parents=True, exist_ok=True)
     workspace = Workspace(settings.database_path)
@@ -139,14 +156,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     ocr_lock = threading.Lock()
     app = FastAPI(title="Digital Marginalia Reviewer", docs_url=None, redoc_url=None)
-    app.add_middleware(BrowserSecurityMiddleware, csrf_token=csrf_token)
+    app.add_middleware(
+        BrowserSecurityMiddleware,
+        csrf_token=csrf_token,
+        desktop_shutdown_token=settings.desktop_shutdown_token,
+    )
     app.state.workspace = workspace
     app.state.recovered_pages = recovered
     app.state.ocr_lock = ocr_lock
+    app.state.enable_legacy_github = settings.enable_legacy_github
+
+    def require_legacy_github() -> None:
+        if not settings.enable_legacy_github:
+            raise HTTPException(404, "legacy GitHub publication is disabled")
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        return INDEX_HTML
+        if settings.enable_legacy_github:
+            return INDEX_HTML
+        return INDEX_HTML.replace('<section id="publication"', '<section id="publication" hidden')
 
     @app.get("/api/health")
     def health() -> dict[str, object]:
@@ -155,6 +183,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "service": "maginalia-reviewer",
             "contractVersion": 1,
         }
+
+    @app.post("/api/desktop/shutdown", status_code=202)
+    def desktop_shutdown_endpoint(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
+        """Accept one authenticated Desktop-owned cooperative shutdown request."""
+        token = settings.desktop_shutdown_token
+        supplied = request.headers.get("X-Maginalia-Reviewer-Shutdown-Token")
+        # No configured token/callback means no local control surface at all.
+        if desktop_shutdown is None or token is None:
+            raise HTTPException(404, "Desktop shutdown is unavailable")
+        if supplied is None or not secrets.compare_digest(supplied, token):
+            raise HTTPException(403, "Desktop shutdown token is invalid")
+        # Background work runs after the response has been sent, allowing the
+        # parent to observe the 202 acknowledgement before waiting for exit.
+        background_tasks.add_task(desktop_shutdown)
+        return {"status": "shutting-down"}
 
     @app.get("/api/session")
     def session() -> JSONResponse:
@@ -343,6 +386,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         repo: str | None = None,
         branch: str = "main",
     ) -> dict[str, object]:
+        require_legacy_github()
         try:
             payload = build_publication(workspace, isbn13)
             result: dict[str, object] = {"payload": payload, "digest": publication_digest(payload)}
@@ -367,6 +411,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/github/credentials")
     def store_credentials(credentials: CredentialUpdate) -> dict[str, bool]:
+        require_legacy_github()
         try:
             GitHubCredentials().set_token(credentials.account, credentials.token)
         except Exception as exc:
@@ -375,6 +420,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/books/{isbn13}/remote")
     def remote_content(isbn13: str, account: str, owner: str, repo: str, branch: str = "main") -> dict[str, object]:
+        require_legacy_github()
         try:
             token = GitHubCredentials().get_token(account)
             content = GitHubContentsClient(token).get(owner, repo, github_book_path(isbn13), branch)
@@ -392,6 +438,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/books/{isbn13}/publish")
     def publish(isbn13: str, target: PublishRequest) -> dict[str, str]:
+        require_legacy_github()
         try:
             payload = build_publication(
                 workspace,
