@@ -28,11 +28,30 @@ interface ExportRendererState {
 interface PreviewRendererState {
   readonly visible: boolean;
   readonly direction: string | null;
+  readonly writingMode: string;
   readonly quoteState: string | null;
   readonly internalStates: readonly string[];
   readonly embedKinds: readonly string[];
   readonly imageCount: number;
   readonly videoCount: number;
+  readonly headingSizes: readonly number[];
+  readonly proseIndent: string | null;
+  readonly structuralIndent: string | null;
+  readonly imageDisplay: string | null;
+  readonly imageMaxWidth: string | null;
+  readonly mediaWritingModes: readonly string[];
+  readonly tableCount: number;
+  readonly tableImageCount: number;
+  readonly tableTagName: string | null;
+  readonly tableHeaderTexts: readonly string[];
+  readonly tableBodyRowCount: number;
+  readonly tableFirstRowCellCount: number;
+  readonly tableOverflowX: string | null;
+  readonly tableWritingMode: string | null;
+  readonly tableClientWidth: number | null;
+  readonly tableScrollWidth: number | null;
+  readonly tableClientHeight: number | null;
+  readonly tableScrollHeight: number | null;
   readonly hasExecutableScript: boolean;
 }
 
@@ -73,11 +92,54 @@ const READ_PREVIEW_SCRIPT = `(() => {
   return {
     visible: !preview.hidden,
     direction: root.dataset.writingDirection ?? null,
+    writingMode: getComputedStyle(root).writingMode,
     quoteState: root.querySelector(".rendered-quote-ref")?.getAttribute("data-quote-state") ?? null,
     internalStates: [...root.querySelectorAll(".rendered-internal-link")].map((link) => link.getAttribute("data-internal-link-state") ?? ""),
     embedKinds: [...root.querySelectorAll(".rendered-embed-card")].map((card) => card.getAttribute("data-embed-kind") ?? ""),
     imageCount: root.querySelectorAll("img.rendered-local-media").length,
     videoCount: root.querySelectorAll("video.rendered-local-media").length,
+    headingSizes: [1, 2, 3, 4, 5, 6].map((depth) => {
+      const heading = root.querySelector("h" + depth);
+      return heading instanceof HTMLElement ? Number.parseFloat(getComputedStyle(heading).fontSize) : 0;
+    }),
+    proseIndent: root.querySelector(".markdown-prose") instanceof HTMLElement
+      ? getComputedStyle(root.querySelector(".markdown-prose")).textIndent
+      : null,
+    structuralIndent: root.querySelector(".markdown-structural-paragraph") instanceof HTMLElement
+      ? getComputedStyle(root.querySelector(".markdown-structural-paragraph")).textIndent
+      : null,
+    imageDisplay: root.querySelector("img.rendered-local-media") instanceof HTMLElement
+      ? getComputedStyle(root.querySelector("img.rendered-local-media")).display
+      : null,
+    imageMaxWidth: root.querySelector("img.rendered-local-media") instanceof HTMLElement
+      ? getComputedStyle(root.querySelector("img.rendered-local-media")).maxWidth
+      : null,
+    mediaWritingModes: [...root.querySelectorAll("img.rendered-local-media, video.rendered-local-media")]
+      .map((media) => getComputedStyle(media).writingMode),
+    tableCount: root.querySelectorAll(".markdown-table").length,
+    tableImageCount: root.querySelectorAll(".markdown-table img.rendered-local-media").length,
+    tableTagName: root.querySelector(".markdown-table")?.tagName.toLowerCase() ?? null,
+    tableHeaderTexts: [...root.querySelectorAll(".markdown-table thead th")].map((cell) => cell.textContent ?? ""),
+    tableBodyRowCount: root.querySelectorAll(".markdown-table tbody tr").length,
+    tableFirstRowCellCount: root.querySelector(".markdown-table tbody tr")?.querySelectorAll("td").length ?? 0,
+    tableOverflowX: root.querySelector(".markdown-table-wrapper") instanceof HTMLElement
+      ? getComputedStyle(root.querySelector(".markdown-table-wrapper")).overflowX
+      : null,
+    tableWritingMode: root.querySelector(".markdown-table-wrapper") instanceof HTMLElement
+      ? getComputedStyle(root.querySelector(".markdown-table-wrapper")).writingMode
+      : null,
+    tableClientWidth: root.querySelector(".markdown-table-wrapper") instanceof HTMLElement
+      ? root.querySelector(".markdown-table-wrapper").clientWidth
+      : null,
+    tableScrollWidth: root.querySelector(".markdown-table-wrapper") instanceof HTMLElement
+      ? root.querySelector(".markdown-table-wrapper").scrollWidth
+      : null,
+    tableClientHeight: root.querySelector(".markdown-table-wrapper") instanceof HTMLElement
+      ? root.querySelector(".markdown-table-wrapper").clientHeight
+      : null,
+    tableScrollHeight: root.querySelector(".markdown-table-wrapper") instanceof HTMLElement
+      ? root.querySelector(".markdown-table-wrapper").scrollHeight
+      : null,
     hasExecutableScript: root.querySelector("script") !== null
   };
 })()`;
@@ -175,6 +237,23 @@ function assertIncludes(value: string, expected: string, message: string): void 
   assert(value.includes(expected), `${message}: missing ${JSON.stringify(expected)}`);
 }
 
+function assertWideTable(state: PreviewRendererState, direction: string): void {
+  assert(
+    state.tableClientWidth !== null
+      && state.tableScrollWidth !== null
+      && state.tableClientWidth > 0
+      && state.tableScrollWidth > state.tableClientWidth,
+    `${direction} wide table did not expose horizontal scrolling (${state.tableScrollWidth}/${state.tableClientWidth}).`
+  );
+  assert(
+    state.tableClientHeight !== null
+      && state.tableScrollHeight !== null
+      && state.tableClientHeight > 0
+      && state.tableScrollHeight >= state.tableClientHeight,
+    `${direction} wide table did not expose usable vertical dimensions (${state.tableScrollHeight}/${state.tableClientHeight}).`
+  );
+}
+
 /** Verify dirty active-session projection, ordinary Markdown output, and tab selection. */
 export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string): Promise<void> {
   const root = path.resolve(fixtureRoot);
@@ -213,18 +292,42 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
       && state.embedKinds.includes("generic-web")
       && state.embedKinds.includes("youtube")
       && state.embedKinds.includes("sns")
-      && state.imageCount === 1
-      && state.videoCount === 1,
+      && state.imageCount === 3
+      && state.videoCount === 1
+      && state.tableCount === 1
+      && state.tableImageCount === 1
+      && state.tableTagName === "table"
+      && state.tableBodyRowCount === 1
+      && state.tableFirstRowCellCount === 8,
     "resolved horizontal Markdown Preview"
   );
   assert(!horizontal.hasExecutableScript, "authoring HTML created an executable script in Preview");
+  assert(horizontal.headingSizes.every((size, index, sizes) => size > 0 && (index === sizes.length - 1 || size > sizes[index + 1]!)), "H1-H6 hierarchy was not visually distinct");
+  assert(horizontal.proseIndent !== null && horizontal.proseIndent !== "0px", "ordinary prose did not receive a visual first-line indent");
+  assert(horizontal.structuralIndent === "0px", "media-bearing structural paragraph was incorrectly indented");
+  assert(horizontal.imageDisplay === "block" && horizontal.imageMaxWidth === "100%", "Project media did not receive responsive block layout");
+  assert(horizontal.tableHeaderTexts.join("|") === "列一|列二|列三|列四|列五|列六|列七|列八", "Japanese table headers were not preserved structurally");
+  assert(horizontal.tableOverflowX === "auto", "wide table overflow behavior was not defined");
+  assertWideTable(horizontal, "horizontal");
   await clickButton(window, "#document-vertical", "switch Preview to vertical");
   const vertical = await waitForPreviewState(
     window,
-    (state) => state.visible && state.direction === "vertical" && state.imageCount === 1 && state.videoCount === 1,
+    (state) => state.visible
+      && state.direction === "vertical"
+      && state.writingMode === "vertical-rl"
+      && state.imageCount === 3
+      && state.videoCount === 1
+      && state.tableCount === 1
+      && state.tableImageCount === 1
+      && state.mediaWritingModes.length === 4
+      && state.mediaWritingModes.every((mode) => mode === "horizontal-tb")
+      && state.tableWritingMode === "horizontal-tb",
     "vertical Markdown Preview"
   );
-  assert(vertical.imageCount === 1 && vertical.videoCount === 1, "vertical Preview lost Project media");
+  assert(vertical.imageCount === 3 && vertical.videoCount === 1, "vertical Preview lost Project media");
+  assert(vertical.proseIndent !== null && vertical.proseIndent !== "0px", "vertical prose lost its visual first-line indent");
+  assert(vertical.structuralIndent === "0px", "vertical media-bearing structural paragraph was incorrectly indented");
+  assertWideTable(vertical, "vertical");
   await clickButton(window, "#document-horizontal", "switch Preview to horizontal");
   await waitForPreviewState(window, (state) => state.visible && state.direction === "horizontal", "horizontal Markdown Preview restoration");
   await clickButton(window, "#document-edit-mode", "return to Edit");

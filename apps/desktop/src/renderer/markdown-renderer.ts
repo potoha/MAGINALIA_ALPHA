@@ -16,10 +16,22 @@ export type MarkdownInline =
 
 export type MarkdownBlock =
   | { readonly kind: "heading"; readonly depth: number; readonly content: readonly MarkdownInline[] }
-  | { readonly kind: "paragraph"; readonly content: readonly MarkdownInline[] }
+  | { readonly kind: "paragraph"; readonly content: readonly MarkdownInline[]; readonly presentation: "prose" | "structural" }
   | { readonly kind: "blockquote"; readonly content: readonly MarkdownInline[] }
   | { readonly kind: "code"; readonly text: string }
-  | { readonly kind: "list"; readonly ordered: boolean; readonly items: readonly (readonly MarkdownInline[])[] };
+  | { readonly kind: "list"; readonly ordered: boolean; readonly items: readonly (readonly MarkdownInline[])[] }
+  | {
+    readonly kind: "table";
+    readonly alignments: readonly MarkdownTableAlignment[];
+    readonly header: readonly (readonly MarkdownInline[])[];
+    readonly rows: readonly (readonly (readonly MarkdownInline[])[])[];
+  };
+
+export type MarkdownTableAlignment = "left" | "center" | "right" | "none";
+
+function trimTableWhitespace(value: string): string {
+  return value.replace(/^[\t ]+|[\t ]+$/gu, "");
+}
 
 export interface PreviewQuote {
   readonly state: "resolved" | "unresolved";
@@ -41,6 +53,90 @@ export type PreviewMediaMap = ReadonlyMap<string, PreviewMedia>;
 
 const QUOTE_MARKER_PREFIX = "<!-- maginalia:quote-ref ";
 const QUOTE_MARKER_END = "-->";
+
+function parseTableRow(line: string): readonly string[] | null {
+  if (!line.includes("|")) return null;
+  let source = trimTableWhitespace(line);
+  if (source.startsWith("|")) source = source.slice(1);
+  const hasTrailingPipe = source.endsWith("|") && (() => {
+    let backslashes = 0;
+    for (let index = source.length - 2; index >= 0 && source[index] === "\\"; index -= 1) backslashes += 1;
+    return backslashes % 2 === 0;
+  })();
+  const cells: string[] = [];
+  let cell = "";
+  for (let index = 0; index < source.length;) {
+    const character = source[index];
+    if (character === "\\") {
+      let end = index + 1;
+      while (source[end] === "\\") end += 1;
+      const slashCount = end - index;
+      if (source[end] === "|") {
+        cell += "\\".repeat(Math.floor(slashCount / 2));
+        if (slashCount % 2 === 1) cell += "|";
+        else {
+          cells.push(trimTableWhitespace(cell));
+          cell = "";
+        }
+        index = end + 1;
+      } else {
+        cell += "\\".repeat(slashCount);
+        index = end;
+      }
+    } else if (character === "|") {
+      cells.push(trimTableWhitespace(cell));
+      cell = "";
+      index += 1;
+    } else {
+      cell += character;
+      index += 1;
+    }
+  }
+  cells.push(trimTableWhitespace(cell));
+  if (hasTrailingPipe) cells.pop();
+  return cells.length > 0 ? cells : null;
+}
+
+function fenceOpening(line: string): RegExpExecArray | null {
+  return /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
+}
+
+function isFenceClosing(line: string, character: string, minimumLength: number): boolean {
+  const match = /^ {0,3}(`+|~+)[ \t]*$/u.exec(line);
+  return match !== null && match[1][0] === character && match[1].length >= minimumLength;
+}
+
+function tableAlignment(value: string): MarkdownTableAlignment | null {
+  const trimmed = trimTableWhitespace(value);
+  if (!/^:?-{3,}:?$/u.test(trimmed)) return null;
+  if (trimmed.startsWith(":") && trimmed.endsWith(":")) return "center";
+  if (trimmed.endsWith(":")) return "right";
+  if (trimmed.startsWith(":")) return "left";
+  return "none";
+}
+
+function tableStart(lines: readonly string[], index: number): {
+  readonly header: readonly string[];
+  readonly alignments: readonly MarkdownTableAlignment[];
+} | null {
+  const header = parseTableRow(lines[index] ?? "");
+  const divider = parseTableRow(lines[index + 1] ?? "");
+  if (header === null || divider === null || header.length === 0 || divider.length !== header.length) return null;
+  const alignments = divider.map(tableAlignment);
+  return alignments.some((alignment) => alignment === null)
+    ? null
+    : { header, alignments: alignments as readonly MarkdownTableAlignment[] };
+}
+
+function isStructuralInline(nodes: readonly MarkdownInline[]): boolean {
+  return nodes.some((node) => {
+    if (node.kind === "local-media" || node.kind === "quote-ref") return true;
+    if (node.kind === "link" && node.embed !== undefined) return true;
+    if (node.kind === "strong" || node.kind === "emphasis") return isStructuralInline(node.children);
+    if (node.kind === "link" || node.kind === "internal-link") return isStructuralInline(node.label);
+    return false;
+  });
+}
 
 function safeExternalHref(value: string): string | null {
   return parseSafeExternalUrl(value)?.href ?? null;
@@ -195,10 +291,13 @@ export function parseMarkdownBlocks(
   while (index < lines.length) {
     const line = lines[index];
     if (line.trim().length === 0) { index += 1; continue; }
-    if (line.startsWith("```")) {
+    const fence = fenceOpening(line);
+    if (fence !== null) {
       const code: string[] = [];
+      const fenceCharacter = fence[1][0];
+      const fenceLength = fence[1].length;
       index += 1;
-      while (index < lines.length && !lines[index].startsWith("```")) code.push(lines[index++]);
+      while (index < lines.length && !isFenceClosing(lines[index], fenceCharacter, fenceLength)) code.push(lines[index++]);
       if (index < lines.length) index += 1;
       blocks.push({ kind: "code", text: code.join("\n") });
       continue;
@@ -207,6 +306,27 @@ export function parseMarkdownBlocks(
     if (heading !== null) {
       blocks.push({ kind: "heading", depth: heading[1].length, content: parseMarkdownInlines(heading[2], quotes, internalLinks, media) });
       index += 1;
+      continue;
+    }
+    const table = tableStart(lines, index);
+    if (table !== null) {
+      const columnCount = table.header.length;
+      const rows: (readonly (readonly MarkdownInline[])[])[] = [];
+      index += 2;
+      while (index < lines.length) {
+        const row = parseTableRow(lines[index]);
+        if (row === null) break;
+        const cells = row.slice(0, columnCount);
+        while (cells.length < columnCount) cells.push("");
+        rows.push(cells.map((cell) => parseMarkdownInlines(cell, quotes, internalLinks, media)));
+        index += 1;
+      }
+      blocks.push({
+        kind: "table",
+        alignments: table.alignments,
+        header: table.header.map((cell) => parseMarkdownInlines(cell, quotes, internalLinks, media)),
+        rows
+      });
       continue;
     }
     if (line.startsWith(">")) {
@@ -234,13 +354,15 @@ export function parseMarkdownBlocks(
     const paragraph: string[] = [line];
     index += 1;
     while (index < lines.length && lines[index].trim().length > 0
-      && !lines[index].startsWith("```")
+      && fenceOpening(lines[index]) === null
       && !/^(#{1,6})\s+/u.test(lines[index])
       && !lines[index].startsWith(">")
-      && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index])) {
+      && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index])
+      && tableStart(lines, index) === null) {
       paragraph.push(lines[index++]);
     }
-    blocks.push({ kind: "paragraph", content: parseMarkdownInlines(paragraph.join("\n"), quotes, internalLinks, media) });
+    const content = parseMarkdownInlines(paragraph.join("\n"), quotes, internalLinks, media);
+    blocks.push({ kind: "paragraph", content, presentation: isStructuralInline(content) ? "structural" : "prose" });
   }
   return Object.freeze(blocks);
 }
@@ -255,7 +377,12 @@ export function scanLocalMediaTargets(text: string): readonly string[] {
     }
   };
   for (const block of parseMarkdownBlocks(text)) {
-    if (block.kind !== "code") visit(block.kind === "list" ? block.items.flat() : block.content);
+    if (block.kind === "code") continue;
+    if (block.kind === "list") visit(block.items.flat());
+    else if (block.kind === "table") {
+      visit(block.header.flat());
+      for (const row of block.rows) visit(row.flat());
+    } else visit(block.content);
   }
   return Object.freeze([...targets]);
 }
@@ -383,12 +510,48 @@ export function renderMarkdownPreview(
     let element: HTMLElement;
     switch (block.kind) {
       case "heading": element = document.createElement(`h${block.depth}`); appendInlines(element, block.content, options); break;
-      case "paragraph": element = document.createElement("p"); appendInlines(element, block.content, options); break;
+      case "paragraph": {
+        element = document.createElement(block.presentation === "prose" ? "p" : "div");
+        element.className = block.presentation === "prose" ? "markdown-prose" : "markdown-structural-paragraph";
+        appendInlines(element, block.content, options);
+        break;
+      }
       case "blockquote": element = document.createElement("blockquote"); appendInlines(element, block.content, options); break;
       case "code": element = document.createElement("pre"); element.textContent = block.text; break;
       case "list": {
         element = document.createElement(block.ordered ? "ol" : "ul");
         for (const item of block.items) { const li = document.createElement("li"); appendInlines(li, item, options); element.append(li); }
+        break;
+      }
+      case "table": {
+        element = document.createElement("div");
+        element.className = "markdown-table-wrapper";
+        const table = document.createElement("table");
+        table.className = "markdown-table";
+        const head = document.createElement("thead");
+        const headerRow = document.createElement("tr");
+        block.header.forEach((cell, index) => {
+          const header = document.createElement("th");
+          header.scope = "col";
+          header.dataset.alignment = block.alignments[index];
+          appendInlines(header, cell, options);
+          headerRow.append(header);
+        });
+        head.append(headerRow);
+        table.append(head);
+        const body = document.createElement("tbody");
+        for (const cells of block.rows) {
+          const row = document.createElement("tr");
+          cells.forEach((cell, index) => {
+            const data = document.createElement("td");
+            data.dataset.alignment = block.alignments[index];
+            appendInlines(data, cell, options);
+            row.append(data);
+          });
+          body.append(row);
+        }
+        table.append(body);
+        element.append(table);
         break;
       }
     }

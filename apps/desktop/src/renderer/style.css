@@ -1339,6 +1339,46 @@ button:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.markdown-preview-document h1 {
+  margin: 1.7em 0 0.7em;
+  border-bottom: 2px solid #7d5545;
+  font-size: 2rem;
+  font-weight: 750;
+}
+
+.markdown-preview-document h2 {
+  margin: 1.55em 0 0.65em;
+  border-bottom: 1px solid #b8917e;
+  font-size: 1.65rem;
+  font-weight: 720;
+}
+
+.markdown-preview-document h3 {
+  margin: 1.4em 0 0.55em;
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+.markdown-preview-document h4 {
+  margin: 1.25em 0 0.5em;
+  font-size: 1.22rem;
+  font-weight: 700;
+}
+
+.markdown-preview-document h5 {
+  margin: 1.1em 0 0.45em;
+  color: #554238;
+  font-size: 1.08rem;
+  font-weight: 700;
+}
+
+.markdown-preview-document h6 {
+  margin: 1em 0 0.4em;
+  color: #6e625b;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
 .markdown-preview-document h1,
 .markdown-preview-document h2,
 .markdown-preview-document h3,
@@ -1346,6 +1386,15 @@ button:focus-visible {
 .markdown-preview-document h5,
 .markdown-preview-document h6 {
   line-height: 1.35;
+}
+
+.markdown-preview-document .markdown-prose {
+  margin: 1em 0;
+  text-indent: 1em;
+}
+
+.markdown-preview-document .markdown-structural-paragraph {
+  margin: 1em 0;
 }
 
 .markdown-preview-document blockquote {
@@ -1371,6 +1420,56 @@ button:focus-visible {
   color: #8a402d;
   text-decoration: underline;
 }
+
+.rendered-local-media {
+  display: block;
+  max-width: 100%;
+  max-height: min(70vh, 42rem);
+  margin: 1rem auto;
+  object-fit: contain;
+}
+
+.rendered-local-media.unresolved {
+  box-sizing: border-box;
+  padding: 0.8rem 1rem;
+  border: 1px dashed #be6b52;
+  color: #833524;
+}
+
+.markdown-table-wrapper {
+  box-sizing: border-box;
+  max-width: 100%;
+  max-height: min(70vh, 42rem);
+  margin: 1rem 0;
+  overflow: auto;
+  border: 1px solid #d5cec3;
+  background: #fffdf8;
+  writing-mode: horizontal-tb;
+  text-orientation: mixed;
+}
+
+.markdown-table {
+  min-width: max-content;
+  border-collapse: collapse;
+  background: #fffdf8;
+}
+
+.markdown-table th,
+.markdown-table td {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid #d5cec3;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.markdown-table th {
+  background: #f1ede7;
+  font-weight: 700;
+}
+
+.markdown-table [data-alignment="left"] { text-align: left; }
+.markdown-table [data-alignment="center"] { text-align: center; }
+.markdown-table [data-alignment="right"] { text-align: right; }
 
 .rendered-quote-ref {
   display: block;
@@ -1413,7 +1512,8 @@ button:focus-visible {
 .markdown-preview-document[data-writing-direction="vertical"] h4,
 .markdown-preview-document[data-writing-direction="vertical"] h5,
 .markdown-preview-document[data-writing-direction="vertical"] h6,
-.markdown-preview-document[data-writing-direction="vertical"] p,
+.markdown-preview-document[data-writing-direction="vertical"] .markdown-prose,
+.markdown-preview-document[data-writing-direction="vertical"] .markdown-structural-paragraph,
 .markdown-preview-document[data-writing-direction="vertical"] blockquote,
 .markdown-preview-document[data-writing-direction="vertical"] ul,
 .markdown-preview-document[data-writing-direction="vertical"] ol {
@@ -1426,7 +1526,8 @@ button:focus-visible {
 .markdown-preview-document[data-writing-direction="vertical"] .rendered-quote-ref,
 .markdown-preview-document[data-writing-direction="vertical"] img,
 .markdown-preview-document[data-writing-direction="vertical"] video,
-.markdown-preview-document[data-writing-direction="vertical"] .rendered-embed-card {
+.markdown-preview-document[data-writing-direction="vertical"] .rendered-embed-card,
+.markdown-preview-document[data-writing-direction="vertical"] .markdown-table-wrapper {
   writing-mode: horizontal-tb;
   text-orientation: mixed;
 }
