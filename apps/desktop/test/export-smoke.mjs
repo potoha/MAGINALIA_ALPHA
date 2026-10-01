@@ -1,25 +1,10 @@
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import sharp from "sharp";
+import { assertElectronSmokeMarker, runElectronSmoke } from "./electron-smoke-launcher.mjs";
 
-const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repositoryRoot = path.resolve(desktopRoot, "../..");
-const electronExecutable = path.join(
-  repositoryRoot,
-  "node_modules",
-  "electron",
-  "dist",
-  process.platform === "win32"
-    ? "electron.exe"
-    : process.platform === "darwin"
-      ? "Electron.app/Contents/MacOS/Electron"
-      : "electron"
-);
-const mainPath = path.join(desktopRoot, "dist", "main", "main.js");
 const marker = "MAGINALIA_ELECTRON_EXPORT_SMOKE_OK";
 const annotationId = "e5c6d7a8-9012-4b3c-8d7e-6f5a4b3c2d1e";
 const isbn13 = "9780000000002";
@@ -126,42 +111,6 @@ function closeServer(server) {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
-function runElectron(projectRoot, userDataRoot, reviewerBaseUrl) {
-  const child = spawn(electronExecutable, [
-    // Keep the renderer smoke runnable on Windows CI hosts without a usable GPU.
-    "--disable-gpu",
-    mainPath,
-    `--user-data-dir=${userDataRoot}`,
-    "--smoke-export",
-    projectRoot
-  ], {
-    cwd: desktopRoot,
-    env: { ...process.env, MAGINALIA_REVIEWER_BASE_URL: reviewerBaseUrl },
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { stdout += chunk; });
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
-
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      child.kill();
-      reject(new Error("Electron Export smoke timed out."));
-    }, 60_000);
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once("exit", (code, signal) => {
-      clearTimeout(timeout);
-      resolve({ code, signal, stdout, stderr });
-    });
-  });
-}
-
 let temporaryDirectory;
 let reviewerFixture;
 try {
@@ -181,16 +130,12 @@ try {
   await writeFile(path.join(projectRoot, "assets", "movie.mp4"), Buffer.from([0, 0, 0, 12, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]));
 
   reviewerFixture = await startReviewerFixture();
-  const result = await runElectron(projectRoot, userDataRoot, reviewerFixture.baseUrl);
-  if (result.code !== 0 || !result.stdout.includes(marker)) {
-    throw new Error(
-      "Electron Export smoke failed (exit "
-        + (result.code ?? result.signal)
-        + ").\n"
-        + result.stdout
-        + result.stderr
-    );
-  }
+  const result = await runElectronSmoke({
+    userDataRoot,
+    appArgs: ["--smoke-export", projectRoot],
+    env: { MAGINALIA_REVIEWER_BASE_URL: reviewerFixture.baseUrl }
+  });
+  assertElectronSmokeMarker(result, marker, "Electron Export smoke");
 
   const authoringA = await readFile(path.join(projectRoot, "a.md"), "utf8");
   const authoringB = await readFile(path.join(projectRoot, "b.md"));

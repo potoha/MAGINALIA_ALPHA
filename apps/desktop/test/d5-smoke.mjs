@@ -1,56 +1,13 @@
 import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { assertElectronSmokeMarker, repositoryRoot, runElectronSmoke } from "./electron-smoke-launcher.mjs";
 
-const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repositoryRoot = path.resolve(desktopRoot, "../..");
-const electronExecutable = path.join(
-  repositoryRoot,
-  "node_modules",
-  "electron",
-  "dist",
-  process.platform === "win32"
-    ? "electron.exe"
-    : process.platform === "darwin"
-      ? "Electron.app/Contents/MacOS/Electron"
-      : "electron"
-);
-const mainPath = path.join(desktopRoot, "dist", "main", "main.js");
 const marker = "MAGINALIA_ELECTRON_D5_SMOKE_OK";
 const modId = "dev.maginalia.secondary-markdown";
 
 function runElectron(userDataRoot, flag, fixtureRoot) {
-  const child = spawn(electronExecutable, [
-    `--user-data-dir=${userDataRoot}`,
-    mainPath,
-    flag,
-    fixtureRoot
-  ], {
-    cwd: desktopRoot,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { stdout += chunk; });
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      child.kill();
-      reject(new Error(`Electron D.5 smoke timed out.\n${stdout}${stderr}`));
-    }, 60_000);
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once("exit", (code, signal) => {
-      clearTimeout(timeout);
-      resolve({ code, signal, stdout, stderr });
-    });
-  });
+  return runElectronSmoke({ userDataRoot, appArgs: [flag, fixtureRoot] });
 }
 
 async function exists(filePath) {
@@ -84,9 +41,7 @@ try {
   await cp(firstPartyMod, path.join(userDataRoot, "mods", modId), { recursive: true });
 
   const first = await runElectron(userDataRoot, "--smoke-d5", projectRoot);
-  if (first.code !== 0 || !first.stdout.includes(marker)) {
-    throw new Error(`Electron D.5 smoke failed (exit ${first.code ?? first.signal}).\n${first.stdout}${first.stderr}`);
-  }
+  assertElectronSmokeMarker(first, marker, "Electron D.5 smoke");
   const firstText = await readFile(path.join(projectRoot, "first.md"), "utf8");
   if (!firstText.includes("D5 tab edit") || !firstText.includes("D5 close autosave") || !firstText.includes("D5 shutdown autosave")) {
     throw new Error("D.5 smoke did not persist the active tab edits.");
