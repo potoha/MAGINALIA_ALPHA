@@ -10,6 +10,18 @@ export interface WorkbenchViewDescriptor extends WorkbenchView {
   panelId: string;
 }
 
+/**
+ * Main-process-backed views occupy the central service surface, not a document
+ * tab or Activity Bar region. Their identity is registered here so they cannot
+ * accidentally acquire DocumentSession semantics.
+ */
+export interface CentralServiceViewDescriptor {
+  readonly id: string;
+  readonly title: string;
+  readonly panelId: string;
+  readonly slotId: string;
+}
+
 export const WORKBENCH_VIEW_MANIFEST = [
   {
     id: "workspace",
@@ -26,3 +38,12 @@ export const WORKBENCH_VIEW_MANIFEST = [
     panelId: "library-navigation"
   }
 ] as const satisfies readonly WorkbenchViewDescriptor[];
+
+export const CENTRAL_SERVICE_VIEW_MANIFEST = [
+  {
+    id: "reviewer",
+    title: "Reviewer",
+    panelId: "central-service-view",
+    slotId: "reviewer-service-slot"
+  }
+] as const satisfies readonly CentralServiceViewDescriptor[];

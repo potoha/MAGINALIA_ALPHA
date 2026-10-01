@@ -31,6 +31,7 @@ from marginalia_reviewer.publisher import GitHubContentsClient, PublishConflict,
 import marginalia_reviewer.publisher as publisher_module
 import marginalia_reviewer.app as app_module
 import marginalia_reviewer.__main__ as reviewer_main
+import marginalia_reviewer.schema as schema_module
 
 PAGE_ID = "c5dd9d85-00cb-48f1-ae7a-0aa95826db67"
 ANNOTATION_ID = "f82d8f9b-e173-4ef4-8f44-509f2e68f7c6"
@@ -49,18 +50,33 @@ def executable_sha256() -> str:
     return hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
 
 
-def test_cli_uses_bundled_ndlocr_config_when_not_explicitly_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_keeps_ocr_unconfigured_when_not_explicitly_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MARGINALIA_NDLOCR_CONFIG", raising=False)
     monkeypatch.setattr(sys, "argv", ["marginalia-reviewer", "--no-browser"])
     observed: dict[str, object] = {}
-    monkeypatch.setattr(reviewer_main, "create_app", lambda settings: observed.setdefault("settings", settings))
-    monkeypatch.setattr(reviewer_main.uvicorn, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(reviewer_main, "create_app", lambda settings, **_kwargs: observed.setdefault("settings", settings))
+    class FakeServer:
+        should_exit = False
+        def __init__(self, _config: object) -> None:
+            pass
+        def run(self) -> None:
+            pass
+    monkeypatch.setattr(reviewer_main.uvicorn, "Server", FakeServer)
 
     reviewer_main.main()
 
     settings = observed["settings"]
     assert isinstance(settings, Settings)
-    assert settings.ndlocr_config == Path(reviewer_main.__file__).resolve().parents[2] / "ndlocr.json"
+    assert settings.ndlocr_config is None
+
+
+def test_source_contract_authority_is_the_single_sidecars_contract_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MARGINALIA_CONTRACTS_DIR", raising=False)
+    assert schema_module.contracts_dir() == Path(__file__).resolve().parents[2] / "contracts"
+    assert schema_module.contracts_dir().is_dir()
+    assert not (Path(__file__).resolve().parents[1] / "contracts" / "manifest-v1.schema.json").exists()
 
 
 def manifest(image: bytes = JPEG_FIXTURE) -> dict[str, object]:
@@ -473,7 +489,7 @@ def test_github_commit_message_and_api_conflict(monkeypatch: pytest.MonkeyPatch)
 def test_publish_api_fixes_path_forbids_override_and_reports_conflict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    app = create_app(Settings(workspace=tmp_path))
+    app = create_app(Settings(workspace=tmp_path, enable_legacy_github=True))
     client = TestClient(app, base_url="http://127.0.0.1")
     csrf = client.get("/api/session").json()["csrfToken"]
     headers = {"X-CSRF-Token": csrf}
@@ -513,7 +529,7 @@ def test_publish_api_fixes_path_forbids_override_and_reports_conflict(
 def test_integrated_publication_preview_returns_remote_and_structured_diff(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    app = create_app(Settings(workspace=tmp_path))
+    app = create_app(Settings(workspace=tmp_path, enable_legacy_github=True))
     client = TestClient(app, base_url="http://127.0.0.1")
     csrf = client.get("/api/session").json()["csrfToken"]
     headers = {"X-CSRF-Token": csrf}
@@ -630,4 +646,46 @@ def test_health_and_session_readiness_contract(tmp_path: Path) -> None:
     assert data["service"] == "maginalia-reviewer"
     assert data["contractVersion"] == 1
     assert "csrfToken" in data
+
+
+def test_desktop_shutdown_endpoint_requires_per_launch_token_and_runs_callback(tmp_path: Path) -> None:
+    calls: list[str] = []
+    app = create_app(
+        Settings(workspace=tmp_path, desktop_shutdown_token="per-launch-secret"),
+        desktop_shutdown=lambda: calls.append("shutdown"),
+    )
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    assert client.post("/api/desktop/shutdown").status_code == 403
+    assert client.post(
+        "/api/desktop/shutdown",
+        headers={"X-Maginalia-Reviewer-Shutdown-Token": "wrong"},
+    ).status_code == 403
+    accepted = client.post(
+        "/api/desktop/shutdown",
+        headers={"X-Maginalia-Reviewer-Shutdown-Token": "per-launch-secret"},
+    )
+    assert accepted.status_code == 202
+    assert accepted.json() == {"status": "shutting-down"}
+    assert calls == ["shutdown"]
+
+
+def test_desktop_shutdown_endpoint_is_forbidden_without_managed_launch_setup(tmp_path: Path) -> None:
+    app = create_app(Settings(workspace=tmp_path))
+    client = TestClient(app, base_url="http://127.0.0.1")
+    assert client.post(
+        "/api/desktop/shutdown",
+        headers={"X-Maginalia-Reviewer-Shutdown-Token": "anything"},
+    ).status_code == 403
+
+
+def test_legacy_github_endpoints_are_disabled_by_default(tmp_path: Path) -> None:
+    app = create_app(Settings(workspace=tmp_path))
+    client = TestClient(app, base_url="http://127.0.0.1")
+    assert client.get("/").text.find('id="publication" hidden') >= 0
+    assert client.get("/api/books/9784000000000/publication-preview").status_code == 404
+    assert client.get(
+        "/api/books/9784000000000/remote",
+        params={"account": "a", "owner": "o", "repo": "r"},
+    ).status_code == 404
 

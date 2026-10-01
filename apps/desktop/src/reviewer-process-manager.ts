@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -10,6 +11,10 @@ export interface ReviewerLaunchOptions {
   readonly port: number;
   readonly workspacePath: string;
   readonly ndlocrConfigPath?: string;
+  /** A generated packaged copy may be supplied later. Source uses sidecars/contracts. */
+  readonly contractsDir?: string;
+  /** Per-process secret for the private loopback cooperative-stop endpoint. */
+  readonly desktopShutdownToken?: string;
   readonly env?: NodeJS.ProcessEnv;
 }
 
@@ -25,6 +30,7 @@ export interface ReviewerProcessManagerOptions {
   readonly launchStrategy?: ReviewerLaunchStrategy;
   readonly workspaceLocator?: ReviewerWorkspaceLocator;
   readonly ndlocrConfigPath?: string;
+  readonly contractsDir?: string;
   readonly readinessTimeoutMs?: number;
   readonly readinessPollIntervalMs?: number;
   readonly stopTimeoutMs?: number;
@@ -44,6 +50,24 @@ export const EXPECTED_REVIEWER_SERVICE = "maginalia-reviewer";
 export const EXPECTED_CONTRACT_VERSION = 1;
 export const MAX_PORT_RETRIES = 5;
 const MAX_LOG_LINES = 100;
+
+class ReviewerStartupCancelledError extends Error {
+  public constructor() {
+    super("Reviewer startup was cancelled because the application is shutting down.");
+    this.name = "ReviewerStartupCancelledError";
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** The exact health payload accepted from a managed Reviewer sidecar. */
+export function isExpectedReviewerReadinessPayload(value: unknown): boolean {
+  return isRecord(value)
+    && value.service === EXPECTED_REVIEWER_SERVICE
+    && value.contractVersion === EXPECTED_CONTRACT_VERSION;
+}
 
 /** Restrict string to loopback host names. */
 export function isLoopbackHost(hostname: string): boolean {
@@ -73,28 +97,60 @@ export function findFreeLoopbackPort(): Promise<number> {
 }
 
 /** Default workspace locator storing Reviewer data in persistent local user storage. */
-export class DefaultReviewerWorkspaceLocator implements ReviewerWorkspaceLocator {
-  private readonly customPath?: string;
-
-  public constructor(customPath?: string) {
-    this.customPath = customPath;
-  }
+export class UserDataReviewerWorkspaceLocator implements ReviewerWorkspaceLocator {
+  public constructor(private readonly userDataPath: string) {}
 
   public getWorkspacePath(): string {
-    if (this.customPath) {
-      fs.mkdirSync(this.customPath, { recursive: true });
-      return this.customPath;
+    if (!path.isAbsolute(this.userDataPath)) {
+      throw new Error("Reviewer userData path must be absolute.");
     }
-    const envPath = process.env.MARGINALIA_REVIEWER_WORKSPACE;
-    if (envPath) {
-      fs.mkdirSync(envPath, { recursive: true });
-      return envPath;
-    }
-    const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-    const target = path.join(localAppData, "MarginaliaReviewer");
+    const target = path.join(this.userDataPath, "reviewer");
     fs.mkdirSync(target, { recursive: true });
     return target;
   }
+}
+
+/**
+ * Non-Electron fallback for isolated tests and development tools. Production
+ * main-process code must inject UserDataReviewerWorkspaceLocator.
+ */
+export class DefaultReviewerWorkspaceLocator implements ReviewerWorkspaceLocator {
+  public constructor(private readonly workspacePath = path.join(
+    process.env.LOCALAPPDATA ?? process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Local"),
+    "MAGINALIA",
+    "reviewer"
+  )) {}
+
+  public getWorkspacePath(): string {
+    if (!path.isAbsolute(this.workspacePath)) {
+      throw new Error("Reviewer workspace path must be absolute.");
+    }
+    fs.mkdirSync(this.workspacePath, { recursive: true });
+    return this.workspacePath;
+  }
+}
+
+function isReviewerRoot(candidate: string): boolean {
+  return fs.existsSync(path.join(candidate, "pyproject.toml"))
+    && fs.existsSync(path.join(candidate, "src", "marginalia_reviewer", "__main__.py"));
+}
+
+/**
+ * Resolve only known repository layouts. Never use process.cwd() as a hidden
+ * runtime authority: built Electron and source tests have different locations.
+ */
+export function resolveDevelopmentReviewerRoot(fromDir = __dirname): string {
+  const candidates = [
+    // apps/desktop/dist/main -> repository root
+    path.resolve(fromDir, "..", "..", "..", "..", "sidecars", "reviewer"),
+    // apps/desktop/src when directly loaded by a TypeScript test runner
+    path.resolve(fromDir, "..", "..", "..", "sidecars", "reviewer")
+  ];
+  const found = candidates.find(isReviewerRoot);
+  if (!found) {
+    throw new Error("Reviewer development runtime was not found in the expected MAGINALIA layout.");
+  }
+  return found;
 }
 
 /** Default Python development launch strategy for the Reviewer sidecar. */
@@ -102,17 +158,9 @@ export class PythonReviewerLaunchStrategy implements ReviewerLaunchStrategy {
   private readonly reviewerRoot: string;
 
   public constructor(reviewerRoot?: string) {
-    if (reviewerRoot) {
-      this.reviewerRoot = reviewerRoot;
-    } else {
-      // Look in MAGINALIA_ALPHA/sidecars/reviewer
-      const candidateSidecar = path.resolve(__dirname, "..", "..", "..", "sidecars", "reviewer");
-      if (fs.existsSync(candidateSidecar)) {
-        this.reviewerRoot = candidateSidecar;
-      } else {
-        // Fallback relative to cwd
-        this.reviewerRoot = path.resolve(process.cwd(), "sidecars", "reviewer");
-      }
+    this.reviewerRoot = reviewerRoot ?? resolveDevelopmentReviewerRoot();
+    if (!isReviewerRoot(this.reviewerRoot)) {
+      throw new Error("Reviewer development runtime is incomplete.");
     }
   }
 
@@ -152,12 +200,48 @@ export class PythonReviewerLaunchStrategy implements ReviewerLaunchStrategy {
     const env = {
       ...process.env,
       ...options.env,
-      PYTHONUNBUFFERED: "1"
+      PYTHONUNBUFFERED: "1",
+      // D032: managed Desktop Reviewer must not expose legacy publishing.
+      MARGINALIA_REVIEWER_ENABLE_LEGACY_GITHUB: "0",
+      ...(options.desktopShutdownToken
+        ? { MARGINALIA_REVIEWER_DESKTOP_SHUTDOWN_TOKEN: options.desktopShutdownToken }
+        : {}),
+      ...(options.contractsDir ? { MARGINALIA_CONTRACTS_DIR: options.contractsDir } : {})
     };
 
     return spawn(command, args, {
       cwd: this.reviewerRoot,
       env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    });
+  }
+}
+
+/**
+ * Future installer seam. It intentionally accepts an explicit executable and
+ * does not choose a Python/packaging technology for the product.
+ */
+export class PackagedReviewerLaunchStrategy implements ReviewerLaunchStrategy {
+  public constructor(private readonly executablePath: string) {}
+
+  public spawn(options: ReviewerLaunchOptions): ChildProcess {
+    if (!path.isAbsolute(this.executablePath) || !fs.existsSync(this.executablePath)) {
+      throw new Error("Packaged Reviewer runtime is unavailable.");
+    }
+    const args = ["--port", String(options.port), "--workspace", options.workspacePath, "--no-browser", "--log-level", "info"];
+    if (options.ndlocrConfigPath) args.push("--ndlocr-config", options.ndlocrConfigPath);
+    return spawn(this.executablePath, args, {
+      cwd: path.dirname(this.executablePath),
+      env: {
+        ...process.env,
+        ...options.env,
+        MARGINALIA_REVIEWER_ENABLE_LEGACY_GITHUB: "0",
+        ...(options.desktopShutdownToken
+          ? { MARGINALIA_REVIEWER_DESKTOP_SHUTDOWN_TOKEN: options.desktopShutdownToken }
+          : {}),
+        ...(options.contractsDir ? { MARGINALIA_CONTRACTS_DIR: options.contractsDir } : {})
+      },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true
     });
@@ -189,39 +273,53 @@ class DiagnosticLogBuffer {
 /**
  * Kill process tree reliably, particularly on Windows.
  */
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.removeListener("exit", onExit);
+      resolve(false);
+    }, timeoutMs);
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    child.once("exit", onExit);
+  });
+}
+
 export async function terminateProcessTree(child: ChildProcess, timeoutMs = 3000): Promise<void> {
   const pid = child.pid;
   if (!pid || child.exitCode !== null || child.killed) return;
 
-  const exitPromise = new Promise<void>((resolve) => {
-    if (child.exitCode !== null) {
-      resolve();
-      return;
-    }
-    child.once("exit", () => resolve());
-  });
-
-  try {
-    child.kill("SIGTERM");
-  } catch {
-    // Ignore
-  }
-
   if (process.platform === "win32" && typeof pid === "number") {
+    // Node's Windows SIGTERM is process termination, not a cooperative Unix
+    // signal. The normal manager path has already attempted authenticated HTTP
+    // shutdown; this function is therefore force-only cleanup on Windows.
     try {
       const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
       killer.on("error", () => {});
     } catch {
       // Ignore
     }
+    if (!await waitForChildExit(child, Math.min(timeoutMs, 1_000)) && child.exitCode === null) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Ignore
+      }
+    }
+    return;
   }
 
-  const raceResult = await Promise.race([
-    exitPromise.then(() => true),
-    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs))
-  ]);
-
-  if (!raceResult && child.exitCode === null) {
+  // POSIX retains the conventional bounded SIGTERM/SIGKILL fallback.
+  try {
+    child.kill("SIGTERM");
+  } catch {
+    // Ignore
+  }
+  if (await waitForChildExit(child, timeoutMs)) return;
+  if (child.exitCode === null) {
     try {
       child.kill("SIGKILL");
     } catch {
@@ -241,10 +339,16 @@ export class ReviewerProcessManager {
   private activeChild: ChildProcess | null = null;
   private startupPromise: Promise<URL> | null = null;
   private shutdownPromise: Promise<void> | null = null;
+  /** Blocks new work during shutdown and invalidates already-starting work. */
+  private acceptingWork = true;
+  private lifecycleGeneration = 0;
+  private activeShutdownToken: string | null = null;
+  private lastShutdownUsedCooperativeEndpoint = false;
 
   private readonly launchStrategy: ReviewerLaunchStrategy;
   private readonly workspaceLocator: ReviewerWorkspaceLocator;
   private readonly ndlocrConfigPath?: string;
+  private readonly contractsDir?: string;
   private readonly readinessTimeoutMs: number;
   private readonly readinessPollIntervalMs: number;
   private readonly stopTimeoutMs: number;
@@ -257,6 +361,7 @@ export class ReviewerProcessManager {
     this.launchStrategy = options.launchStrategy ?? new PythonReviewerLaunchStrategy();
     this.workspaceLocator = options.workspaceLocator ?? new DefaultReviewerWorkspaceLocator();
     this.ndlocrConfigPath = options.ndlocrConfigPath;
+    this.contractsDir = options.contractsDir;
     this.readinessTimeoutMs = options.readinessTimeoutMs ?? 10_000;
     this.readinessPollIntervalMs = options.readinessPollIntervalMs ?? 100;
     this.stopTimeoutMs = options.stopTimeoutMs ?? 4_000;
@@ -278,6 +383,11 @@ export class ReviewerProcessManager {
     return this.baseUrl;
   }
 
+  /** Diagnostic-only lifecycle evidence; it never reveals the shutdown token. */
+  public wasLastShutdownCooperative(): boolean {
+    return this.lastShutdownUsedCooperativeEndpoint;
+  }
+
   private setStatus(next: ReviewerStatus, error: string | null = null): void {
     if (this.status === next && this.lastError === error) return;
     this.status = next;
@@ -291,7 +401,7 @@ export class ReviewerProcessManager {
 
   /**
    * Verify readiness of a loopback server.
-   * Confirms HTTP 200 and expected contract identity { service: "maginalia-reviewer" }.
+   * Confirms HTTP 200 plus the exact service and supported contract version.
    */
   public async checkReadiness(targetUrl: URL): Promise<boolean> {
     try {
@@ -299,14 +409,7 @@ export class ReviewerProcessManager {
       const res = await this.fetcher(healthEndpoint.href, { method: "GET", redirect: "error" });
       if (!res.ok) return false;
       const data: unknown = await res.json();
-      if (
-        data !== null &&
-        typeof data === "object" &&
-        (data as Record<string, unknown>).service === EXPECTED_REVIEWER_SERVICE
-      ) {
-        return true;
-      }
-      return false;
+      return isExpectedReviewerReadinessPayload(data);
     } catch {
       // Try fallback to /api/session
       try {
@@ -314,13 +417,7 @@ export class ReviewerProcessManager {
         const res = await this.fetcher(sessionEndpoint.href, { method: "GET", redirect: "error" });
         if (!res.ok) return false;
         const data: unknown = await res.json();
-        if (
-          data !== null &&
-          typeof data === "object" &&
-          (data as Record<string, unknown>).service === EXPECTED_REVIEWER_SERVICE
-        ) {
-          return true;
-        }
+        return isExpectedReviewerReadinessPayload(data);
       } catch {
         // Not ready
       }
@@ -333,6 +430,10 @@ export class ReviewerProcessManager {
    * Deduplicates concurrent calls via a single startup promise.
    */
   public async ensureReady(): Promise<URL> {
+    if (!this.acceptingWork) {
+      throw new ReviewerStartupCancelledError();
+    }
+
     if (this.status === "ready" && this.baseUrl) {
       if (this.activeChild === null || this.activeChild.exitCode === null) {
         return this.baseUrl;
@@ -347,7 +448,8 @@ export class ReviewerProcessManager {
       await this.shutdownPromise;
     }
 
-    this.startupPromise = this.startInternal();
+    const generation = this.lifecycleGeneration;
+    this.startupPromise = this.startInternal(generation);
     try {
       const url = await this.startupPromise;
       return url;
@@ -356,7 +458,18 @@ export class ReviewerProcessManager {
     }
   }
 
-  private async startInternal(): Promise<URL> {
+  private isAdmissionOpen(generation: number): boolean {
+    return this.acceptingWork && this.lifecycleGeneration === generation;
+  }
+
+  private requireAdmission(generation: number): void {
+    if (!this.isAdmissionOpen(generation)) {
+      throw new ReviewerStartupCancelledError();
+    }
+  }
+
+  private async startInternal(generation: number): Promise<URL> {
+    this.requireAdmission(generation);
     this.setStatus("starting");
     this.logs.clear();
 
@@ -368,6 +481,7 @@ export class ReviewerProcessManager {
           throw new Error(`Environment override must use a loopback host, received: ${parsed.hostname}`);
         }
         const isReady = await this.checkReadiness(parsed);
+        this.requireAdmission(generation);
         if (isReady) {
           this.baseUrl = parsed;
           this.managedPort = parsed.port ? parseInt(parsed.port, 10) : (parsed.protocol === "https:" ? 443 : 80);
@@ -377,6 +491,9 @@ export class ReviewerProcessManager {
           throw new Error("Configured MAGINALIA_REVIEWER_BASE_URL failed readiness check or contract identity.");
         }
       } catch (err: unknown) {
+        if (err instanceof ReviewerStartupCancelledError) {
+          throw err;
+        }
         const message = err instanceof Error ? err.message : String(err);
         this.setStatus("failed", message);
         throw new Error(`Reviewer environment override failed: ${message}`);
@@ -389,6 +506,7 @@ export class ReviewerProcessManager {
     let lastError: Error | null = null;
 
     while (attempts < MAX_PORT_RETRIES) {
+      this.requireAdmission(generation);
       attempts += 1;
       let port: number;
       try {
@@ -399,19 +517,33 @@ export class ReviewerProcessManager {
       }
 
       const targetUrl = new URL(`http://127.0.0.1:${port}/`);
+      // This secret is generated for one owned child only. It is passed through
+      // the child environment, never a renderer API, URL, or diagnostics.
+      const desktopShutdownToken = randomBytes(32).toString("base64url");
       let child: ChildProcess;
       try {
         child = await this.launchStrategy.spawn({
           port,
           workspacePath,
-          ndlocrConfigPath: this.ndlocrConfigPath
+          ndlocrConfigPath: this.ndlocrConfigPath,
+          contractsDir: this.contractsDir,
+          desktopShutdownToken
         });
       } catch (err) {
+        this.requireAdmission(generation);
         lastError = err instanceof Error ? err : new Error(String(err));
         continue;
       }
 
+      // Shutdown can begin while an asynchronous launcher is resolving. Do
+      // not publish that child as managed work; terminate it before returning.
+      if (!this.isAdmissionOpen(generation)) {
+        await terminateProcessTree(child, this.stopTimeoutMs);
+        throw new ReviewerStartupCancelledError();
+      }
+
       this.activeChild = child;
+      this.activeShutdownToken = desktopShutdownToken;
       this.managedPort = port;
 
       child.stdout?.on("data", (chunk: Buffer | string) => {
@@ -425,6 +557,7 @@ export class ReviewerProcessManager {
       child.once("exit", (code, signal) => {
         if (this.activeChild === child) {
           this.activeChild = null;
+          this.activeShutdownToken = null;
           if (this.status !== "stopping" && this.status !== "stopped") {
             const exitReason = `Reviewer process exited unexpectedly (code: ${code}, signal: ${signal})`;
             this.setStatus("failed", exitReason);
@@ -440,6 +573,9 @@ export class ReviewerProcessManager {
       let earlyExit = false;
 
       while (Date.now() - startTime < this.readinessTimeoutMs) {
+        if (!this.isAdmissionOpen(generation)) {
+          break;
+        }
         if (child.exitCode !== null) {
           earlyExit = true;
           break;
@@ -454,6 +590,17 @@ export class ReviewerProcessManager {
         await new Promise((resolve) => setTimeout(resolve, this.readinessPollIntervalMs));
       }
 
+      if (!this.isAdmissionOpen(generation)) {
+        if (this.activeChild === child) {
+          this.activeChild = null;
+          this.activeShutdownToken = null;
+          this.baseUrl = null;
+          this.managedPort = null;
+        }
+        await terminateProcessTree(child, this.stopTimeoutMs);
+        throw new ReviewerStartupCancelledError();
+      }
+
       if (ready) {
         this.baseUrl = targetUrl;
         this.setStatus("ready");
@@ -463,6 +610,7 @@ export class ReviewerProcessManager {
       // Cleanup failed attempt
       await terminateProcessTree(child, 1000);
       this.activeChild = null;
+      this.activeShutdownToken = null;
       this.managedPort = null;
 
       if (earlyExit) {
@@ -482,15 +630,16 @@ export class ReviewerProcessManager {
    * Gracefully stop the Reviewer sidecar.
    */
   public async shutdown(): Promise<void> {
-    if (this.status === "stopped" && this.activeChild === null) {
-      return;
-    }
-
     if (this.shutdownPromise) {
       return this.shutdownPromise;
     }
 
-    this.shutdownPromise = this.stopInternal();
+    // From this point no caller may begin a new start. A concurrent start is
+    // invalidated by generation and is awaited before shutdown resolves.
+    this.acceptingWork = false;
+    this.lifecycleGeneration += 1;
+    const startup = this.startupPromise;
+    this.shutdownPromise = this.stopInternal(startup);
     try {
       await this.shutdownPromise;
     } finally {
@@ -498,18 +647,58 @@ export class ReviewerProcessManager {
     }
   }
 
-  private async stopInternal(): Promise<void> {
+  private async stopInternal(startup: Promise<URL> | null): Promise<void> {
     this.setStatus("stopping");
     const child = this.activeChild;
+    const baseUrl = this.baseUrl;
+    const shutdownToken = this.activeShutdownToken;
     this.activeChild = null;
     this.baseUrl = null;
     this.managedPort = null;
+    this.activeShutdownToken = null;
+    this.lastShutdownUsedCooperativeEndpoint = false;
 
     if (child && child.exitCode === null) {
-      await terminateProcessTree(child, this.stopTimeoutMs);
+      if (baseUrl && shutdownToken && await this.requestCooperativeShutdown(baseUrl, shutdownToken)) {
+        this.lastShutdownUsedCooperativeEndpoint = true;
+        if (!await waitForChildExit(child, this.stopTimeoutMs)) {
+          await terminateProcessTree(child, this.stopTimeoutMs);
+        }
+      } else {
+        await terminateProcessTree(child, this.stopTimeoutMs);
+      }
+    }
+
+    if (startup) {
+      await startup.catch(() => undefined);
     }
 
     this.setStatus("stopped");
+  }
+
+  /**
+   * Ask only an owned, ready loopback sidecar to leave. A 202 response is the
+   * contract acknowledgement; anything else falls back to bounded cleanup.
+   */
+  private async requestCooperativeShutdown(baseUrl: URL, token: string): Promise<boolean> {
+    try {
+      const endpoint = new URL("api/desktop/shutdown", baseUrl);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), Math.min(this.stopTimeoutMs, 1_500));
+      try {
+        const response = await this.fetcher(endpoint.href, {
+          method: "POST",
+          headers: { "X-Maginalia-Reviewer-Shutdown-Token": token },
+          redirect: "error",
+          signal: controller.signal
+        });
+        return response.status === 202;
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -517,6 +706,7 @@ export class ReviewerProcessManager {
    */
   public async restart(): Promise<URL> {
     await this.shutdown();
+    this.acceptingWork = true;
     return this.ensureReady();
   }
 

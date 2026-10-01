@@ -12,6 +12,7 @@ export const EXPORT_SMOKE_FLAG = "--smoke-export";
 export const G_SMOKE_FLAG = "--smoke-g";
 export const H_SMOKE_FLAG = "--smoke-h";
 export const H_RESTORE_SMOKE_FLAG = "--smoke-h-restore";
+export const H5_SMOKE_FLAG = "--smoke-h5";
 
 export interface WritingSmokeMode {
   readonly requested: boolean;
@@ -66,6 +67,10 @@ export interface HSmokeMode {
   readonly requested: boolean;
   readonly rootPath?: string;
   readonly restore?: boolean;
+}
+
+export interface H5SmokeMode {
+  readonly requested: boolean;
 }
 
 export function parseWritingSmokeMode(args: readonly string[]): WritingSmokeMode {
@@ -180,4 +185,8 @@ export function parseHSmokeMode(args: readonly string[]): HSmokeMode {
   const candidate = args[flagIndex + 1];
   if (!candidate || candidate.startsWith("--")) return { requested: true };
   return { requested: true, rootPath: candidate };
+}
+
+export function parseH5SmokeMode(args: readonly string[]): H5SmokeMode {
+  return { requested: args.includes(H5_SMOKE_FLAG) };
 }

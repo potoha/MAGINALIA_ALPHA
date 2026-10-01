@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import sharp from "sharp";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(desktopRoot, "../..");
@@ -29,7 +30,12 @@ const captureId = "capture-export-smoke";
 const quoteMarker = `<!-- maginalia:quote-ref v1 {"quoteId":"${annotationId}","mode":"normal"} -->`;
 const referenceStart = "<!-- maginalia:reference-list-start v1 -->";
 const referenceEnd = "<!-- maginalia:reference-list-end v1 -->";
-const initialA = `\uFEFF# Export A\r\n\r\n${quoteMarker}\r\n\r\n[[b.md|Second document]] [[missing.md]]\r\n[Generic](https://example.com/article) [YouTube](https://youtu.be/dQw4w9WgXcQ) [X](https://x.com/example/status/123456)\r\n![Figure](assets/figure.png) ![[assets/movie.mp4]]\r\n<script>window.MAGINALIA_F_SMOKE_XSS = true</script>\r\n\r\n## 参考文献\r\n\r\n${referenceStart}\r\n- old generated entry\r\n${referenceEnd}\r\n\r\n手書きの参考メモです。\r\n`;
+const initialA = `\uFEFF# Export A\r\n\r\n日本語の本文です。全角記号（「」）と Latin text を混在させます。\r\n\r\n## 第二章\r\n\r\n### 第三級\r\n\r\n#### 第四級\r\n\r\n##### 第五級\r\n\r\n###### 第六級\r\n\r\n- リスト項目\r\n\r\n> 引用ブロックです。\r\n\r\n${quoteMarker}\r\n\r\n[[b.md|Second document]] [[missing.md]]\r\n[Generic](https://example.com/article) [YouTube](https://youtu.be/dQw4w9WgXcQ) [X](https://x.com/example/status/123456)\r\n![Figure](assets/figure.png) ![[assets/図版 資料.png]] ![[assets/movie.mp4]]\r\n\r\n| 列一 | 列二 | 列三 | 列四 | 列五 | 列六 | 列七 | 列八 |\r\n| --- | --- | --- | --- | --- | --- | --- | --- |\r\n| 日本語 | Latin | 全角！ | 研究 | 表 | 横幅 | 確認 | 完了 |\r\n\r\n<script>window.MAGINALIA_F_SMOKE_XSS = true</script>\r\n\r\n## 参考文献\r\n\r\n${referenceStart}\r\n- old generated entry\r\n${referenceEnd}\r\n\r\n手書きの参考メモです。\r\n`;
+const wideTableCell = "研究資料 Latin 全角！ ".repeat(32);
+const smokeInitialA = initialA.replace(
+  "| 日本語 | Latin | 全角！ | 研究 | 表 | 横幅 | 確認 | 完了 |",
+  `| 日本語 | Latin | 全角！ | ![[assets/図版 資料.png]] | 表 | 横幅 | 確認 | ${wideTableCell} |`
+);
 const initialB = "\uFEFF# Export B\r\n\r\nB-only document.\r\n";
 
 function startReviewerFixture() {
@@ -38,6 +44,18 @@ function startReviewerFixture() {
     if (request.method !== "GET") {
       response.writeHead(404, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "not-found" }));
+      return;
+    }
+
+    // The managed Reviewer bridge verifies these fields even for the explicit
+    // loopback fixture used by this deterministic export regression test.
+    if (requestUrl.pathname === "/api/health") {
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({
+        status: "ok",
+        service: "maginalia-reviewer",
+        contractVersion: 1
+      }));
       return;
     }
 
@@ -110,6 +128,8 @@ function closeServer(server) {
 
 function runElectron(projectRoot, userDataRoot, reviewerBaseUrl) {
   const child = spawn(electronExecutable, [
+    // Keep the renderer smoke runnable on Windows CI hosts without a usable GPU.
+    "--disable-gpu",
     mainPath,
     `--user-data-dir=${userDataRoot}`,
     "--smoke-export",
@@ -150,11 +170,14 @@ try {
   const userDataRoot = path.join(temporaryDirectory, "electron-user-data");
   await mkdir(projectRoot);
   await mkdir(path.join(projectRoot, "assets"));
-  await writeFile(path.join(projectRoot, "a.md"), Buffer.from(initialA, "utf8"));
+  await writeFile(path.join(projectRoot, "a.md"), Buffer.from(smokeInitialA, "utf8"));
   await writeFile(path.join(projectRoot, "b.md"), Buffer.from(initialB, "utf8"));
   // Valid signatures are enough for the bounded Project-media resolver; the
   // smoke verifies renderer element creation rather than media playback.
   await writeFile(path.join(projectRoot, "assets", "figure.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Jf5sAAAAASUVORK5CYII=", "base64"));
+  await sharp({
+    create: { width: 1600, height: 320, channels: 3, background: { r: 198, g: 155, b: 134 } }
+  }).png().toFile(path.join(projectRoot, "assets", "図版 資料.png"));
   await writeFile(path.join(projectRoot, "assets", "movie.mp4"), Buffer.from([0, 0, 0, 12, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]));
 
   reviewerFixture = await startReviewerFixture();
@@ -175,7 +198,7 @@ try {
   // exits through the normal before-quit autosave handshake, so the dirty
   // active-session edit is expected to reach the ordinary source file before
   // the Electron process exits.
-  if (!authoringA.startsWith(initialA) || !authoringA.includes("Unsaved export-only edit.")) {
+  if (!authoringA.startsWith(smokeInitialA) || !authoringA.includes("Unsaved export-only edit.")) {
     throw new Error("Export smoke did not retain the autosaved authoring A text.");
   }
   if (!authoringB.equals(Buffer.from(initialB, "utf8"))) {

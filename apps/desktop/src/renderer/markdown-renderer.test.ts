@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseMarkdownBlocks,
   parseMarkdownInlines,
+  scanLocalMediaTargets,
   scanQuoteMarkersFromText
 } from "./markdown-renderer";
 import { restoreRendererPreferences } from "./renderer-preferences";
@@ -23,6 +24,70 @@ describe("Markdown preview parser", () => {
   it("parses ordinary headings, blockquotes, lists, and fenced code", () => {
     const blocks = parseMarkdownBlocks("# 見出し\n\n> quote\n\n- one\n- two\n\n```\nconst x = 1;\n```");
     expect(blocks.map((block) => block.kind)).toEqual(["heading", "blockquote", "list", "code"]);
+  });
+
+  it("keeps all six heading levels distinct in the presentation AST", () => {
+    const blocks = parseMarkdownBlocks("# 一\n## 二\n### 三\n#### 四\n##### 五\n###### 六");
+    expect(blocks.map((block) => block.kind === "heading" ? block.depth : null)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("parses Markdown tables structurally without treating escaped pipes as columns", () => {
+    const blocks = parseMarkdownBlocks(String.raw`| 作品 | 評価 |
+| :--- | ---: |
+| 『存在の耐えられない軽さ』 | 5 |
+| A\|B | mixed Latin |
+| A\\|B |
+| A\\\|B | odd slash run |
+| terminal escaped\|`);
+    const table = blocks[0];
+    expect(table).toMatchObject({ kind: "table", alignments: ["left", "right"] });
+    if (table?.kind !== "table") throw new Error("Expected a table block.");
+    expect(table.header.map((cell) => cell[0]?.kind === "text" ? cell[0].text : "")).toEqual(["作品", "評価"]);
+    expect(table.rows[1]?.[0]?.[0]).toMatchObject({ kind: "text", text: "A|B" });
+    expect(table.rows[2]?.map((cell) => cell[0]?.kind === "text" ? cell[0].text : "")).toEqual(["A\\", "B"]);
+    expect(table.rows[3]?.map((cell) => cell[0]?.kind === "text" ? cell[0].text : "")).toEqual(["A\\|B", "odd slash run"]);
+    expect(table.rows[4]?.[0]?.[0]).toMatchObject({ kind: "text", text: "terminal escaped|" });
+  });
+
+  it("preserves intentional ideographic spaces at table-cell edges", () => {
+    const table = parseMarkdownBlocks([
+      "| 見出し | 内容 |",
+      "| --- | --- |",
+      "|　前後に全角空白　| 本文 |"
+    ].join("\n"))[0];
+    if (table?.kind !== "table") throw new Error("Expected a table block.");
+    expect(table.rows[0]?.[0]?.[0]).toMatchObject({ kind: "text", text: "　前後に全角空白　" });
+  });
+
+  it("does not parse table-looking backtick or tilde fenced code and preserves table-cell media discovery", () => {
+    const source = [
+      "```",
+      "| inert | table |",
+      "| --- | --- |",
+      "| code | only |",
+      "```",
+      "",
+      "~~~markdown",
+      "| still | inert |",
+      "| --- | --- |",
+      "~~~",
+      "",
+      "| 図版 | 説明 |",
+      "| --- | --- |",
+      "| ![[assets/図版 資料.png]] | Japanese/Latin |"
+    ].join("\n");
+    expect(parseMarkdownBlocks(source).map((block) => block.kind)).toEqual(["code", "code", "table"]);
+    expect(scanLocalMediaTargets(source)).toEqual(["assets/図版 資料.png"]);
+  });
+
+  it("marks only ordinary prose paragraphs as eligible for presentation indentation", () => {
+    const marker = '<!-- maginalia:quote-ref v1 {"quoteId":"a","mode":"normal"} -->';
+    const blocks = parseMarkdownBlocks(`本文。\n\n![[assets/図版.png]]\n\n${marker}`);
+    expect(blocks.map((block) => block.kind === "paragraph" ? block.presentation : null)).toEqual([
+      "prose",
+      "structural",
+      "structural"
+    ]);
   });
 
   it("keeps QuoteRef markers as typed renderer nodes", () => {

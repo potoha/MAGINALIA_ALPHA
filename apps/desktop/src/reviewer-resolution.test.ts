@@ -80,6 +80,31 @@ describe("Reviewer QuoteRef source resolution", () => {
     expect(text).toContain(marker("annotation-1"));
   });
 
+  it("does not start a managed Reviewer for ordinary Markdown without QuoteRefs", async () => {
+    const getBaseUrl = vi.fn(async () => "http://127.0.0.1:8765");
+    const fetcher = vi.fn();
+    const resolve = createReviewerResolutionAdapter({ getBaseUrl, fetcher });
+    await expect(resolve("# ordinary Markdown\n\nNo QuoteRef here.")).resolves.toMatchObject({
+      kind: "resolved",
+      sources: [],
+      resolved: []
+    });
+    expect(getBaseUrl).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("gets a managed loopback URL only once a valid QuoteRef needs resolution", async () => {
+    const getBaseUrl = vi.fn(async () => BASE_URL);
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/search") return searchPage([quotation("annotation-managed")]);
+      return publication(ISBN);
+    });
+    const resolve = createReviewerResolutionAdapter({ getBaseUrl, fetcher });
+    await expect(resolve(marker("annotation-managed"))).resolves.toMatchObject({ kind: "resolved" });
+    expect(getBaseUrl).toHaveBeenCalledTimes(1);
+  });
+
   it("resolves an ISBN-backed quote and maps only allowlisted publication fields", async () => {
     const calls: URL[] = [];
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {

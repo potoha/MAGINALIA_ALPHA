@@ -43,6 +43,17 @@ describe("PreviewController", () => {
     expect(controller.getDirection()).toBe("vertical");
   });
 
+  it("propagates heading edits through the existing document-change refresh path", () => {
+    const writing = new FakeWriting("# 初稿");
+    const view: PreviewView = { setPreviewState: vi.fn() };
+    const controller = new PreviewController({ writing, api: { resolveReferences: vi.fn(async () => success()) }, view, preferences });
+    controller.setMode("preview");
+    writing.setText("###### 改稿");
+    const latest = vi.mocked(view.setPreviewState).mock.calls.at(-1)?.[0];
+    expect(latest?.document?.currentText).toBe("###### 改稿");
+    expect(writing.getDocumentState()?.savedText).toBe("# 初稿");
+  });
+
   it("leaves a failed Reviewer lookup as an unresolved preview item", async () => {
     const marker = '<!-- maginalia:quote-ref v1 {"quoteId":"a","mode":"normal"} -->';
     const writing = new FakeWriting(marker);

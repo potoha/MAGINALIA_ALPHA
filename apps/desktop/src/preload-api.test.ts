@@ -22,6 +22,9 @@ import {
   SEARCH_LIBRARY_CHANNEL,
   RESOLVE_QUOTATION_FOR_INSERT_CHANNEL,
   SEARCH_SHELF_CHANNEL,
+  CLOSE_REVIEWER_VIEW_CHANNEL,
+  OPEN_REVIEWER_VIEW_CHANNEL,
+  SET_REVIEWER_VIEW_BOUNDS_CHANNEL,
   RESOLVE_REFERENCES_CHANNEL,
   RESOLVE_EXPORT_CHANNEL,
   WRITE_EXPORT_CHANNEL,
@@ -80,6 +83,9 @@ describe("preload boundary", () => {
       "searchLibrary",
       "resolveQuotationForInsert",
       "searchShelf",
+      "openReviewerView",
+      "closeReviewerView",
+      "setReviewerViewBounds",
       "resolveReferences",
       "resolveExport",
       "writeExport",
@@ -159,6 +165,9 @@ describe("preload boundary", () => {
       annotationId: "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV"
     });
     await api.searchShelf({ query: "日本語" });
+    await api.openReviewerView();
+    await api.setReviewerViewBounds({ x: 220, y: 128, width: 720, height: 540 });
+    await api.closeReviewerView();
     await api.resolveReferences({ text: "# Draft" });
     await api.resolveExport({ documentId: "opaque-session", revision: 1, currentText: "# Draft" });
     await api.writeExport({ exportId: "opaque-export", documentId: "opaque-session", revision: 1, text: "# Output" });
@@ -280,6 +289,9 @@ describe("preload boundary", () => {
         }]
       },
       { channel: SEARCH_SHELF_CHANNEL, args: [{ query: "日本語" }] },
+      { channel: OPEN_REVIEWER_VIEW_CHANNEL, args: [] },
+      { channel: SET_REVIEWER_VIEW_BOUNDS_CHANNEL, args: [{ x: 220, y: 128, width: 720, height: 540 }] },
+      { channel: CLOSE_REVIEWER_VIEW_CHANNEL, args: [] },
       { channel: RESOLVE_REFERENCES_CHANNEL, args: [{ text: "# Draft" }] },
       {
         channel: RESOLVE_EXPORT_CHANNEL,

@@ -122,6 +122,12 @@ export type ReviewerResolutionResult = ReviewerResolutionSuccess | ReviewerResol
 export interface ReviewerResolutionAdapterOptions {
   /** Main-process configuration only; never comes from renderer input. */
   readonly baseUrl?: string;
+  /**
+   * Main-process-only lazy locator for the managed Reviewer. It is invoked
+   * only after the document is known to contain a valid QuoteRef, so ordinary
+   * Markdown export remains independent of the sidecar.
+   */
+  readonly getBaseUrl?: () => string | URL | null | Promise<string | URL | null>;
   readonly fetcher?: typeof fetch;
 }
 
@@ -288,7 +294,7 @@ function reviewerEndpoint(baseUrl: URL, path: string): URL {
 export function createReviewerResolutionAdapter(
   options: ReviewerResolutionAdapterOptions = {}
 ): (documentText: string) => Promise<ReviewerResolutionResult> {
-  const baseUrl = parseReviewerBaseUrl(options.baseUrl);
+  const configuredBaseUrl = parseReviewerBaseUrl(options.baseUrl);
   const fetcher = options.fetcher ?? fetch;
 
   return async (documentText: string): Promise<ReviewerResolutionResult> => {
@@ -313,9 +319,18 @@ export function createReviewerResolutionAdapter(
         unresolved: Object.freeze(unresolvedMalformed)
       });
     }
+    let baseUrl = configuredBaseUrl;
+    if (baseUrl === null && options.getBaseUrl !== undefined) {
+      try {
+        const resolved = await options.getBaseUrl();
+        baseUrl = parseReviewerBaseUrl(resolved instanceof URL ? resolved.href : resolved ?? undefined);
+      } catch {
+        return failure("reviewer-unavailable", "Reviewer unavailable. Try again from Shelf Review.");
+      }
+    }
     if (baseUrl === null) return failure(
       "reviewer-unavailable",
-      "Reviewer unavailable. Start the local Reviewer and try again."
+      "Reviewer unavailable. Try again from Shelf Review."
     );
 
     const wantedIds = new Set(validOccurrences.map((occurrence) => occurrence.quoteRef.quoteId));
@@ -338,7 +353,7 @@ export function createReviewerResolutionAdapter(
       try {
         response = await fetcher(endpoint, { method: "GET", redirect: "error" });
       } catch (_error: unknown) {
-        return failure("reviewer-unavailable", "Reviewer unavailable. Start the local Reviewer and try again.");
+        return failure("reviewer-unavailable", "Reviewer unavailable. Try again from Shelf Review.");
       }
       if (!response.ok) {
         return failure("reviewer-error", `Reviewer search failed (${response.status}).`);
@@ -389,7 +404,7 @@ export function createReviewerResolutionAdapter(
           return {
             kind: "failure",
             code: "reviewer-unavailable",
-            message: "Reviewer unavailable. Start the local Reviewer and try again."
+            message: "Reviewer unavailable. Try again from Shelf Review."
           };
         }
         if (response.status === 404) return { kind: "unresolved", code: "publication-unavailable" };
