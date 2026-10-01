@@ -1412,14 +1412,29 @@ function createMainWindow(): BrowserWindow {
       });
     }
   } else if (quickSmokeMode) {
+    const failQuickSmoke = (message: string) => {
+      console.error(`MAGINALIA_ELECTRON_SMOKE_FAILED ${message}`);
+      app.exit(1);
+    };
     window.webContents.once("did-finish-load", () => {
+      const expectedUserData = process.env.MAGINALIA_SMOKE_EXPECTED_USER_DATA;
+      if (expectedUserData && path.resolve(app.getPath("userData")) !== path.resolve(expectedUserData)) {
+        failQuickSmoke("Electron did not use the requested isolated userData directory");
+        return;
+      }
       console.log("MAGINALIA_ELECTRON_SMOKE_OK");
       app.quit();
     });
     window.webContents.once("did-fail-load", (_event, errorCode, errorDescription) => {
-      console.error(`MAGINALIA_ELECTRON_SMOKE_FAILED ${errorCode}: ${errorDescription}`);
-      app.exit(1);
+      failQuickSmoke(`renderer load ${errorCode}: ${errorDescription}`);
     });
+    window.webContents.once("preload-error", (_event, preloadPath, error) => {
+      failQuickSmoke(`preload ${preloadPath}: ${error.message}`);
+    });
+    window.webContents.once("render-process-gone", (_event, details) => {
+      failQuickSmoke(`renderer process ${details.reason} (exit ${details.exitCode})`);
+    });
+    window.webContents.once("unresponsive", () => failQuickSmoke("renderer became unresponsive"));
   }
 
   const loadOptions = writingSmoke.requested

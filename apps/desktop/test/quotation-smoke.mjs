@@ -1,23 +1,8 @@
-import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { assertElectronSmokeMarker, runElectronSmoke } from "./electron-smoke-launcher.mjs";
 
-const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repositoryRoot = path.resolve(desktopRoot, "../..");
-const electronExecutable = path.join(
-  repositoryRoot,
-  "node_modules",
-  "electron",
-  "dist",
-  process.platform === "win32"
-    ? "electron.exe"
-    : process.platform === "darwin"
-      ? "Electron.app/Contents/MacOS/Electron"
-      : "electron"
-);
-const mainPath = path.join(desktopRoot, "dist", "main", "main.js");
 const marker = "MAGINALIA_ELECTRON_QUOTATION_SMOKE_OK";
 const initialText = "\uFEFF# こんにちは\r\n\r\nこれは引用を挿入する原稿です。\r\n";
 const quote = "これは引用 QUOTATIONTEXTSENTINEL";
@@ -37,39 +22,6 @@ const provenance = "出典: " + bookTitle
   + " / 著者: " + author
   + " / source: " + sourceId
   + " / p. 17 / annotation: " + annotationId;
-
-function runElectron(documentRoot, libraryRoot) {
-  const child = spawn(electronExecutable, [
-    mainPath,
-    "--smoke-quotation",
-    documentRoot,
-    libraryRoot
-  ], {
-    cwd: desktopRoot,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { stdout += chunk; });
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
-
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      child.kill();
-      reject(new Error("Electron quotation smoke timed out."));
-    }, 60_000);
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once("exit", (code, signal) => {
-      clearTimeout(timeout);
-      resolve({ code, signal, stdout, stderr });
-    });
-  });
-}
 
 let temporaryDirectory;
 let documentRoot;
@@ -122,16 +74,11 @@ try {
     unpublishedComments: [unpublished]
   }, null, 2));
 
-  const result = await runElectron(documentRoot, libraryRoot);
-  if (result.code !== 0 || !result.stdout.includes(marker)) {
-    throw new Error(
-      "Electron quotation smoke failed (exit "
-        + (result.code ?? result.signal)
-        + ").\n"
-        + result.stdout
-        + result.stderr
-    );
-  }
+  const result = await runElectronSmoke({
+    userDataRoot: path.join(temporaryDirectory, "electron-user-data"),
+    appArgs: ["--smoke-quotation", documentRoot, libraryRoot]
+  });
+  assertElectronSmokeMarker(result, marker, "Electron quotation smoke");
 
   const actualBytes = await readFile(path.join(documentRoot, "manuscript.md"));
   const actualText = actualBytes.toString("utf8");

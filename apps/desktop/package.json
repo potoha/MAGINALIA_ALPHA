@@ -23,7 +23,7 @@
     "build:renderer": "vite build",
     "test": "vitest run --config vitest.config.mts",
     "test:github:live-auth": "node test/github-device-preflight.mjs",
-    "smoke": "npm run build && electron dist/main/main.js --smoke",
+    "smoke": "npm run build && node test/electron-smoke.mjs",
     "smoke:writing": "npm run build && node test/writing-smoke.mjs",
     "smoke:workspace": "npm run build && node test/workspace-smoke.mjs",
     "smoke:project": "npm run build && node test/project-smoke.mjs",

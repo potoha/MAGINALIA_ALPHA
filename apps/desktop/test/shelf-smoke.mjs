@@ -1,24 +1,9 @@
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { assertElectronSmokeMarker, runElectronSmoke } from "./electron-smoke-launcher.mjs";
 
-const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repositoryRoot = path.resolve(desktopRoot, "../..");
-const electronExecutable = path.join(
-  repositoryRoot,
-  "node_modules",
-  "electron",
-  "dist",
-  process.platform === "win32"
-    ? "electron.exe"
-    : process.platform === "darwin"
-      ? "Electron.app/Contents/MacOS/Electron"
-      : "electron"
-);
-const mainPath = path.join(desktopRoot, "dist", "main", "main.js");
 const marker = "MAGINALIA_ELECTRON_SHELF_SMOKE_OK";
 const annotationId = "2b6c4e0c-7268-4da0-9ad3-f5d1c8b7f2a1";
 const sameBookAnnotationId = "8ad9f3d2-2a9a-4f14-a2f6-6f7f3dd8a9c1";
@@ -188,40 +173,6 @@ function closeReviewerFixture(server) {
   });
 }
 
-function runElectron(projectRoot, userDataRoot, reviewerBaseUrl) {
-  const child = spawn(electronExecutable, [
-    mainPath,
-    `--user-data-dir=${userDataRoot}`,
-    "--smoke-shelf",
-    projectRoot
-  ], {
-    cwd: desktopRoot,
-    env: { ...process.env, MAGINALIA_REVIEWER_BASE_URL: reviewerBaseUrl },
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { stdout += chunk; });
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
-
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      child.kill();
-      reject(new Error("Electron Shelf smoke timed out."));
-    }, 60_000);
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once("exit", (code, signal) => {
-      clearTimeout(timeout);
-      resolve({ code, signal, stdout, stderr });
-    });
-  });
-}
-
 let temporaryDirectory;
 let reviewerFixture;
 try {
@@ -236,16 +187,12 @@ try {
   );
 
   reviewerFixture = await startReviewerFixture();
-  const result = await runElectron(projectRoot, userDataRoot, reviewerFixture.baseUrl);
-  if (result.code !== 0 || !result.stdout.includes(marker)) {
-    throw new Error(
-      "Electron Shelf smoke failed (exit "
-        + (result.code ?? result.signal)
-        + ").\n"
-        + result.stdout
-        + result.stderr
-    );
-  }
+  const result = await runElectronSmoke({
+    userDataRoot,
+    appArgs: ["--smoke-shelf", projectRoot],
+    env: { MAGINALIA_REVIEWER_BASE_URL: reviewerFixture.baseUrl }
+  });
+  assertElectronSmokeMarker(result, marker, "Electron Shelf smoke");
 
   const savedText = await readFile(path.join(projectRoot, "manuscript.md"), "utf8");
   if (savedText.split(markerText).length - 1 !== 1) {
