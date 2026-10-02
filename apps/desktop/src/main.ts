@@ -1324,7 +1324,13 @@ function createMainWindow(): BrowserWindow {
       failExportSmoke(new Error("The Export smoke fixture root was not provided."));
     } else {
       window.webContents.once("did-finish-load", () => {
-        void runExportSmoke(window, exportSmoke.rootPath!).then(
+        const shelfRoot = path.join(exportSmoke.rootPath!, "private-shelf");
+        void libraryService.openPrivateShelfForOwner(window.webContents, shelfRoot).then((openedShelf) => {
+          if (openedShelf.kind !== "opened") {
+            throw new Error("The Export smoke canonical Private Shelf could not be opened.");
+          }
+          return runExportSmoke(window, exportSmoke.rootPath!);
+        }).then(
           () => completeExportSmoke(),
           (error: unknown) => failExportSmoke(error)
         );

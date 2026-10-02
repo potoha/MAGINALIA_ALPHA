@@ -12,10 +12,11 @@ const quote = "これはExport smokeの解決済み引用です。";
 const title = "Export Smoke Book";
 const author = "Export Smoke Author";
 const captureId = "capture-export-smoke";
+const canonicalAnnotationId = "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const quoteMarker = `<!-- maginalia:quote-ref v1 {"quoteId":"${annotationId}","mode":"normal"} -->`;
 const referenceStart = "<!-- maginalia:reference-list-start v1 -->";
 const referenceEnd = "<!-- maginalia:reference-list-end v1 -->";
-const initialA = `\uFEFF# Export A\r\n\r\n日本語の本文です。全角記号（「」）と Latin text を混在させます。\r\n\r\n## 第二章\r\n\r\n### 第三級\r\n\r\n#### 第四級\r\n\r\n##### 第五級\r\n\r\n###### 第六級\r\n\r\n- リスト項目\r\n\r\n> 引用ブロックです。\r\n\r\n${quoteMarker}\r\n\r\n[[b.md|Second document]] [[missing.md]]\r\n[Generic](https://example.com/article) [YouTube](https://youtu.be/dQw4w9WgXcQ) [X](https://x.com/example/status/123456)\r\n![Figure](assets/figure.png) ![[assets/図版 資料.png]] ![[assets/movie.mp4]]\r\n\r\n| 列一 | 列二 | 列三 | 列四 | 列五 | 列六 | 列七 | 列八 |\r\n| --- | --- | --- | --- | --- | --- | --- | --- |\r\n| 日本語 | Latin | 全角！ | 研究 | 表 | 横幅 | 確認 | 完了 |\r\n\r\n<script>window.MAGINALIA_F_SMOKE_XSS = true</script>\r\n\r\n## 参考文献\r\n\r\n${referenceStart}\r\n- old generated entry\r\n${referenceEnd}\r\n\r\n手書きの参考メモです。\r\n`;
+const initialA = `\uFEFF# Export A\r\n\r\n日本語の本文です。全角記号（「」）と Latin text を混在させます。\r\n\r\nこれは通常の文章です。[参考リンク](https://example.com) を参照します。\r\n\r\n本文 [YouTube](https://youtu.be/dQw4w9WgXcQ) を参照します。\r\n\r\n## 第二章\r\n\r\n### 第三級\r\n\r\n#### 第四級\r\n\r\n##### 第五級\r\n\r\n###### 第六級\r\n\r\n- リスト項目\r\n\r\n> 引用ブロックです。\r\n\r\n${quoteMarker}\r\n\r\n[[b.md|Second document]] [[missing.md]]\r\n[Generic](https://example.com/article) [YouTube](https://youtu.be/dQw4w9WgXcQ) [X](https://x.com/example/status/123456)\r\n![Figure](assets/figure.png) ![[assets/図版 資料.png]] ![[assets/movie.mp4]]\r\n![[assets/missing.png]]\r\n\r\n| 列一 | 列二 | 列三 | 列四 | 列五 | 列六 | 列七 | 列八 |\r\n| --- | --- | --- | --- | --- | --- | --- | --- |\r\n| 日本語 | Latin | 全角！ | 研究 | 表 | 横幅 | 確認 | 完了 |\r\n\r\n<script>window.MAGINALIA_F_SMOKE_XSS = true</script>\r\n\r\n## 参考文献\r\n\r\n${referenceStart}\r\n- old generated entry\r\n${referenceEnd}\r\n\r\n手書きの参考メモです。\r\n`;
 const wideTableCell = "研究資料 Latin 全角！ ".repeat(32);
 const smokeInitialA = initialA.replace(
   "| 日本語 | Latin | 全角！ | 研究 | 表 | 横幅 | 確認 | 完了 |",
@@ -116,9 +117,44 @@ let reviewerFixture;
 try {
   temporaryDirectory = await mkdtemp(path.join(tmpdir(), "maginalia-export-smoke-"));
   const projectRoot = path.join(temporaryDirectory, "project-root");
+  const shelfRoot = path.join(projectRoot, "private-shelf");
   const userDataRoot = path.join(temporaryDirectory, "electron-user-data");
   await mkdir(projectRoot);
   await mkdir(path.join(projectRoot, "assets"));
+  await mkdir(path.join(shelfRoot, "books"), { recursive: true });
+  await mkdir(path.join(shelfRoot, "annotations"), { recursive: true });
+  await writeFile(path.join(shelfRoot, "library.json"), JSON.stringify({
+    type: "library",
+    version: "0.1",
+    name: "Export Smoke Shelf",
+    booksPath: "books",
+    annotationsPath: "annotations"
+  }), "utf8");
+  await writeFile(path.join(shelfRoot, "books", "export-smoke-book.json"), JSON.stringify({
+    type: "book",
+    version: "0.1",
+    id: `isbn:${isbn13}`,
+    isbn13,
+    title,
+    authors: [author],
+    publisher: "Export Smoke Publisher",
+    year: 2024
+  }), "utf8");
+  await writeFile(path.join(shelfRoot, "annotations", "export-smoke-annotation.json"), JSON.stringify({
+    type: "annotation",
+    version: "0.1",
+    id: canonicalAnnotationId,
+    source: `isbn:${isbn13}`,
+    location: { page: 42 },
+    quote,
+    deviceMetadata: {
+      maginaliaReviewer: {
+        version: 1,
+        annotationId,
+        digest: "export-smoke-canonical-alias"
+      }
+    }
+  }), "utf8");
   await writeFile(path.join(projectRoot, "a.md"), Buffer.from(smokeInitialA, "utf8"));
   await writeFile(path.join(projectRoot, "b.md"), Buffer.from(initialB, "utf8"));
   // Valid signatures are enough for the bounded Project-media resolver; the

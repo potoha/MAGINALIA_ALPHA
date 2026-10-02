@@ -36,10 +36,14 @@ interface PreviewRendererState {
   readonly videoCount: number;
   readonly headingSizes: readonly number[];
   readonly proseIndent: string | null;
+  readonly proseTexts: readonly string[];
   readonly structuralIndent: string | null;
   readonly imageDisplay: string | null;
   readonly imageMaxWidth: string | null;
   readonly mediaWritingModes: readonly string[];
+  readonly unresolvedMediaCount: number;
+  readonly unresolvedMediaWritingModes: readonly string[];
+  readonly unresolvedMediaClientWidths: readonly number[];
   readonly tableCount: number;
   readonly tableImageCount: number;
   readonly tableTagName: string | null;
@@ -105,6 +109,7 @@ const READ_PREVIEW_SCRIPT = `(() => {
     proseIndent: root.querySelector(".markdown-prose") instanceof HTMLElement
       ? getComputedStyle(root.querySelector(".markdown-prose")).textIndent
       : null,
+    proseTexts: [...root.querySelectorAll(".markdown-prose")].map((paragraph) => paragraph.textContent ?? ""),
     structuralIndent: root.querySelector(".markdown-structural-paragraph") instanceof HTMLElement
       ? getComputedStyle(root.querySelector(".markdown-structural-paragraph")).textIndent
       : null,
@@ -116,6 +121,11 @@ const READ_PREVIEW_SCRIPT = `(() => {
       : null,
     mediaWritingModes: [...root.querySelectorAll("img.rendered-local-media, video.rendered-local-media")]
       .map((media) => getComputedStyle(media).writingMode),
+    unresolvedMediaCount: root.querySelectorAll(".rendered-local-media.unresolved").length,
+    unresolvedMediaWritingModes: [...root.querySelectorAll(".rendered-local-media.unresolved")]
+      .map((media) => getComputedStyle(media).writingMode),
+    unresolvedMediaClientWidths: [...root.querySelectorAll(".rendered-local-media.unresolved")]
+      .map((media) => media instanceof HTMLElement ? media.clientWidth : 0),
     tableCount: root.querySelectorAll(".markdown-table").length,
     tableImageCount: root.querySelectorAll(".markdown-table img.rendered-local-media").length,
     tableTagName: root.querySelector(".markdown-table")?.tagName.toLowerCase() ?? null,
@@ -304,6 +314,8 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
   assert(!horizontal.hasExecutableScript, "authoring HTML created an executable script in Preview");
   assert(horizontal.headingSizes.every((size, index, sizes) => size > 0 && (index === sizes.length - 1 || size > sizes[index + 1]!)), "H1-H6 hierarchy was not visually distinct");
   assert(horizontal.proseIndent !== null && horizontal.proseIndent !== "0px", "ordinary prose did not receive a visual first-line indent");
+  assert(horizontal.proseTexts.some((text) => text.startsWith("これは通常の文章です。参考リンク") && text.endsWith("を参照します。")), "ordinary external-link prose lost prose presentation");
+  assert(horizontal.proseTexts.some((text) => text.startsWith("本文 YouTube") && text.endsWith("を参照します。")), "mixed prose and embed content lost prose presentation");
   assert(horizontal.structuralIndent === "0px", "media-bearing structural paragraph was incorrectly indented");
   assert(horizontal.imageDisplay === "block" && horizontal.imageMaxWidth === "100%", "Project media did not receive responsive block layout");
   assert(horizontal.tableHeaderTexts.join("|") === "列一|列二|列三|列四|列五|列六|列七|列八", "Japanese table headers were not preserved structurally");
@@ -319,14 +331,17 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
       && state.videoCount === 1
       && state.tableCount === 1
       && state.tableImageCount === 1
+      && state.unresolvedMediaCount === 1
       && state.mediaWritingModes.length === 4
       && state.mediaWritingModes.every((mode) => mode === "horizontal-tb")
+      && state.unresolvedMediaWritingModes.every((mode) => mode === "horizontal-tb")
       && state.tableWritingMode === "horizontal-tb",
     "vertical Markdown Preview"
   );
   assert(vertical.imageCount === 3 && vertical.videoCount === 1, "vertical Preview lost Project media");
   assert(vertical.proseIndent !== null && vertical.proseIndent !== "0px", "vertical prose lost its visual first-line indent");
   assert(vertical.structuralIndent === "0px", "vertical media-bearing structural paragraph was incorrectly indented");
+  assert(vertical.unresolvedMediaClientWidths.every((width) => width >= 120), "vertical unresolved media placeholder was too narrow to read");
   assertWideTable(vertical, "vertical");
   await clickButton(window, "#document-horizontal", "switch Preview to horizontal");
   await waitForPreviewState(window, (state) => state.visible && state.direction === "horizontal", "horizontal Markdown Preview restoration");

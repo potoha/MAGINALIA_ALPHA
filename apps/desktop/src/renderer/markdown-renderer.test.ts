@@ -31,6 +31,11 @@ describe("Markdown preview parser", () => {
     expect(blocks.map((block) => block.kind === "heading" ? block.depth : null)).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
+  it("recognizes a BOM-prefixed H1 so all six heading levels reach presentation", () => {
+    const blocks = parseMarkdownBlocks("\uFEFF# 一\n## 二\n### 三\n#### 四\n##### 五\n###### 六");
+    expect(blocks.map((block) => block.kind === "heading" ? block.depth : null)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
   it("parses Markdown tables structurally without treating escaped pipes as columns", () => {
     const blocks = parseMarkdownBlocks(String.raw`| 作品 | 評価 |
 | :--- | ---: |
@@ -59,6 +64,28 @@ describe("Markdown preview parser", () => {
     expect(table.rows[0]?.[0]?.[0]).toMatchObject({ kind: "text", text: "　前後に全角空白　" });
   });
 
+  it("stops tables before following block starts that contain pipes", () => {
+    const source = [
+      "| A | B |",
+      "| --- | --- |",
+      "| 1 | 2 |",
+      "## Heading | with pipe",
+      "- item | with pipe",
+      "1. ordered | with pipe",
+      "> quote | with pipe",
+      "```text | with pipe",
+      "inert | code",
+      "```"
+    ].join("\n");
+    expect(parseMarkdownBlocks(source).map((block) => block.kind)).toEqual([
+      "table", "heading", "list", "list", "blockquote", "code"
+    ]);
+    const table = parseMarkdownBlocks(source)[0];
+    expect(table).toMatchObject({ kind: "table" });
+    if (table?.kind !== "table") throw new Error("Expected a table block.");
+    expect(table.rows).toHaveLength(1);
+  });
+
   it("does not parse table-looking backtick or tilde fenced code and preserves table-cell media discovery", () => {
     const source = [
       "```",
@@ -80,10 +107,22 @@ describe("Markdown preview parser", () => {
     expect(scanLocalMediaTargets(source)).toEqual(["assets/図版 資料.png"]);
   });
 
-  it("marks only ordinary prose paragraphs as eligible for presentation indentation", () => {
+  it("marks only standalone structural content as ineligible for presentation indentation", () => {
     const marker = '<!-- maginalia:quote-ref v1 {"quoteId":"a","mode":"normal"} -->';
-    const blocks = parseMarkdownBlocks(`本文。\n\n![[assets/図版.png]]\n\n${marker}`);
+    const blocks = parseMarkdownBlocks([
+      "これは通常の文章です。[参考リンク](https://example.com) を参照します。",
+      "",
+      "本文 ![[assets/図版.png]] を参照します。",
+      "",
+      "本文 [YouTube](https://youtu.be/dQw4w9WgXcQ) を参照します。",
+      "",
+      "![[assets/図版.png]]",
+      "",
+      marker
+    ].join("\n"));
     expect(blocks.map((block) => block.kind === "paragraph" ? block.presentation : null)).toEqual([
+      "prose",
+      "prose",
       "prose",
       "structural",
       "structural"
