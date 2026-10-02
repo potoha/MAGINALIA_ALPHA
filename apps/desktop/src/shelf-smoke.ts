@@ -182,9 +182,9 @@ export async function runShelfSmoke(window: BrowserWindow, smokeRoot: string): P
   const manuscriptPath = path.join(root, "manuscript.md");
   const initialText = await readFile(manuscriptPath, "utf8");
   const expectedDocumentName = path.basename(root);
-  const marker = `<!-- maginalia:quote-ref v1 {"quoteId":"${SHELF_SMOKE_ANNOTATION_ID}","mode":"normal"} -->`;
-  const sameBookMarker = "<!-- maginalia:quote-ref v1 {\"quoteId\":\"8ad9f3d2-2a9a-4f14-a2f6-6f7f3dd8a9c1\",\"mode\":\"normal\"} -->";
-  const secondBookMarker = "<!-- maginalia:quote-ref v1 {\"quoteId\":\"b1d8f4c7-6a1e-4fd1-8c22-2d8b7e5a4f30\",\"mode\":\"normal\"} -->";
+  const marker = "<!-- maginalia:quote-ref v1 {\"quoteId\":\"ann:01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"mode\":\"normal\"} -->";
+  const sameBookMarker = "<!-- maginalia:quote-ref v1 {\"quoteId\":\"ann:01ARZ3NDEKTSV4RRFFQ69G5FAW\",\"mode\":\"normal\"} -->";
+  const secondBookMarker = "<!-- maginalia:quote-ref v1 {\"quoteId\":\"ann:01ARZ3NDEKTSV4RRFFQ69G5FAX\",\"mode\":\"normal\"} -->";
   const referenceStart = "<!-- maginalia:reference-list-start v1 -->";
   const referenceEnd = "<!-- maginalia:reference-list-end v1 -->";
   const firstBookTitle = "Shelf Smoke Book";

@@ -198,7 +198,7 @@ export function createShelfHandlers(dependencies: ShelfHandlerDependencies): She
       if (args.length !== 0 || !isSearchShelfRequest(request)) return INVALID_SEARCH_REQUEST;
       try {
         const active = await dependencies.getActivePrivateShelf(event.sender);
-        if (active.kind === "error") return SHELF_NOT_SELECTED_FOR_SEARCH;
+        if (active.kind === "error") return active;
         const result = await dependencies.searchPrivateShelf(
           event.sender,
           active.library.libraryId,
@@ -224,7 +224,7 @@ export function createShelfHandlers(dependencies: ShelfHandlerDependencies): She
       } catch (_error: unknown) {
         return SHELF_NOT_SELECTED;
       }
-      if (active.kind === "error") return SHELF_NOT_SELECTED;
+      if (active.kind === "error") return refreshFailure("shelf-not-selected", active.message);
 
       let synchronized: ShelfSyncOutcome;
       try {

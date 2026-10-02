@@ -71,6 +71,8 @@ import {
 import { LibraryService } from "./library-service";
 import { createLibraryHandlers } from "./library-ipc";
 import { createShelfHandlers, REFRESH_SHELF_CHANNEL, SEARCH_SHELF_CHANNEL } from "./shelf-ipc";
+import { ConfiguredPrivateShelf } from "./configured-private-shelf";
+import { SHELF_LOCATION_FILE_NAME, ShelfLocationRegistry } from "./shelf-location-registry";
 import { createReviewerShelfSyncAdapter } from "./reviewer-shelf-sync";
 import { createReferenceHandlers } from "./reference-ipc";
 import { resolveShelfQuoteRefs } from "./shelf-resolution";
@@ -207,6 +209,10 @@ const projectService = new ProjectService(
 );
 const projectAssetService = new ProjectAssetService(documentWorkspaceService);
 const libraryService = new LibraryService();
+const configuredPrivateShelf = new ConfiguredPrivateShelf(
+  new ShelfLocationRegistry(path.join(app.getPath("userData"), SHELF_LOCATION_FILE_NAME)),
+  libraryService,
+);
 // The main process is the only owner of the Reviewer process, workspace, and
 // loopback origin.  It is deliberately lazy: ordinary Project/Workdesk work
 // never needs a Python runtime merely to open MAGINALIA.
@@ -430,18 +436,18 @@ const reviewerShelfSync = createReviewerShelfSyncAdapter({
   getBaseUrl: getManagedReviewerBaseUrl
 });
 const shelfHandlers = createShelfHandlers({
-  getActivePrivateShelf: (owner) => libraryService.getActivePrivateShelfForOwner(owner),
+  getActivePrivateShelf: (owner) => configuredPrivateShelf.getActive(owner),
   searchPrivateShelf: (owner, libraryId, query) => libraryService.searchForOwner(owner, libraryId, query),
   synchronizePrivateShelf: reviewerShelfSync,
-  reloadPrivateShelf: (owner) => libraryService.reloadForOwner(owner)
+  reloadPrivateShelf: (owner) => configuredPrivateShelf.reload(owner)
 });
 const referenceResolution = async (owner: object, documentText: string) => {
-  const activeShelf = libraryService.getActivePrivateShelfForOwner(owner);
+  const activeShelf = await configuredPrivateShelf.getActive(owner);
   if (activeShelf.kind === "error") {
     return {
       kind: "error" as const,
       code: "invalid-request" as const,
-      message: "Activate a Private Shelf repository before resolving references."
+      message: activeShelf.message
     };
   }
   return resolveShelfQuoteRefs(documentText, activeShelf.entities);
@@ -1089,6 +1095,9 @@ function createMainWindow(): BrowserWindow {
     webPreferences: createSecureWebPreferences(path.join(__dirname, "preload.js"))
   });
   const cloudOwner = window.webContents;
+  // Resolve once at window creation so an existing explicit registry is ready
+  // for normal Shelf use. The shared binding also reloads it on demand.
+  void configuredPrivateShelf.getActive(window.webContents);
 
   const rendererPath = path.join(__dirname, "..", "renderer", "index.html");
 
