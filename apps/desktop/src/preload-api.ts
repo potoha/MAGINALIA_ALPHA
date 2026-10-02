@@ -21,10 +21,12 @@ import {
   type SearchLibraryResult
 } from "./library-ipc";
 import {
+  REFRESH_SHELF_CHANNEL,
   SEARCH_SHELF_CHANNEL,
   type SearchShelfRequest,
-  type SearchShelfResult
-} from "./reviewer-ipc";
+  type SearchShelfResult,
+  type RefreshShelfResult
+} from "./shelf-ipc";
 import {
   CLOSE_REVIEWER_VIEW_CHANNEL,
   OPEN_REVIEWER_VIEW_CHANNEL,
@@ -188,8 +190,7 @@ export {
   SEARCH_LIBRARY_CHANNEL,
   RESOLVE_QUOTATION_FOR_INSERT_CHANNEL
 } from "./library-ipc";
-export { SEARCH_SHELF_CHANNEL } from "./reviewer-ipc";
-export const REFRESH_SHELF_CHANNEL = "maginalia:refresh-shelf";
+export { SEARCH_SHELF_CHANNEL, REFRESH_SHELF_CHANNEL } from "./shelf-ipc";
 export {
   CLOSE_REVIEWER_VIEW_CHANNEL,
   OPEN_REVIEWER_VIEW_CHANNEL,
@@ -238,13 +239,10 @@ export type {
   SearchLibraryResult
 } from "./library-ipc";
 export type {
-  ReviewerQuotation,
   SearchShelfRequest,
-  SearchShelfResult
-} from "./reviewer-ipc";
-export type RefreshShelfResult =
-  | { readonly kind: "refreshed"; readonly materialized: number; readonly unchanged: number; readonly pending: number; readonly conflicts: number }
-  | { readonly kind: "error"; readonly code: "invalid-request" | "shelf-not-selected" | "refresh-failed"; readonly message: string };
+  SearchShelfResult,
+  RefreshShelfResult
+} from "./shelf-ipc";
 export type { SearchProjectMarkdownRequest, SearchProjectMarkdownResult } from "./project-search-ipc";
 export type {
   ResolveReferencesRequest,

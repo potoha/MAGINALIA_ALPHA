@@ -1,8 +1,8 @@
 import type {
-  ReviewerQuotation,
+  CanonicalShelfSearchReference,
   SearchShelfRequest,
   SearchShelfResult
-} from "../reviewer-ipc";
+} from "../shelf-ipc";
 import type {
   CapturedInsertionTarget,
   WritingInsertionResult
@@ -23,8 +23,8 @@ export type ShelfStatus = "idle" | "searching" | "ready" | "error";
 export interface ShelfViewState {
   readonly query: string;
   readonly status: ShelfStatus;
-  readonly results: readonly ReviewerQuotation[];
-  /** Broad Reviewer total; may exceed the bounded result page. */
+  readonly results: readonly CanonicalShelfSearchReference[];
+  /** Count returned by the bounded canonical LibraryService search. */
   readonly total?: number;
   readonly selectedAnnotationId: string | null;
   readonly error: string | null;
@@ -49,30 +49,34 @@ const EMPTY_STATE: ShelfViewState = Object.freeze({
   error: null
 });
 
-const SEARCH_FAILED = "Reviewer search could not be completed. Try again.";
+const SEARCH_FAILED = "Private Shelf search could not be completed. Try again.";
 const NO_MANUSCRIPT = "Open a manuscript before inserting a quotation.";
 const NO_RESULT = "Select a quotation before inserting it.";
 const STALE_INSERT = "The writing target changed before insertion. Select Insert again.";
 
-function copyQuotation(quotation: ReviewerQuotation): ReviewerQuotation {
-  return Object.freeze({
-    annotationId: quotation.annotationId,
-    captureId: quotation.captureId,
-    pageId: quotation.pageId,
-    sourcePageId: quotation.sourcePageId,
-    isbn13: quotation.isbn13,
-    title: quotation.title,
-    authors: Object.freeze([...quotation.authors]),
-    quote: quotation.quote,
-    pageLabel: quotation.pageLabel,
-    comment: quotation.comment,
-    reviewState: quotation.reviewState,
-    reviewedAtMs: quotation.reviewedAtMs
-  });
+function copyReference(reference: CanonicalShelfSearchReference): CanonicalShelfSearchReference {
+  const copy: {
+    annotationId: string;
+    sourceId: string;
+    quote: string;
+    privateMemo?: string;
+    title: string;
+    authors: readonly string[];
+    page?: number;
+  } = {
+    annotationId: reference.annotationId,
+    sourceId: reference.sourceId,
+    quote: reference.quote,
+    title: reference.title,
+    authors: Object.freeze([...reference.authors])
+  };
+  if (reference.privateMemo !== undefined) copy.privateMemo = reference.privateMemo;
+  if (reference.page !== undefined) copy.page = reference.page;
+  return Object.freeze(copy);
 }
 
-function copyResults(results: readonly ReviewerQuotation[]): readonly ReviewerQuotation[] {
-  return Object.freeze(results.map(copyQuotation));
+function copyResults(results: readonly CanonicalShelfSearchReference[]): readonly CanonicalShelfSearchReference[] {
+  return Object.freeze(results.map(copyReference));
 }
 
 function copyState(state: ShelfViewState): ShelfViewState {

@@ -77,7 +77,7 @@ describe("resolved Markdown export IPC boundary", () => {
     const opened = await service.openForOwner(owner, source);
     expect(opened.kind).toBe("opened");
     if (opened.kind !== "opened") return;
-    const resolveSpy = vi.fn(async () => resolution);
+    const resolveSpy = vi.fn(async (_owner: object, _text: string) => resolution);
     const handlers = createExportHandlers({
       sessions: service,
       resolve: resolveSpy,
@@ -97,16 +97,18 @@ describe("resolved Markdown export IPC boundary", () => {
     const { source, service } = await fixture();
     const sessionId = await open(service, source);
     let resolvedText = "";
+    const resolveSpy = vi.fn(async (_owner: object, text: string) => {
+      resolvedText = text;
+      return resolution;
+    });
     const handlers = createExportHandlers({
       sessions: service,
-      resolve: async (text) => {
-        resolvedText = text;
-        return resolution;
-      },
+      resolve: resolveSpy,
       showSaveDialog: async () => ({ canceled: true })
     });
     const result = await resolve(handlers, sessionId, "# dirty\n", 9);
     expect(resolvedText).toBe("# dirty\n");
+    expect(resolveSpy).toHaveBeenCalledWith(owner, "# dirty\n");
     expect(result).toMatchObject({
       kind: "resolved",
       documentId: sessionId,

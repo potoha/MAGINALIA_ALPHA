@@ -4,14 +4,23 @@
  */
 
 import { createHash } from "node:crypto";
-import {
-  FORMAT_VERSION,
-  generateEntityId,
-  validateEntity,
-  type Annotation,
-  type Book
-} from "@maginalia/format";
-import { normalizeIsbn13 } from "@maginalia/source-core";
+import type { Annotation, Book } from "@maginalia/format" with { "resolution-mode": "import" };
+
+type FormatCore = typeof import("@maginalia/format", { with: { "resolution-mode": "import" } });
+type SourceCore = typeof import("@maginalia/source-core", { with: { "resolution-mode": "import" } });
+
+let formatCorePromise: Promise<FormatCore> | undefined;
+let sourceCorePromise: Promise<SourceCore> | undefined;
+
+function loadFormatCore(): Promise<FormatCore> {
+  formatCorePromise ??= import("@maginalia/format");
+  return formatCorePromise;
+}
+
+function loadSourceCore(): Promise<SourceCore> {
+  sourceCorePromise ??= import("@maginalia/source-core");
+  return sourceCorePromise;
+}
 
 export const REVIEWER_SHELF_PROVENANCE_VERSION = 1 as const;
 
@@ -119,7 +128,10 @@ function reviewerDigest(record: ApprovedReviewerRecord): string {
   return `sha256:${createHash("sha256").update(canonicalRecord, "utf8").digest("hex")}`;
 }
 
-function parseApprovedReviewerRecord(value: unknown): ApprovedReviewerRecord | ReviewerReconciliationPending {
+function parseApprovedReviewerRecord(
+  value: unknown,
+  normalizeIsbn13: SourceCore["normalizeIsbn13"],
+): ApprovedReviewerRecord | ReviewerReconciliationPending {
   if (!isRecord(value)) return pending("invalid-reviewer-record");
   if (value.reviewState !== "APPROVED") return pending("reviewer-not-approved");
   if (typeof value.annotationId !== "string" || !isUuid(value.annotationId)) {
@@ -157,7 +169,8 @@ function parseOpenBdMetadata(
   value: unknown,
   isbn13: string,
   annotationId: string,
-  digest: string
+  digest: string,
+  normalizeIsbn13: SourceCore["normalizeIsbn13"],
 ): ParsedOpenBdMetadata | ReviewerReconciliationPending {
   if (!isRecord(value)) {
     return pending("openbd-metadata-missing", { reviewerAnnotationId: annotationId, digest });
@@ -202,16 +215,23 @@ function parseOpenBdMetadata(
  * Validate and project one approved Reviewer record plus its supplied openBD
  * metadata. No Shelf storage or network access occurs here.
  */
-export function createReviewerReconciliationCandidate(
+export async function createReviewerReconciliationCandidate(
   reviewerRecord: unknown,
   openBdMetadata: unknown
-): ReviewerReconciliationResult {
-  const record = parseApprovedReviewerRecord(reviewerRecord);
+): Promise<ReviewerReconciliationResult> {
+  const [formatCore, sourceCore] = await Promise.all([loadFormatCore(), loadSourceCore()]);
+  const record = parseApprovedReviewerRecord(reviewerRecord, sourceCore.normalizeIsbn13);
   if ("kind" in record) return record;
 
   const digest = reviewerDigest(record);
   const details = { reviewerAnnotationId: record.annotationId, digest };
-  const metadata = parseOpenBdMetadata(openBdMetadata, record.isbn13, record.annotationId, digest);
+  const metadata = parseOpenBdMetadata(
+    openBdMetadata,
+    record.isbn13,
+    record.annotationId,
+    digest,
+    sourceCore.normalizeIsbn13,
+  );
   if ("kind" in metadata) return metadata;
 
   const page = positiveIntegerPage(record.pageLabel);
@@ -221,7 +241,7 @@ export function createReviewerReconciliationCandidate(
 
   const book: Book = Object.freeze({
     type: "book",
-    version: FORMAT_VERSION,
+    version: formatCore.FORMAT_VERSION,
     id: `isbn:${record.isbn13}`,
     isbn13: record.isbn13,
     title: metadata.title,
@@ -229,7 +249,7 @@ export function createReviewerReconciliationCandidate(
     ...(metadata.publisher === undefined ? {} : { publisher: metadata.publisher }),
     ...(metadata.year === undefined ? {} : { year: metadata.year })
   });
-  const bookValidation = validateEntity("book", book);
+  const bookValidation = formatCore.validateEntity("book", book);
   if (!bookValidation.valid) return pending("invalid-format-candidate", details);
 
   const reviewerProvenance = Object.freeze({
@@ -239,7 +259,7 @@ export function createReviewerReconciliationCandidate(
   });
   const annotation: AnnotationDraft = Object.freeze({
     type: "annotation",
-    version: FORMAT_VERSION,
+    version: formatCore.FORMAT_VERSION,
     source: `isbn:${record.isbn13}`,
     location: Object.freeze({ page }),
     quote: record.quote,
@@ -260,13 +280,16 @@ export function createReviewerReconciliationCandidate(
  * Assign the Format ann:ULID exactly when a caller first materializes a
  * candidate. The generated ID is checked against the canonical Format schema.
  */
-export function materializeReviewerReconciliationCandidate(
+export async function materializeReviewerReconciliationCandidate(
   candidate: ReviewerReconciliationCandidate,
-  generateAnnotationId: AnnotationIdGenerator = () => generateEntityId("ann")
-): ReviewerMaterializationResult {
+  generateAnnotationId?: AnnotationIdGenerator,
+): Promise<ReviewerMaterializationResult> {
+  const formatCore = await loadFormatCore();
   let id: string;
   try {
-    id = generateAnnotationId();
+    id = generateAnnotationId === undefined
+      ? formatCore.generateEntityId("ann")
+      : generateAnnotationId();
   } catch {
     return pending("invalid-generated-annotation-id", {
       reviewerAnnotationId: candidate.reviewerAnnotationId,
@@ -275,8 +298,8 @@ export function materializeReviewerReconciliationCandidate(
   }
 
   const annotation = { ...candidate.annotation, id } as Annotation;
-  const bookValidation = validateEntity("book", candidate.book);
-  const annotationValidation = validateEntity("annotation", annotation);
+  const bookValidation = formatCore.validateEntity("book", candidate.book);
+  const annotationValidation = formatCore.validateEntity("annotation", annotation);
   if (!bookValidation.valid || !annotationValidation.valid) {
     return pending("invalid-generated-annotation-id", {
       reviewerAnnotationId: candidate.reviewerAnnotationId,

@@ -22,6 +22,7 @@ import {
   SEARCH_LIBRARY_CHANNEL,
   RESOLVE_QUOTATION_FOR_INSERT_CHANNEL,
   SEARCH_SHELF_CHANNEL,
+  REFRESH_SHELF_CHANNEL,
   CLOSE_REVIEWER_VIEW_CHANNEL,
   OPEN_REVIEWER_VIEW_CHANNEL,
   SET_REVIEWER_VIEW_BOUNDS_CHANNEL,
@@ -83,6 +84,7 @@ describe("preload boundary", () => {
       "searchLibrary",
       "resolveQuotationForInsert",
       "searchShelf",
+      "refreshShelf",
       "openReviewerView",
       "closeReviewerView",
       "setReviewerViewBounds",
@@ -165,6 +167,7 @@ describe("preload boundary", () => {
       annotationId: "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV"
     });
     await api.searchShelf({ query: "日本語" });
+    await api.refreshShelf();
     await api.openReviewerView();
     await api.setReviewerViewBounds({ x: 220, y: 128, width: 720, height: 540 });
     await api.closeReviewerView();
@@ -289,6 +292,7 @@ describe("preload boundary", () => {
         }]
       },
       { channel: SEARCH_SHELF_CHANNEL, args: [{ query: "日本語" }] },
+      { channel: REFRESH_SHELF_CHANNEL, args: [] },
       { channel: OPEN_REVIEWER_VIEW_CHANNEL, args: [] },
       { channel: SET_REVIEWER_VIEW_BOUNDS_CHANNEL, args: [{ x: 220, y: 128, width: 720, height: 540 }] },
       { channel: CLOSE_REVIEWER_VIEW_CHANNEL, args: [] },

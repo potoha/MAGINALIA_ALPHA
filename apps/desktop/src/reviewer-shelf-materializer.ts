@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import * as path from "node:path";
-import { validateEntity, type Annotation, type Book } from "@maginalia/format";
+import type { Annotation, Book } from "@maginalia/format" with { "resolution-mode": "import" };
 import {
   createReviewerReconciliationCandidate,
   materializeReviewerReconciliationCandidate,
@@ -15,8 +15,26 @@ import {
   type ReviewerReconciliationPending
 } from "./reviewer-shelf-reconciliation";
 
+type ValidateEntity = typeof import("@maginalia/format", { with: { "resolution-mode": "import" } })["validateEntity"];
+
+let validateEntityPromise: Promise<ValidateEntity> | undefined;
+
+function loadValidateEntity(): Promise<ValidateEntity> {
+  validateEntityPromise ??= import("@maginalia/format").then((format) => format.validateEntity);
+  return validateEntityPromise;
+}
+
 export interface ReviewerShelfMetadataLookup {
-  (isbn13: string): Promise<{ readonly status: "ok"; readonly metadata: OpenBdBookMetadata } | { readonly status: string }>;
+  (isbn13: string): Promise<
+    | { readonly status: "ok"; readonly metadata: OpenBdBookMetadata }
+    | { readonly status: string }
+  >;
+}
+
+function hasCompleteMetadata(
+  value: Awaited<ReturnType<ReviewerShelfMetadataLookup>>,
+): value is { readonly status: "ok"; readonly metadata: OpenBdBookMetadata } {
+  return value.status === "ok" && "metadata" in value;
 }
 
 export interface MaterializationResult {
@@ -43,6 +61,12 @@ function safeConfiguredDirectory(root: string, value: unknown, fallback: string)
   return inside(root, resolved) ? resolved : null;
 }
 
+function isMissingFile(error: unknown): boolean {
+  return error !== null
+    && typeof error === "object"
+    && (error as { code?: unknown }).code === "ENOENT";
+}
+
 async function writeJsonAtomic(target: string, value: unknown): Promise<void> {
   const temporary = `${target}.${randomUUID()}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -58,7 +82,7 @@ function aliasFor(annotation: Annotation): ExistingAlias | undefined {
     : undefined;
 }
 
-async function existingAliases(directory: string): Promise<Map<string, ExistingAlias>> {
+async function existingAliases(directory: string, validateEntity: ValidateEntity): Promise<Map<string, ExistingAlias>> {
   const aliases = new Map<string, ExistingAlias>();
   let entries: string[];
   try { entries = await readdir(directory); } catch { return aliases; }
@@ -84,6 +108,7 @@ export async function materializeReviewerRecords(
   records: readonly ApprovedReviewerRecord[],
   lookupMetadata: ReviewerShelfMetadataLookup
 ): Promise<MaterializationResult> {
+  const validateEntity = await loadValidateEntity();
   let library: unknown;
   try { library = JSON.parse(await readFile(path.join(shelfRoot, "library.json"), "utf8")); } catch {
     throw new Error("The selected Private Shelf has no readable library.json.");
@@ -96,7 +121,7 @@ export async function materializeReviewerRecords(
   const annotationsDirectory = safeConfiguredDirectory(shelfRoot, config.annotationsPath, "annotations");
   if (booksDirectory === null || annotationsDirectory === null) throw new Error("The Private Shelf paths are invalid.");
   await Promise.all([mkdir(booksDirectory, { recursive: true }), mkdir(annotationsDirectory, { recursive: true })]);
-  const aliases = await existingAliases(annotationsDirectory);
+  const aliases = await existingAliases(annotationsDirectory, validateEntity);
   const pending: ReviewerReconciliationPending[] = [];
   let materialized = 0;
   let unchanged = 0;
@@ -104,11 +129,11 @@ export async function materializeReviewerRecords(
 
   for (const record of records) {
     const metadata = await lookupMetadata(record.isbn13);
-    if (metadata.status !== "ok") {
+    if (!hasCompleteMetadata(metadata)) {
       pending.push({ kind: "pending", code: "openbd-metadata-missing", reviewerAnnotationId: record.annotationId });
       continue;
     }
-    const candidate = createReviewerReconciliationCandidate(record, metadata.metadata);
+    const candidate = await createReviewerReconciliationCandidate(record, metadata.metadata);
     if (candidate.kind === "pending") { pending.push(candidate); continue; }
     const existing = aliases.get(candidate.reviewerAnnotationId);
     if (existing) {
@@ -116,16 +141,28 @@ export async function materializeReviewerRecords(
       else conflicts += 1;
       continue;
     }
-    const output = materializeReviewerReconciliationCandidate(candidate);
+    const output = await materializeReviewerReconciliationCandidate(candidate);
     if (output.kind === "pending") { pending.push(output); continue; }
     const bookPath = path.join(booksDirectory, `${output.book.isbn13}.json`);
     try {
       const present = validateEntity("book", JSON.parse(await readFile(bookPath, "utf8")));
       if (!present.valid || present.value.id !== output.book.id) { conflicts += 1; continue; }
-    } catch {
+    } catch (error: unknown) {
+      // Only absence permits a new canonical Book. A malformed or unreadable
+      // existing file is user data, not an invitation to overwrite it.
+      if (!isMissingFile(error)) { conflicts += 1; continue; }
       await writeJsonAtomic(bookPath, output.book as Book);
     }
-    await writeJsonAtomic(path.join(annotationsDirectory, `${output.annotation.id.replace(":", "-")}.json`), output.annotation);
+    const annotationPath = path.join(annotationsDirectory, `${output.annotation.id.replace(":", "-")}.json`);
+    try {
+      await readFile(annotationPath);
+      // A generated ID must never replace an unrelated existing Annotation.
+      conflicts += 1;
+      continue;
+    } catch (error: unknown) {
+      if (!isMissingFile(error)) { conflicts += 1; continue; }
+    }
+    await writeJsonAtomic(annotationPath, output.annotation);
     aliases.set(candidate.reviewerAnnotationId, { annotation: output.annotation, digest: candidate.digest });
     materialized += 1;
   }

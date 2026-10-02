@@ -35,19 +35,19 @@ function openBdMetadata(overrides: Partial<OpenBdBookMetadata> = {}): OpenBdBook
   };
 }
 
-function candidateFor(
+async function candidateFor(
   record: unknown = reviewerRecord(),
   metadata: unknown = openBdMetadata()
-): ReviewerReconciliationCandidate {
-  const result = createReviewerReconciliationCandidate(record, metadata);
+): Promise<ReviewerReconciliationCandidate> {
+  const result = await createReviewerReconciliationCandidate(record, metadata);
   if (result.kind !== "candidate") throw new Error(`Expected candidate, received ${result.code}.`);
   return result;
 }
 
 describe("Reviewer to Format v0.1 reconciliation core", () => {
-  it("keeps Japanese quotation/comment text exact and stores the Reviewer UUID as an opaque private alias", () => {
+  it("keeps Japanese quotation/comment text exact and stores the Reviewer UUID as an opaque private alias", async () => {
     const idGenerator = vi.fn(() => `ann:${FORMAT_ULID}`);
-    const candidate = candidateFor();
+    const candidate = await candidateFor();
 
     expect(candidate.book).toEqual({
       type: "book",
@@ -78,7 +78,7 @@ describe("Reviewer to Format v0.1 reconciliation core", () => {
     expect(candidate.annotation).not.toHaveProperty("comment");
     expect(idGenerator).not.toHaveBeenCalled();
 
-    const materialized = materializeReviewerReconciliationCandidate(candidate, idGenerator);
+    const materialized = await materializeReviewerReconciliationCandidate(candidate, idGenerator);
     expect(idGenerator).toHaveBeenCalledTimes(1);
     expect(materialized.kind).toBe("materialized");
     if (materialized.kind !== "materialized") return;
@@ -88,19 +88,19 @@ describe("Reviewer to Format v0.1 reconciliation core", () => {
     expect(validateEntity("annotation", materialized.annotation).valid).toBe(true);
   });
 
-  it("validates ISBN-13 checksum and approval state before creating a candidate", () => {
-    expect(createReviewerReconciliationCandidate(
+  it("validates ISBN-13 checksum and approval state before creating a candidate", async () => {
+    expect(await createReviewerReconciliationCandidate(
       reviewerRecord({ isbn13: "9780306406158" }), openBdMetadata({ isbn13: "9780306406158" })
     )).toMatchObject({ kind: "pending", code: "invalid-isbn13" });
-    expect(createReviewerReconciliationCandidate(
+    expect(await createReviewerReconciliationCandidate(
       { ...reviewerRecord(), reviewState: "NEEDS_REVIEW" }, openBdMetadata()
     )).toMatchObject({ kind: "pending", code: "reviewer-not-approved" });
-    expect(createReviewerReconciliationCandidate(
+    expect(await createReviewerReconciliationCandidate(
       reviewerRecord({ annotationId: "not-a-uuid" }), openBdMetadata()
     )).toMatchObject({ kind: "pending", code: "invalid-reviewer-annotation-id" });
   });
 
-  it("requires matching openBD ISBN, nonempty title/authors, and valid optional fields", () => {
+  it("requires matching openBD ISBN, nonempty title/authors, and valid optional fields", async () => {
     const invalidCases: readonly [unknown, string][] = [
       [undefined, "openbd-metadata-missing"],
       [openBdMetadata({ isbn13: "9780134685991" }), "openbd-isbn-mismatch"],
@@ -112,13 +112,13 @@ describe("Reviewer to Format v0.1 reconciliation core", () => {
       [{ ...openBdMetadata(), year: -1 }, "invalid-openbd-year"]
     ];
     for (const [metadata, code] of invalidCases) {
-      expect(createReviewerReconciliationCandidate(reviewerRecord(), metadata)).toMatchObject({
+      expect(await createReviewerReconciliationCandidate(reviewerRecord(), metadata)).toMatchObject({
         kind: "pending",
         code
       });
     }
 
-    const withoutOptionalFields = candidateFor(reviewerRecord(), {
+    const withoutOptionalFields = await candidateFor(reviewerRecord(), {
       isbn13: ISBN,
       title: "本の題名",
       authors: ["著者"]
@@ -127,8 +127,8 @@ describe("Reviewer to Format v0.1 reconciliation core", () => {
     expect(withoutOptionalFields.book).not.toHaveProperty("year");
   });
 
-  it("leaves noninteger page labels pending when no legal Format locator is supplied", () => {
-    const result = createReviewerReconciliationCandidate(
+  it("leaves noninteger page labels pending when no legal Format locator is supplied", async () => {
+    const result = await createReviewerReconciliationCandidate(
       reviewerRecord({ pageLabel: "前付け xiv" }), openBdMetadata()
     );
     expect(result).toMatchObject({
@@ -142,14 +142,14 @@ describe("Reviewer to Format v0.1 reconciliation core", () => {
 
   it.each(["0", "42a", " 42", "42 ", "四十二", "９", "9007199254740992"]) (
     "does not coerce page label %j to a numeric Format page",
-    (pageLabel) => {
-      expect(createReviewerReconciliationCandidate(
+    async (pageLabel) => {
+      expect(await createReviewerReconciliationCandidate(
         reviewerRecord({ pageLabel }), openBdMetadata()
       )).toMatchObject({ kind: "pending", code: "pending-location", pageLabel });
     }
   );
 
-  it("computes a stable digest and candidate for the same consumed Reviewer/openBD fields", () => {
+  it("computes a stable digest and candidate for the same consumed Reviewer/openBD fields", async () => {
     const first = reviewerRecord();
     const reordered = {
       comment: first.comment,
@@ -162,8 +162,8 @@ describe("Reviewer to Format v0.1 reconciliation core", () => {
       title: "ignored Reviewer title"
     };
     const metadata = openBdMetadata();
-    const firstCandidate = candidateFor(first, metadata);
-    const secondCandidate = candidateFor(reordered, {
+    const firstCandidate = await candidateFor(first, metadata);
+    const secondCandidate = await candidateFor(reordered, {
       year: metadata.year,
       publisher: metadata.publisher,
       authors: [...metadata.authors],
@@ -173,19 +173,19 @@ describe("Reviewer to Format v0.1 reconciliation core", () => {
 
     expect(secondCandidate).toEqual(firstCandidate);
     expect(firstCandidate.digest).toMatch(/^sha256:[0-9a-f]{64}$/u);
-    expect(candidateFor(reviewerRecord({ quote: "別の引用" }), metadata).digest).not.toBe(firstCandidate.digest);
+    expect((await candidateFor(reviewerRecord({ quote: "別の引用" }), metadata)).digest).not.toBe(firstCandidate.digest);
   });
 
-  it("uses the Format ULID generator only during materialization and rejects invalid generated IDs", () => {
-    const candidate = candidateFor();
+  it("uses the Format ULID generator only during materialization and rejects invalid generated IDs", async () => {
+    const candidate = await candidateFor();
     const invalidIdGenerator = vi.fn(() => `ann:${REVIEWER_ANNOTATION_UUID}`);
-    const result = materializeReviewerReconciliationCandidate(candidate, invalidIdGenerator);
+    const result = await materializeReviewerReconciliationCandidate(candidate, invalidIdGenerator);
     expect(invalidIdGenerator).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ kind: "pending", code: "invalid-generated-annotation-id" });
   });
 
-  it("uses the Format ULID generator by default on first materialization", () => {
-    const result = materializeReviewerReconciliationCandidate(candidateFor());
+  it("uses the Format ULID generator by default on first materialization", async () => {
+    const result = await materializeReviewerReconciliationCandidate(await candidateFor());
     expect(result.kind).toBe("materialized");
     if (result.kind !== "materialized") return;
     expect(result.annotation.id).toMatch(/^ann:[0-7][0-9A-HJKMNP-TV-Z]{25}$/u);

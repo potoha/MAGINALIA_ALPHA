@@ -13,20 +13,21 @@ describe("reference refresh IPC boundary", () => {
     expect(isResolveReferencesRequest({ text: "x".repeat(MAX_REFERENCE_RESOLUTION_TEXT_CHARS + 1) })).toBe(false);
   });
 
-  it("passes only text to the main-process resolver", async () => {
-    const resolve = vi.fn(async (text: string) => ({
+  it("passes the sender owner and document text to the main-process resolver", async () => {
+    const owner = {};
+    const resolve = vi.fn(async (_owner: object, text: string) => ({
       kind: "resolved" as const,
       sources: [],
       resolved: [],
       unresolved: text.length === 0 ? [] : []
     }));
     const handlers = createReferenceHandlers({ resolve });
-    await expect(handlers.resolveReferences({ sender: {} }, { text: "doc" })).resolves.toMatchObject({
+    await expect(handlers.resolveReferences({ sender: owner }, { text: "doc" })).resolves.toMatchObject({
       kind: "resolved"
     });
-    expect(resolve).toHaveBeenCalledWith("doc");
+    expect(resolve).toHaveBeenCalledWith(owner, "doc");
     await expect(handlers.resolveReferences(
-      { sender: {} },
+      { sender: owner },
       { text: "doc", url: "https://attacker.invalid" }
     )).resolves.toMatchObject({ kind: "error", code: "invalid-request" });
     expect(resolve).toHaveBeenCalledTimes(1);

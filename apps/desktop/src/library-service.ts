@@ -126,6 +126,7 @@ const IGNORED_DIRECTORY_NAMES = new Set([
 ]);
 const OPAQUE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ANNOTATION_ID = /^ann:[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+const REVIEWER_ANNOTATION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const INVALID_OWNER: LibraryFailure = {
   kind: "error",
@@ -236,6 +237,32 @@ interface LibrarySnapshot {
   readonly library: LibrarySummary;
   readonly records: readonly LibraryRecord[];
 }
+
+interface PrivateShelfLibrarySnapshot extends LibrarySnapshot {
+  readonly privateShelf: true;
+  readonly canonicalRoot: string;
+  readonly entities: CanonicalShelfEntities;
+}
+
+type OwnedLibrarySnapshot = LibrarySnapshot | PrivateShelfLibrarySnapshot;
+
+/** Format entities retained only for main-process QuoteRef resolution. */
+export interface CanonicalShelfEntities {
+  readonly annotations: readonly Annotation[];
+  readonly books: readonly Book[];
+}
+
+/** Main-process-only view of the currently selected Private Shelf. */
+export interface ActivePrivateShelf {
+  readonly kind: "private-shelf";
+  readonly privateShelf: true;
+  readonly library: LibrarySummary;
+  readonly canonicalRoot: string;
+  readonly records: readonly LibraryRecord[];
+  readonly entities: CanonicalShelfEntities;
+}
+
+export type ActivePrivateShelfResult = ActivePrivateShelf | LibraryFailure;
 
 function isOwner(value: unknown): value is object {
   return value !== null && typeof value === "object";
@@ -547,6 +574,68 @@ function toSnapshotRecord(annotation: Annotation, book: Book): LibraryRecord {
   return Object.freeze(record);
 }
 
+function reviewerAnnotationAlias(annotation: Annotation): string | undefined {
+  const deviceMetadata = annotation.deviceMetadata;
+  if (deviceMetadata === undefined) return undefined;
+  const reviewer = deviceMetadata.maginaliaReviewer;
+  if (reviewer === null || typeof reviewer !== "object" || Array.isArray(reviewer)) return undefined;
+  const alias = (reviewer as { annotationId?: unknown }).annotationId;
+  return typeof alias === "string" && REVIEWER_ANNOTATION_UUID.test(alias) ? alias : undefined;
+}
+
+function toCanonicalShelfAnnotation(annotation: Annotation): Annotation {
+  // The canonical snapshot is an in-memory projection, not a normalization
+  // pass. Preserve either legal Format v0.1 location representation exactly;
+  // in particular, an existing stable path must not be converted to `{}`.
+  const location: Annotation["location"] = Object.freeze({
+    ...(annotation.location.page === undefined ? {} : { page: annotation.location.page }),
+    ...(annotation.location.path === undefined ? {} : { path: annotation.location.path }),
+  });
+  const canonical: Annotation = {
+    type: "annotation",
+    version: "0.1",
+    id: annotation.id,
+    source: annotation.source,
+    location,
+    quote: annotation.quote,
+  };
+  const reviewerAlias = reviewerAnnotationAlias(annotation);
+  if (reviewerAlias !== undefined) {
+    canonical.deviceMetadata = Object.freeze({
+      maginaliaReviewer: Object.freeze({ annotationId: reviewerAlias }),
+    });
+  }
+  return Object.freeze(canonical);
+}
+
+function toCanonicalShelfBook(book: Book): Book {
+  const canonical: Book = {
+    type: "book",
+    version: "0.1",
+    id: book.id,
+    title: book.title,
+    authors: Object.freeze([...book.authors]) as unknown as string[],
+    isbn13: book.isbn13,
+  };
+  if (book.publisher !== undefined) canonical.publisher = book.publisher;
+  if (book.year !== undefined) canonical.year = book.year;
+  return Object.freeze(canonical);
+}
+
+function toCanonicalShelfEntities(
+  annotations: readonly Annotation[],
+  books: readonly Book[],
+): CanonicalShelfEntities {
+  return Object.freeze({
+    annotations: Object.freeze(annotations.map(toCanonicalShelfAnnotation)),
+    books: Object.freeze(books.map(toCanonicalShelfBook)),
+  });
+}
+
+function isPrivateShelfSnapshot(snapshot: OwnedLibrarySnapshot): snapshot is PrivateShelfLibrarySnapshot {
+  return "privateShelf" in snapshot && snapshot.privateShelf === true;
+}
+
 function cloneRecords(records: readonly LibraryRecord[]): readonly LibraryRecord[] {
   return Object.freeze(records.map((record) => {
     const copy: {
@@ -628,10 +717,32 @@ function isLibraryFailure(value: LibrarySnapshot | LibraryFailure): value is Lib
  * immutable snapshot per owner and exposes no filesystem path or raw entity.
  */
 export class LibraryService {
-  private readonly snapshots = new Map<string, LibrarySnapshot>();
-  private readonly owners = new Map<object, LibrarySnapshot>();
+  private readonly snapshots = new Map<string, OwnedLibrarySnapshot>();
+  private readonly owners = new Map<object, OwnedLibrarySnapshot>();
 
   public async openForOwner(owner: unknown, rootPath: unknown): Promise<LibraryOpenResult> {
+    return this.openRootForOwner(owner, rootPath, false);
+  }
+
+  /** Open a selected Private Shelf and retain its canonical root for main-process use. */
+  public async openPrivateShelfForOwner(owner: unknown, rootPath: unknown): Promise<LibraryOpenResult> {
+    return this.openRootForOwner(owner, rootPath, true);
+  }
+
+  /** Reload the currently selected Private Shelf while keeping its Library ID stable. */
+  public async reloadForOwner(owner: unknown): Promise<LibraryOpenResult> {
+    if (!isOwner(owner)) return INVALID_OWNER;
+    const previous = this.owners.get(owner);
+    if (!previous || !isPrivateShelfSnapshot(previous)) return LIBRARY_NOT_OWNED;
+    return this.openRootForOwner(owner, previous.canonicalRoot, true, previous);
+  }
+
+  private async openRootForOwner(
+    owner: unknown,
+    rootPath: unknown,
+    privateShelf: boolean,
+    expectedSnapshot?: PrivateShelfLibrarySnapshot,
+  ): Promise<LibraryOpenResult> {
     if (!isOwner(owner)) return INVALID_OWNER;
     if (typeof rootPath !== "string" || rootPath.length === 0 || !path.isAbsolute(rootPath)) {
       return INVALID_ROOT;
@@ -699,16 +810,34 @@ export class LibraryService {
       records.push(toSnapshotRecord(annotation.value, book));
     }
 
-    const libraryId = randomUUID();
+    if (expectedSnapshot !== undefined && this.owners.get(owner) !== expectedSnapshot) return LIBRARY_NOT_OWNED;
+
+    const libraryId = expectedSnapshot?.library.libraryId ?? randomUUID();
     const librarySummary: LibrarySummary = Object.freeze({
       libraryId,
       displayName: library?.name ?? (path.basename(canonicalRoot) || "Library"),
     });
-    const snapshot: LibrarySnapshot = {
-      owner,
-      library: librarySummary,
-      records: Object.freeze(records),
-    };
+    let snapshot: OwnedLibrarySnapshot;
+    if (privateShelf) {
+      const entities = toCanonicalShelfEntities(
+        annotations.map(({ value }) => value),
+        books.map(({ value }) => value),
+      );
+      snapshot = Object.freeze({
+        owner,
+        library: librarySummary,
+        records: Object.freeze(records),
+        privateShelf: true,
+        canonicalRoot,
+        entities,
+      });
+    } else {
+      snapshot = Object.freeze({
+        owner,
+        library: librarySummary,
+        records: Object.freeze(records),
+      });
+    }
     const previous = this.owners.get(owner);
     if (previous) this.snapshots.delete(previous.library.libraryId);
     this.owners.set(owner, snapshot);
@@ -720,6 +849,21 @@ export class LibraryService {
       recordCount: records.length,
       issueCount: issues.value,
     };
+  }
+
+  /** Return a frozen main-process view of the current selected Private Shelf. */
+  public getActivePrivateShelfForOwner(owner: unknown): ActivePrivateShelfResult {
+    if (!isOwner(owner)) return INVALID_OWNER;
+    const snapshot = this.owners.get(owner);
+    if (!snapshot || !isPrivateShelfSnapshot(snapshot)) return LIBRARY_NOT_OWNED;
+    return Object.freeze({
+      kind: "private-shelf",
+      privateShelf: true,
+      library: snapshot.library,
+      canonicalRoot: snapshot.canonicalRoot,
+      records: cloneRecords(snapshot.records),
+      entities: toCanonicalShelfEntities(snapshot.entities.annotations, snapshot.entities.books),
+    });
   }
 
   /**
@@ -783,7 +927,7 @@ export class LibraryService {
     return toResolvedQuotation(record, snapshot.library.libraryId);
   }
 
-  private findSnapshot(owner: unknown, libraryId: unknown): LibrarySnapshot | LibraryFailure {
+  private findSnapshot(owner: unknown, libraryId: unknown): OwnedLibrarySnapshot | LibraryFailure {
     if (!isOwner(owner)) return INVALID_OWNER;
     if (!isOpaqueId(libraryId)) return {
       kind: "error",

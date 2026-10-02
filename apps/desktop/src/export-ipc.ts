@@ -97,7 +97,7 @@ export interface ExportHandlers {
 
 export interface ExportHandlerDependencies {
   readonly sessions: MarkdownFileService;
-  readonly resolve: (text: string) => ReviewerResolutionResult | Promise<ReviewerResolutionResult>;
+  readonly resolve: (owner: object, text: string) => ReviewerResolutionResult | Promise<ReviewerResolutionResult>;
   readonly showSaveDialog: (
     defaultPath: string,
     event: ExportInvokeEvent
@@ -308,7 +308,7 @@ export class ExportService {
 
     let resolution: ReviewerResolutionResult;
     try {
-      resolution = await this.dependencies.resolve(request.currentText);
+      resolution = await this.dependencies.resolve(owner, request.currentText);
     } catch {
       return resolutionFailure("Quotation resolution failed. The Markdown was not exported.");
     }

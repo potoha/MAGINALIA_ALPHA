@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -14,6 +14,7 @@ const BOOK_ID = "isbn:9781234567890";
 const SECOND_BOOK_ID = "isbn:9781234567891";
 const ANNOTATION_ID = "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const SECOND_ANNOTATION_ID = "ann:01ARZ3NDEKTSV4RRFFQ69G5FAW";
+const REVIEWER_ANNOTATION_UUID = "123e4567-e89b-42d3-a456-426614174000";
 
 async function withTempDirectory<T>(run: (directory: string) => Promise<T>): Promise<T> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "maginalia-library-"));
@@ -60,6 +61,35 @@ function annotation(
     privateMemo: "private search memo",
     unpublishedComments: ["not published"],
   };
+}
+
+async function createPrivateShelf(root: string): Promise<void> {
+  await mkdir(path.join(root, "books"), { recursive: true });
+  await mkdir(path.join(root, "annotations"), { recursive: true });
+  await writeJson(path.join(root, "library.json"), {
+    type: "library",
+    version: "0.1",
+    name: "Selected Shelf",
+    booksPath: "books",
+    annotationsPath: "annotations",
+  });
+  await writeJson(path.join(root, "books", "book.json"), {
+    ...book(),
+    publisher: "青土社",
+    year: 1990,
+    coverImage: "private/cover.jpg",
+  });
+  await writeJson(path.join(root, "annotations", "annotation.json"), {
+    ...annotation(),
+    quote: "canonical quote",
+    deviceMetadata: {
+      maginaliaReviewer: {
+        version: 1,
+        annotationId: REVIEWER_ANNOTATION_UUID,
+        digest: "private provenance digest",
+      },
+    },
+  });
 }
 
 function opened(result: LibraryOpenResult): LibraryOpened {
@@ -149,6 +179,134 @@ describe("LibraryService", () => {
       const result = opened(await new LibraryService().openForOwner({}, root));
       expect(result.library.displayName).toBe("fallback-library");
       expect(result.recordCount).toBe(1);
+    });
+  });
+
+  it("retains a minimized canonical entity view only through the Private Shelf open seam", async () => {
+    await withTempDirectory(async (directory) => {
+      const root = path.join(directory, "研究用 Shelf");
+      await createPrivateShelf(root);
+
+      const owner = {};
+      const service = new LibraryService();
+      const ordinary = opened(await service.openForOwner(owner, root));
+      expect(service.getActivePrivateShelfForOwner(owner)).toMatchObject({
+        kind: "error",
+        code: "library-not-owned",
+      });
+
+      const selected = opened(await service.openPrivateShelfForOwner(owner, root));
+      expect(selected.library.libraryId).not.toBe(ordinary.library.libraryId);
+      expect(JSON.stringify(selected)).not.toContain(root);
+      const publicRecords = records(service.getRecordsForOwner(owner, selected.library.libraryId));
+      expect(JSON.stringify(publicRecords)).not.toContain(root);
+      expect(JSON.stringify(publicRecords)).not.toContain(REVIEWER_ANNOTATION_UUID);
+      expect(JSON.stringify(publicRecords)).not.toContain("private provenance digest");
+      expect(JSON.stringify(publicRecords)).not.toContain("private/cover.jpg");
+
+      const active = service.getActivePrivateShelfForOwner(owner);
+      expect(active).toMatchObject({
+        kind: "private-shelf",
+        privateShelf: true,
+        library: { libraryId: selected.library.libraryId, displayName: "Selected Shelf" },
+        records: [{ annotationId: ANNOTATION_ID, sourceId: BOOK_ID, quote: "canonical quote" }],
+        entities: {
+          annotations: [{
+            id: ANNOTATION_ID,
+            source: BOOK_ID,
+            deviceMetadata: { maginaliaReviewer: { annotationId: REVIEWER_ANNOTATION_UUID } },
+          }],
+          books: [{
+            id: BOOK_ID,
+            isbn13: BOOK_ID.slice("isbn:".length),
+            title: "Book",
+            publisher: "青土社",
+            year: 1990,
+          }],
+        },
+      });
+      if (active.kind !== "private-shelf") throw new Error("Expected the selected Private Shelf view");
+      expect(active.canonicalRoot).toBe(await realpath(root));
+      const retained = JSON.stringify(active.entities);
+      expect(retained).not.toContain("capture/page.jpg");
+      expect(retained).not.toContain("private/original.png");
+      expect(retained).not.toContain("private provenance digest");
+      expect(retained).not.toContain("private/cover.jpg");
+    });
+  });
+
+  it("reloads the same selected Private Shelf into its existing Library ID", async () => {
+    await withTempDirectory(async (directory) => {
+      const root = path.join(directory, "reload-library");
+      await createPrivateShelf(root);
+
+      const owner = {};
+      const service = new LibraryService();
+      const first = opened(await service.openPrivateShelfForOwner(owner, root));
+      await writeJson(path.join(root, "books", "second-book.json"), book(SECOND_BOOK_ID, "Second Book"));
+      await writeJson(
+        path.join(root, "annotations", "second-annotation.json"),
+        annotation(SECOND_ANNOTATION_ID, SECOND_BOOK_ID, "new after materialization"),
+      );
+
+      const reloaded = opened(await service.reloadForOwner(owner));
+      expect(reloaded.library.libraryId).toBe(first.library.libraryId);
+      expect(reloaded.recordCount).toBe(2);
+      expect(service.getActivePrivateShelfForOwner(owner)).toMatchObject({
+        kind: "private-shelf",
+        library: { libraryId: first.library.libraryId },
+        records: expect.arrayContaining([
+          expect.objectContaining({ annotationId: ANNOTATION_ID }),
+          expect.objectContaining({ annotationId: SECOND_ANNOTATION_ID, quote: "new after materialization" }),
+        ]),
+        entities: {
+          annotations: expect.arrayContaining([
+            expect.objectContaining({ id: ANNOTATION_ID }),
+            expect.objectContaining({ id: SECOND_ANNOTATION_ID }),
+          ]),
+        },
+      });
+      expect(records(service.getRecordsForOwner(owner, first.library.libraryId))).toHaveLength(2);
+    });
+  });
+
+  it("reopens canonical Reviewer aliases and Book metadata after a service restart on a Unicode root", async () => {
+    await withTempDirectory(async (directory) => {
+      const root = path.join(directory, "資料", "引用棚");
+      await createPrivateShelf(root);
+
+      const firstService = new LibraryService();
+      const first = opened(await firstService.openPrivateShelfForOwner({}, root));
+      const restartedService = new LibraryService();
+      const ownerAfterRestart = {};
+      const reopened = opened(await restartedService.openPrivateShelfForOwner(ownerAfterRestart, root));
+      expect(reopened.library.libraryId).not.toBe(first.library.libraryId);
+      const active = restartedService.getActivePrivateShelfForOwner(ownerAfterRestart);
+      expect(active).toMatchObject({
+        kind: "private-shelf",
+        entities: {
+          annotations: [{
+            id: ANNOTATION_ID,
+            deviceMetadata: { maginaliaReviewer: { annotationId: REVIEWER_ANNOTATION_UUID } },
+          }],
+          books: [{
+            id: BOOK_ID,
+            isbn13: BOOK_ID.slice("isbn:".length),
+            title: "Book",
+            authors: ["Author"],
+            publisher: "青土社",
+            year: 1990,
+          }],
+        },
+      });
+      if (active.kind !== "private-shelf") throw new Error("Expected the reopened Private Shelf view");
+      expect(active.canonicalRoot).toBe(await realpath(root));
+      expect(active.records[0]).toMatchObject({
+        annotationId: ANNOTATION_ID,
+        sourceId: BOOK_ID,
+        title: "Book",
+        authors: ["Author"],
+      });
     });
   });
 
