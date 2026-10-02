@@ -128,14 +128,25 @@ function tableStart(lines: readonly string[], index: number): {
     : { header, alignments: alignments as readonly MarkdownTableAlignment[] };
 }
 
-function isStructuralInline(nodes: readonly MarkdownInline[]): boolean {
-  return nodes.some((node) => {
-    if (node.kind === "local-media" || node.kind === "quote-ref") return true;
-    if (node.kind === "link" && node.embed !== undefined) return true;
-    if (node.kind === "strong" || node.kind === "emphasis") return isStructuralInline(node.children);
-    if (node.kind === "link" || node.kind === "internal-link") return isStructuralInline(node.label);
-    return false;
-  });
+function isStructuralInline(node: MarkdownInline): boolean {
+  if (node.kind === "local-media" || node.kind === "quote-ref") return true;
+  if (node.kind === "link") return node.embed !== undefined;
+  if (node.kind === "strong" || node.kind === "emphasis") {
+    return node.children.length > 0 && node.children.every(isStructuralInline);
+  }
+  return node.kind === "text" && /^\s*$/u.test(node.text);
+}
+
+function isStructuralParagraph(nodes: readonly MarkdownInline[]): boolean {
+  return nodes.some((node) => isStructuralInline(node) && node.kind !== "text")
+    && nodes.every(isStructuralInline);
+}
+
+function isTableTerminator(line: string): boolean {
+  return fenceOpening(line) !== null
+    || /^(#{1,6})\s+/u.test(line)
+    || line.startsWith(">")
+    || /^(?:[-*+]\s+|\d+\.\s+)/u.test(line);
 }
 
 function safeExternalHref(value: string): string | null {
@@ -285,7 +296,7 @@ export function parseMarkdownBlocks(
   internalLinks: PreviewInternalLinkMap = new Map(),
   media: PreviewMediaMap = new Map()
 ): readonly MarkdownBlock[] {
-  const lines = text.replace(/\r\n|\r/gu, "\n").split("\n");
+  const lines = text.replace(/^\uFEFF/u, "").replace(/\r\n|\r/gu, "\n").split("\n");
   const blocks: MarkdownBlock[] = [];
   let index = 0;
   while (index < lines.length) {
@@ -314,6 +325,7 @@ export function parseMarkdownBlocks(
       const rows: (readonly (readonly MarkdownInline[])[])[] = [];
       index += 2;
       while (index < lines.length) {
+        if (isTableTerminator(lines[index])) break;
         const row = parseTableRow(lines[index]);
         if (row === null) break;
         const cells = row.slice(0, columnCount);
@@ -362,7 +374,7 @@ export function parseMarkdownBlocks(
       paragraph.push(lines[index++]);
     }
     const content = parseMarkdownInlines(paragraph.join("\n"), quotes, internalLinks, media);
-    blocks.push({ kind: "paragraph", content, presentation: isStructuralInline(content) ? "structural" : "prose" });
+    blocks.push({ kind: "paragraph", content, presentation: isStructuralParagraph(content) ? "structural" : "prose" });
   }
   return Object.freeze(blocks);
 }

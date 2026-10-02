@@ -1434,10 +1434,12 @@ button:focus-visible {
   padding: 0.8rem 1rem;
   border: 1px dashed #be6b52;
   color: #833524;
+  overflow-wrap: anywhere;
 }
 
 .markdown-table-wrapper {
   box-sizing: border-box;
+  width: min(100%, 54rem);
   max-width: 100%;
   max-height: min(70vh, 42rem);
   margin: 1rem 0;
@@ -1526,10 +1528,17 @@ button:focus-visible {
 .markdown-preview-document[data-writing-direction="vertical"] .rendered-quote-ref,
 .markdown-preview-document[data-writing-direction="vertical"] img,
 .markdown-preview-document[data-writing-direction="vertical"] video,
+.markdown-preview-document[data-writing-direction="vertical"] .rendered-local-media.unresolved,
 .markdown-preview-document[data-writing-direction="vertical"] .rendered-embed-card,
 .markdown-preview-document[data-writing-direction="vertical"] .markdown-table-wrapper {
   writing-mode: horizontal-tb;
   text-orientation: mixed;
+}
+
+.markdown-preview-document[data-writing-direction="vertical"] .rendered-local-media.unresolved {
+  display: block;
+  width: min(100%, 32rem);
+  min-width: min(100%, 16rem);
 }
 
 .workbench[data-editor-only="true"] .editor-area {
