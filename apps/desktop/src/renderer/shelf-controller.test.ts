@@ -8,21 +8,16 @@ import {
   type ShelfViewState,
   type ShelfWritingPort
 } from "./shelf-controller";
-import type { ReviewerQuotation, SearchShelfResult } from "../reviewer-ipc";
+import type { CanonicalShelfSearchReference, SearchShelfResult } from "../shelf-ipc";
 
-const quotation: ReviewerQuotation = {
-  annotationId: "2b6c4e0c-7268-4da0-9ad3-f5d1c8b7f2a1",
-  captureId: "capture-1",
-  pageId: "page-1",
-  sourcePageId: "source-page-1",
-  isbn13: "9780306406157",
+const quotation: CanonicalShelfSearchReference = {
+  annotationId: "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  sourceId: "isbn:9780306406157",
+  quote: "これは日本語の引用です。",
+  privateMemo: "研究メモ",
   title: "検索の本",
   authors: ["山田太郎"],
-  quote: "これは日本語の引用です。",
-  pageLabel: "42",
-  comment: "レビューコメント",
-  reviewState: "APPROVED",
-  reviewedAtMs: 10
+  page: 42
 };
 
 class FakeView implements ShelfControllerView {
@@ -73,7 +68,7 @@ function makeHarness(result: SearchShelfResult = { kind: "results", results: [qu
 }
 
 describe("ShelfController", () => {
-  it("maps Reviewer results and inserts only annotationId as a normal QuoteRef", async () => {
+  it("maps canonical Shelf references and inserts only the canonical ann ID", async () => {
     const { controller, view, writing } = makeHarness();
     await controller.search("日本語");
 
@@ -83,7 +78,7 @@ describe("ShelfController", () => {
 
     expect(writing.insertions).toEqual([{
       target: writing.target,
-      ref: { quoteId: quotation.annotationId, mode: "normal" }
+      ref: { quoteId: "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV", mode: "normal" }
     }]);
     expect(view.state.error).toBeNull();
   });
@@ -96,15 +91,15 @@ describe("ShelfController", () => {
     expect(view.state.error).toBeNull();
   });
 
-  it("surfaces Reviewer errors and unavailable state", async () => {
+  it("surfaces a missing selected Private Shelf", async () => {
     const { controller, view } = makeHarness({
       kind: "error",
-      code: "reviewer-unavailable",
-      message: "Reviewer unavailable."
+      code: "shelf-not-selected",
+      message: "Activate a Private Shelf repository before searching."
     });
     await controller.search("q");
     expect(view.state.status).toBe("error");
-    expect(view.state.error).toBe("Reviewer unavailable.");
+    expect(view.state.error).toBe("Activate a Private Shelf repository before searching.");
   });
 
   it("does not call Writing when no document is open", async () => {

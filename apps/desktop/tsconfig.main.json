@@ -69,6 +69,8 @@
     "src/repository-materialization-worker.ts",
     "src/repository-materialization-worker-launcher.ts",
     "src/repository-materialization-worker-smoke.ts",
-    "src/repository-materialization-worker-test-fixture.ts"
+    "src/repository-materialization-worker-test-fixture.ts",
+    "src/legacy-quotes-bootstrap.ts",
+    "src/legacy-quotes-bootstrap-cli.ts"
   ]
 }

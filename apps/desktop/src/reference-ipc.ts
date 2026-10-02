@@ -62,15 +62,15 @@ export function isResolveReferencesRequest(value: unknown): value is ResolveRefe
 }
 
 export interface ReferenceResolutionDependencies {
-  readonly resolve: (text: string) => ResolveReferencesResult | Promise<ResolveReferencesResult>;
+  readonly resolve: (owner: object, text: string) => ResolveReferencesResult | Promise<ResolveReferencesResult>;
 }
 
 export function createReferenceHandlers(dependencies: ReferenceResolutionDependencies): ReferenceHandlers {
   return {
-    resolveReferences: async (_event, request, ...args) => {
+    resolveReferences: async (event, request, ...args) => {
       if (args.length !== 0 || !isResolveReferencesRequest(request)) return INVALID_REQUEST;
       try {
-        return await dependencies.resolve(request.text);
+        return await dependencies.resolve(event.sender, request.text);
       } catch (_error: unknown) {
         return Object.freeze({
           kind: "error",

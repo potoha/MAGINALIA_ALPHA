@@ -21,10 +21,12 @@ import {
   type SearchLibraryResult
 } from "./library-ipc";
 import {
+  REFRESH_SHELF_CHANNEL,
   SEARCH_SHELF_CHANNEL,
   type SearchShelfRequest,
-  type SearchShelfResult
-} from "./reviewer-ipc";
+  type SearchShelfResult,
+  type RefreshShelfResult
+} from "./shelf-ipc";
 import {
   CLOSE_REVIEWER_VIEW_CHANNEL,
   OPEN_REVIEWER_VIEW_CHANNEL,
@@ -188,7 +190,7 @@ export {
   SEARCH_LIBRARY_CHANNEL,
   RESOLVE_QUOTATION_FOR_INSERT_CHANNEL
 } from "./library-ipc";
-export { SEARCH_SHELF_CHANNEL } from "./reviewer-ipc";
+export { SEARCH_SHELF_CHANNEL, REFRESH_SHELF_CHANNEL } from "./shelf-ipc";
 export {
   CLOSE_REVIEWER_VIEW_CHANNEL,
   OPEN_REVIEWER_VIEW_CHANNEL,
@@ -237,10 +239,10 @@ export type {
   SearchLibraryResult
 } from "./library-ipc";
 export type {
-  ReviewerQuotation,
   SearchShelfRequest,
-  SearchShelfResult
-} from "./reviewer-ipc";
+  SearchShelfResult,
+  RefreshShelfResult
+} from "./shelf-ipc";
 export type { SearchProjectMarkdownRequest, SearchProjectMarkdownResult } from "./project-search-ipc";
 export type {
   ResolveReferencesRequest,
@@ -345,6 +347,7 @@ export interface MarkdownPreloadApi {
   searchLibrary?(request: SearchLibraryRequest): Promise<SearchLibraryResult>;
   resolveQuotationForInsert?(request: ResolveQuotationForInsertRequest): Promise<ResolveQuotationForInsertResult>;
   searchShelf?(request: SearchShelfRequest): Promise<SearchShelfResult>;
+  refreshShelf?(): Promise<RefreshShelfResult>;
   /** Opens the one managed Reviewer View; it accepts no renderer-controlled URL. */
   openReviewerView?(): Promise<ReviewerViewOpenResult>;
   closeReviewerView?(): Promise<ReviewerViewCloseResult>;
@@ -400,6 +403,7 @@ export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   searchLibrary(request: SearchLibraryRequest): Promise<SearchLibraryResult>;
   resolveQuotationForInsert(request: ResolveQuotationForInsertRequest): Promise<ResolveQuotationForInsertResult>;
   searchShelf(request: SearchShelfRequest): Promise<SearchShelfResult>;
+  refreshShelf(): Promise<RefreshShelfResult>;
   openReviewerView(): Promise<ReviewerViewOpenResult>;
   closeReviewerView(): Promise<ReviewerViewCloseResult>;
   setReviewerViewBounds(bounds: ReviewerViewBounds): Promise<void>;
@@ -514,6 +518,7 @@ export function createMarkdownPreloadApi(
     resolveQuotationForInsert: (request) =>
       invoke(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL, request) as Promise<ResolveQuotationForInsertResult>,
     searchShelf: (request) => invoke(SEARCH_SHELF_CHANNEL, request) as Promise<SearchShelfResult>,
+    refreshShelf: () => invoke(REFRESH_SHELF_CHANNEL) as Promise<RefreshShelfResult>,
     openReviewerView: () => invoke(OPEN_REVIEWER_VIEW_CHANNEL) as Promise<ReviewerViewOpenResult>,
     closeReviewerView: () => invoke(CLOSE_REVIEWER_VIEW_CHANNEL) as Promise<ReviewerViewCloseResult>,
     setReviewerViewBounds: (bounds) => invoke(SET_REVIEWER_VIEW_BOUNDS_CHANNEL, bounds) as Promise<void>,

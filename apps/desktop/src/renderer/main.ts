@@ -30,13 +30,10 @@ import { ContextMenuSurface } from "./context-menu-surface";
 import { UtilityBar } from "./utility-bar";
 import { ModContributionBridge } from "./mod-contribution-bridge";
 import {
-  DEFAULT_SHELF_SEARCH_FIELDS,
   ProjectSearchController,
-  filterShelfResults,
   insertProjectSearchSelection,
-  shelfFilterValidation,
+  normalizeSearchText,
   type ProjectSearchState,
-  type ShelfSearchField,
   type UnifiedSearchMode
 } from "./unified-search";
 import type { DocumentSessionChange } from "./document-sessions";
@@ -255,15 +252,15 @@ app.innerHTML = `
           <section id="library-navigation" class="library-navigation view-panel" aria-labelledby="library-heading">
             <div class="library-heading-row">
               <h2 id="library-heading">Shelf</h2>
-              <strong id="library-name">Reviewer Shelf</strong>
+              <strong id="library-name">Private Shelf</strong>
               <button id="open-reviewer" type="button" title="取り込む・確認する">取り込む・確認する</button>
-              <button id="refresh-shelf" type="button" title="Refresh approved quotations">Shelfを更新</button>
+              <button id="refresh-shelf" type="button" title="Sync Reviewer approvals into the selected Private Shelf">Shelfを更新</button>
               <button id="choose-library" type="button" hidden aria-hidden="true">Choose local Library</button>
               <button id="refresh-references" type="button" disabled>Refresh References</button>
             </div>
             <form id="library-search-form" class="library-search-form">
               <label class="visually-hidden" for="library-query">Search quotations</label>
-              <input id="library-query" type="search" autocomplete="off" placeholder="Search quotations...">
+              <input id="library-query" type="search" autocomplete="off" placeholder="Search Private Shelf...">
               <button id="library-search" type="submit">Search</button>
             </form>
             <div id="unified-search-modes" class="unified-search-modes" role="group" aria-label="Search source">
@@ -272,12 +269,12 @@ app.innerHTML = `
               <button type="button" data-unified-search-mode="project" aria-pressed="false">Project</button>
             </div>
             <fieldset id="shelf-search-fields" class="shelf-search-fields">
-              <legend>Shelf fields</legend>
+              <legend>Private Shelf fields</legend>
               <label><input type="checkbox" data-shelf-search-field="quote" checked> 引用文</label>
-              <label><input type="checkbox" data-shelf-search-field="comment" checked> コメント</label>
+              <label><input type="checkbox" data-shelf-search-field="privateMemo" checked> 個人メモ</label>
               <label><input type="checkbox" data-shelf-search-field="title" checked> 書名</label>
               <label><input type="checkbox" data-shelf-search-field="authors" checked> 著者</label>
-              <label><input type="checkbox" data-shelf-search-field="pageLabel" checked> ページ</label>
+              <label><input type="checkbox" data-shelf-search-field="page" checked> ページ</label>
             </fieldset>
             <p id="unified-search-status" class="unified-search-status" role="status" aria-live="polite"></p>
             <section id="project-search-panel" class="project-search-panel" aria-label="Project search results" hidden>
@@ -290,11 +287,11 @@ app.innerHTML = `
                 <p id="project-search-error" class="library-error" role="alert" hidden></p>
               </div>
             </section>
-            <p id="library-status" class="library-status" role="status" aria-live="polite">Search approved Reviewer quotations.</p>
+            <p id="library-status" class="library-status" role="status" aria-live="polite">Search the selected Private Shelf.</p>
             <p id="library-error" class="library-error" role="alert" aria-live="assertive" hidden></p>
             <p id="references-status" class="references-status" data-state="empty" role="status" aria-live="polite">Open a document to refresh References.</p>
             <p id="references-unresolved" class="references-unresolved">Unresolved: 0</p>
-            <ul id="library-results" class="library-results" aria-label="Shelf quotations"></ul>
+            <ul id="library-results" class="library-results" aria-label="Private Shelf quotations"></ul>
           </section>
           <section id="mod-contributions" class="mod-contributions" aria-label="Mod contributions">
             <div id="mod-view-host"></div>
@@ -439,7 +436,9 @@ const repositoryHistoryStatus = requiredElement<HTMLElement>("#repository-histor
 const repositoryHistoryError = requiredElement<HTMLElement>("#repository-history-error");
 
 let unifiedSearchMode: UnifiedSearchMode = "all";
-let shelfSearchFields = new Set<ShelfSearchField>(DEFAULT_SHELF_SEARCH_FIELDS);
+type ShelfSearchField = "quote" | "privateMemo" | "title" | "authors" | "page";
+const SHELF_SEARCH_FIELDS: readonly ShelfSearchField[] = ["quote", "privateMemo", "title", "authors", "page"];
+let shelfSearchFields = new Set<ShelfSearchField>(SHELF_SEARCH_FIELDS);
 let selectedProjectSearchText: string | null = null;
 let projectSearchInsertionTarget: CapturedInsertionTarget | null = null;
 
@@ -780,11 +779,33 @@ commandRegistry.register({
   category: "Shelf",
   keywords: ["reviewer", "approved", "quotation", "refresh"]
 }, async () => {
-  if (legacyLibraryActive) {
-    await libraryController?.search();
-  } else {
-    await shelfController?.search(libraryQuery.value);
+  const refreshShelf = window.maginalia.refreshShelf;
+  if (typeof refreshShelf !== "function") {
+    libraryStatus.dataset.state = "error";
+    libraryStatus.textContent = "Shelf refresh is unavailable.";
+    libraryError.textContent = "Shelf refresh is unavailable in this Desktop runtime.";
+    libraryError.hidden = false;
+    return;
   }
+  let result: Awaited<ReturnType<typeof refreshShelf>>;
+  try {
+    result = await refreshShelf();
+  } catch (_error: unknown) {
+    libraryStatus.dataset.state = "error";
+    libraryStatus.textContent = "Shelf refresh failed.";
+    libraryError.textContent = "The canonical Private Shelf could not be refreshed.";
+    libraryError.hidden = false;
+    return;
+  }
+  if (result.kind === "error") {
+    libraryStatus.dataset.state = "error";
+    libraryStatus.textContent = "Shelf refresh failed.";
+    libraryError.textContent = result.message;
+    libraryError.hidden = false;
+    return;
+  }
+
+  await shelfController?.search(libraryQuery.value);
 });
 commandRegistry.register({
   id: "maginalia.link.openInTab",
@@ -1674,20 +1695,36 @@ const repositoryView: RepositoryControllerView = {
   }
 };
 
+function filteredCanonicalShelfResults(state: ShelfViewState): readonly ShelfViewState["results"][number][] {
+  if (shelfSearchFields.size === 0) return [];
+  const query = normalizeSearchText(state.query);
+  if (query.length === 0) return state.results;
+  return state.results.filter((reference) => (
+    (shelfSearchFields.has("quote") && normalizeSearchText(reference.quote).includes(query))
+    || (shelfSearchFields.has("privateMemo") && normalizeSearchText(reference.privateMemo ?? "").includes(query))
+    || (shelfSearchFields.has("title") && normalizeSearchText(reference.title).includes(query))
+    || (shelfSearchFields.has("authors") && reference.authors.some((author) => normalizeSearchText(author).includes(query)))
+    || (shelfSearchFields.has("page") && reference.page !== undefined && normalizeSearchText(String(reference.page)).includes(query))
+  ));
+}
+
+function shelfFilterError(): string | null {
+  return shelfSearchFields.size === 0 ? "Choose at least one Private Shelf field to search." : null;
+}
+
 function renderShelfState(state: ShelfViewState): void {
-  libraryName.textContent = "Reviewer Shelf";
+  libraryName.textContent = "Private Shelf";
   libraryQuery.value = state.query;
   libraryQuery.disabled = state.status === "searching";
   librarySearchButton.disabled = state.status === "searching";
 
-  const filteredResults = filterShelfResults(state.results, state.query, shelfSearchFields);
-  const filterError = shelfFilterValidation(shelfSearchFields);
-  const reviewerTotal = state.total ?? state.results.length;
+  const filteredResults = filteredCanonicalShelfResults(state);
+  const filterError = shelfFilterError();
   const statusMessage = state.status === "searching"
-    ? "Searching Reviewer…"
+    ? "Searching Private Shelf…"
     : state.status === "ready"
-      ? filterError ?? `${filteredResults.length} matching quotation${filteredResults.length === 1 ? "" : "s"}${reviewerTotal > state.results.length ? ` (first ${state.results.length} of ${reviewerTotal})` : ""}`
-      : "Search approved Reviewer quotations.";
+      ? filterError ?? `${filteredResults.length} Private Shelf result${filteredResults.length === 1 ? "" : "s"}`
+      : "Search the selected Private Shelf.";
   libraryStatus.dataset.state = state.status;
   libraryStatus.textContent = statusMessage;
   libraryError.textContent = filterError ?? state.error ?? "";
@@ -1705,19 +1742,20 @@ function renderShelfState(state: ShelfViewState): void {
     quote.textContent = `「${reference.quote}」`;
     details.append(quote);
     const title = document.createElement("strong");
-    title.textContent = reference.title ?? reference.isbn13 ?? "Untitled work";
+    title.textContent = reference.title;
     details.append(title);
     const metadata = document.createElement("span");
     const authors = reference.authors.join("、");
     metadata.textContent = [
       authors,
-      reference.pageLabel.length > 0 ? `p. ${reference.pageLabel}` : ""
+      reference.sourceId,
+      reference.page === undefined ? "" : `p. ${reference.page}`
     ].filter((part) => part.length > 0).join(" / ");
     details.append(metadata);
-    if (reference.comment.length > 0) {
+    if (reference.privateMemo !== undefined && reference.privateMemo.length > 0) {
       const comment = document.createElement("span");
-      comment.className = "shelf-comment";
-      comment.textContent = reference.comment;
+      comment.className = "shelf-private-memo";
+      comment.textContent = reference.privateMemo;
       details.append(comment);
     }
 
@@ -1785,75 +1823,6 @@ function renderReferencesState(state: ReferencesViewState): void {
   refreshReferencesButton.disabled = state.status === "empty" || state.status === "refreshing";
 }
 
-/**
- * Keep the owner-bound local Library port usable for repository/legacy flows.
- * Normal Shelf search never calls this renderer; repository handoff and the
- * existing quotation smoke deliberately use the old local backend.
- */
-let legacyLibraryActive = false;
-
-function renderLegacyLibraryState(state: LibraryViewState): void {
-  legacyLibraryActive = state.library !== null;
-  libraryName.textContent = state.library?.displayName ?? "No Library selected";
-  libraryQuery.value = state.query;
-  libraryQuery.disabled = state.library === null;
-  librarySearchButton.disabled = state.library === null
-    || state.status === "opening"
-    || state.status === "searching"
-    || state.status === "resolving";
-  chooseLibraryButton.disabled = state.status === "opening";
-
-  const statusMessage = state.status === "opening"
-    ? "Opening Library…"
-    : state.status === "searching"
-      ? "Searching…"
-      : state.status === "resolving"
-        ? "Preparing quotation…"
-        : state.status === "ready"
-          ? `${state.references.length} reference${state.references.length === 1 ? "" : "s"}`
-          : state.library === null
-            ? "Choose a Library to search quotations."
-            : "Ready to search quotations.";
-  libraryStatus.dataset.state = state.status;
-  libraryStatus.textContent = statusMessage;
-  libraryError.textContent = state.error ?? "";
-  libraryError.hidden = state.error === null;
-
-  libraryResults.replaceChildren();
-  for (const reference of state.references) {
-    const item = document.createElement("li");
-    item.className = "library-result";
-
-    const details = document.createElement("div");
-    details.className = "library-reference";
-    const title = document.createElement("strong");
-    title.textContent = reference.title;
-    details.append(title);
-    const metadata = document.createElement("span");
-    metadata.textContent = [
-      reference.authors.join("、"),
-      reference.sourceId,
-      reference.page === undefined ? "" : `p. ${reference.page}`
-    ].filter((part) => part.length > 0).join(" / ");
-    details.append(metadata);
-
-    const actions = document.createElement("div");
-    actions.className = "library-result-actions";
-    const select = document.createElement("button");
-    select.type = "button";
-    select.textContent = state.selectedAnnotationId === reference.annotationId ? "Selected" : "Select";
-    select.setAttribute("aria-pressed", String(state.selectedAnnotationId === reference.annotationId));
-    select.addEventListener("click", () => libraryController?.selectReference(reference.annotationId));
-    const insert = document.createElement("button");
-    insert.type = "button";
-    insert.textContent = "Insert";
-    insert.addEventListener("click", () => void libraryController?.insertReference(reference.annotationId));
-    actions.append(select, insert);
-    item.append(details, actions);
-    libraryResults.append(item);
-  }
-}
-
 const shelfView: ShelfControllerView = {
   setShelfState(state: ShelfViewState): void {
     renderShelfState(state);
@@ -1863,9 +1832,7 @@ const shelfView: ShelfControllerView = {
 // LibraryController remains a local-backend compatibility port for explicit
 // repository Shelf handoffs. It never owns the Normal Shelf DOM.
 const legacyLibraryView: LibraryControllerView = {
-  setLibraryState(state: LibraryViewState): void {
-    renderLegacyLibraryState(state);
-  }
+  setLibraryState(_state: LibraryViewState): void {}
 };
 
 function getWorkspaceApi(): WorkspaceNavigationApi | null {
@@ -2388,12 +2355,8 @@ function updateUnifiedSearchMode(mode: UnifiedSearchMode): void {
 
 async function runUnifiedSearch(): Promise<void> {
   const query = libraryQuery.value;
-  if (legacyLibraryActive) {
-    await libraryController?.search();
-    return;
-  }
-  const filterError = shelfFilterValidation(shelfSearchFields);
-  if ((unifiedSearchMode === "all" || unifiedSearchMode === "shelf") && filterError !== null) {
+  if ((unifiedSearchMode === "all" || unifiedSearchMode === "shelf") && shelfSearchFields.size === 0) {
+    const filterError = "Choose at least one Private Shelf field to search.";
     libraryError.textContent = filterError;
     libraryError.hidden = false;
     return;
@@ -2421,7 +2384,7 @@ for (const button of unifiedSearchModeButtons) {
 for (const input of shelfSearchFieldInputs) {
   input.addEventListener("change", () => {
     const field = input.dataset.shelfSearchField;
-    if (field !== "quote" && field !== "comment" && field !== "title" && field !== "authors" && field !== "pageLabel") return;
+    if (field !== "quote" && field !== "privateMemo" && field !== "title" && field !== "authors" && field !== "page") return;
     if (input.checked) shelfSearchFields.add(field);
     else shelfSearchFields.delete(field);
     if (shelfController) renderShelfState(shelfController.getState());
@@ -2450,7 +2413,7 @@ if (!shelfApi) {
   libraryQuery.disabled = true;
   librarySearchButton.disabled = true;
   libraryStatus.textContent = "Shelf is unavailable.";
-  libraryError.textContent = "Reviewer is unavailable. Try opening 取り込む・確認する again.";
+  libraryError.textContent = "Activate a Private Shelf repository before searching.";
   libraryError.hidden = false;
 } else {
   shelfController = new ShelfController({
@@ -2459,11 +2422,7 @@ if (!shelfApi) {
     view: shelfView
   });
   libraryQuery.addEventListener("input", () => {
-    if (legacyLibraryActive) {
-      libraryController?.setQuery(libraryQuery.value);
-    } else {
-      shelfController?.setQuery(libraryQuery.value);
-    }
+    shelfController?.setQuery(libraryQuery.value);
   });
   librarySearchForm.addEventListener("submit", (event) => {
     event.preventDefault();

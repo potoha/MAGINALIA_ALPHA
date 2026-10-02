@@ -61,7 +61,6 @@ import {
   RESOLVE_REFERENCES_CHANNEL,
   SAVE_MARKDOWN_CHANNEL,
   SEARCH_LIBRARY_CHANNEL,
-  SEARCH_SHELF_CHANNEL
 } from "./preload-api";
 import {
   isSaveMarkdownRequest,
@@ -71,9 +70,10 @@ import {
 } from "./markdown-ipc";
 import { LibraryService } from "./library-service";
 import { createLibraryHandlers } from "./library-ipc";
-import { createReviewerHandlers, createReviewerSearchAdapter } from "./reviewer-ipc";
+import { createShelfHandlers, REFRESH_SHELF_CHANNEL, SEARCH_SHELF_CHANNEL } from "./shelf-ipc";
+import { createReviewerShelfSyncAdapter } from "./reviewer-shelf-sync";
 import { createReferenceHandlers } from "./reference-ipc";
-import { createReviewerResolutionAdapter } from "./reviewer-resolution";
+import { resolveShelfQuoteRefs } from "./shelf-resolution";
 import { ReviewerProcessManager, UserDataReviewerWorkspaceLocator } from "./reviewer-process-manager";
 import { createReviewerEmbeddedHost, isSafeReviewerViewBounds } from "./reviewer-embedded-view-host";
 import {
@@ -424,17 +424,28 @@ const libraryHandlers = createLibraryHandlers({
     return libraryService.resolveQuotationForInsertForOwner(owner, libraryId, annotationId);
   }
 });
-const reviewerSearch = createReviewerSearchAdapter({
-  // The renderer can provide only a search string.  Main starts/verifies the
-  // managed loopback Reviewer and never exposes its workspace or URL choice.
+const reviewerShelfSync = createReviewerShelfSyncAdapter({
+  // Reviewer is started only by the explicit Shelf refresh operation. Its
+  // loopback origin stays in the main process and never reaches the renderer.
   getBaseUrl: getManagedReviewerBaseUrl
 });
-const reviewerHandlers = createReviewerHandlers({ search: reviewerSearch });
-const referenceResolution = createReviewerResolutionAdapter({
-  // The resolver calls this only when a valid QuoteRef is present, so normal
-  // Markdown export does not acquire a Reviewer dependency.
-  getBaseUrl: getManagedReviewerBaseUrl
+const shelfHandlers = createShelfHandlers({
+  getActivePrivateShelf: (owner) => libraryService.getActivePrivateShelfForOwner(owner),
+  searchPrivateShelf: (owner, libraryId, query) => libraryService.searchForOwner(owner, libraryId, query),
+  synchronizePrivateShelf: reviewerShelfSync,
+  reloadPrivateShelf: (owner) => libraryService.reloadForOwner(owner)
 });
+const referenceResolution = async (owner: object, documentText: string) => {
+  const activeShelf = libraryService.getActivePrivateShelfForOwner(owner);
+  if (activeShelf.kind === "error") {
+    return {
+      kind: "error" as const,
+      code: "invalid-request" as const,
+      message: "Activate a Private Shelf repository before resolving references."
+    };
+  }
+  return resolveShelfQuoteRefs(documentText, activeShelf.entities);
+};
 const referenceHandlers = createReferenceHandlers({ resolve: referenceResolution });
 let exportDialogSequence = 0;
 const exportHandlers = createExportHandlers({
@@ -503,7 +514,7 @@ const repositoryHandlers = createRepositoryHandlers({
     return repositoryService.openHistoryCopyForOwner(owner, repositoryId, historyId, destinationParentRoot);
   },
   openDocument: (owner, root) => documentWorkspaceService.openForOwner(owner, root),
-  openLibrary: (owner, root) => libraryService.openForOwner(owner, root)
+  openLibrary: (owner, root) => libraryService.openPrivateShelfForOwner(owner, root)
 });
 const INVALID_REQUEST: MarkdownFailure = {
   kind: "error",
@@ -974,7 +985,8 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(OPEN_LIBRARY_CHANNEL, libraryHandlers.openLibrary);
   ipcMain.handle(SEARCH_LIBRARY_CHANNEL, libraryHandlers.searchLibrary);
   ipcMain.handle(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL, libraryHandlers.resolveQuotationForInsert);
-  ipcMain.handle(SEARCH_SHELF_CHANNEL, reviewerHandlers.searchShelf);
+  ipcMain.handle(SEARCH_SHELF_CHANNEL, shelfHandlers.searchShelf);
+  ipcMain.handle(REFRESH_SHELF_CHANNEL, shelfHandlers.refreshShelf);
   ipcMain.handle(OPEN_REVIEWER_VIEW_CHANNEL, () => getReviewerViewController().open());
   ipcMain.handle(CLOSE_REVIEWER_VIEW_CHANNEL, () => getReviewerViewController().close());
   ipcMain.handle(SET_REVIEWER_VIEW_BOUNDS_CHANNEL, (event, bounds: unknown) => {
@@ -1028,6 +1040,7 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(SEARCH_LIBRARY_CHANNEL);
   ipcMain.removeHandler(RESOLVE_QUOTATION_FOR_INSERT_CHANNEL);
   ipcMain.removeHandler(SEARCH_SHELF_CHANNEL);
+  ipcMain.removeHandler(REFRESH_SHELF_CHANNEL);
   ipcMain.removeHandler(OPEN_REVIEWER_VIEW_CHANNEL);
   ipcMain.removeHandler(CLOSE_REVIEWER_VIEW_CHANNEL);
   ipcMain.removeHandler(SET_REVIEWER_VIEW_BOUNDS_CHANNEL);
