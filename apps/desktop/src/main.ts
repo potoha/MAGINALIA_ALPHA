@@ -6,6 +6,7 @@ import {
   ipcMain,
   shell,
   type IpcMainInvokeEvent,
+  type OpenDialogReturnValue,
   type WebContents
 } from "electron";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -72,7 +73,8 @@ import { LibraryService } from "./library-service";
 import { createLibraryHandlers } from "./library-ipc";
 import { createShelfHandlers, REFRESH_SHELF_CHANNEL, SEARCH_SHELF_CHANNEL } from "./shelf-ipc";
 import { ConfiguredPrivateShelf } from "./configured-private-shelf";
-import { SHELF_LOCATION_FILE_NAME, ShelfLocationRegistry } from "./shelf-location-registry";
+import { ShelfLocationRegistry } from "./shelf-location-registry";
+import { resolveDesktopConfigurationPaths, type DesktopConfigurationPaths } from "./desktop-configuration";
 import { createReviewerShelfSyncAdapter } from "./reviewer-shelf-sync";
 import { createReferenceHandlers } from "./reference-ipc";
 import { resolveShelfQuoteRefs } from "./shelf-resolution";
@@ -209,10 +211,43 @@ const projectService = new ProjectService(
 );
 const projectAssetService = new ProjectAssetService(documentWorkspaceService);
 const libraryService = new LibraryService();
-const configuredPrivateShelf = new ConfiguredPrivateShelf(
-  new ShelfLocationRegistry(path.join(app.getPath("userData"), SHELF_LOCATION_FILE_NAME)),
-  libraryService,
-);
+let desktopConfigurationPaths: DesktopConfigurationPaths | undefined;
+function getDesktopConfigurationPaths(): DesktopConfigurationPaths {
+  // Electron chooses userData; resolving lazily ensures that path is final and
+  // avoids accidentally binding Shelf discovery to bootstrap cwd/state.
+  desktopConfigurationPaths ??= resolveDesktopConfigurationPaths(app.getPath("userData"));
+  return desktopConfigurationPaths;
+}
+
+let configuredPrivateShelf: ConfiguredPrivateShelf | undefined;
+function getConfiguredPrivateShelf(): ConfiguredPrivateShelf {
+  configuredPrivateShelf ??= new ConfiguredPrivateShelf(
+    new ShelfLocationRegistry(getDesktopConfigurationPaths().shelfLocationPath),
+    libraryService,
+  );
+  return configuredPrivateShelf;
+}
+
+async function getActivePrivateShelfForDesktop(owner: object) {
+  const configured = getConfiguredPrivateShelf();
+  const active = await configured.getActive(owner);
+  if (active.kind !== "error" || !await configured.isPrivateShelfUnconfigured()) return active;
+
+  // This is intentionally a one-purpose recovery path, not a Settings UI.
+  // It runs only after a user invokes the normal Shelf flow and only when the
+  // explicit registry says its Private Shelf is null.
+  let selection: OpenDialogReturnValue;
+  try {
+    selection = await dialog.showOpenDialog({
+      title: "Choose Private Shelf",
+      properties: ["openDirectory"],
+    });
+  } catch {
+    return active;
+  }
+  if (selection.canceled || selection.filePaths.length !== 1) return active;
+  return configured.configureAndOpen(owner, selection.filePaths[0]);
+}
 // The main process is the only owner of the Reviewer process, workspace, and
 // loopback origin.  It is deliberately lazy: ordinary Project/Workdesk work
 // never needs a Python runtime merely to open MAGINALIA.
@@ -220,6 +255,9 @@ let reviewerProcessManager: ReviewerProcessManager | undefined;
 function getReviewerProcessManager(): ReviewerProcessManager {
   reviewerProcessManager ??= new ReviewerProcessManager({
     workspaceLocator: new UserDataReviewerWorkspaceLocator(app.getPath("userData")),
+    // Reviewer keeps its existing explicit CLI/config boundary. The Desktop
+    // supplies the deterministic, absolute application configuration path.
+    ndlocrConfigPath: getDesktopConfigurationPaths().ndlocrConfigPath,
     // Normal Desktop operation never adopts a renderer- or developer-selected
     // endpoint. The two pre-existing deterministic Electron smoke harnesses
     // are the sole exception: their process command line explicitly selects
@@ -436,13 +474,13 @@ const reviewerShelfSync = createReviewerShelfSyncAdapter({
   getBaseUrl: getManagedReviewerBaseUrl
 });
 const shelfHandlers = createShelfHandlers({
-  getActivePrivateShelf: (owner) => configuredPrivateShelf.getActive(owner),
+  getActivePrivateShelf: (owner) => getActivePrivateShelfForDesktop(owner),
   searchPrivateShelf: (owner, libraryId, query) => libraryService.searchForOwner(owner, libraryId, query),
   synchronizePrivateShelf: reviewerShelfSync,
-  reloadPrivateShelf: (owner) => configuredPrivateShelf.reload(owner)
+  reloadPrivateShelf: (owner) => getConfiguredPrivateShelf().reload(owner)
 });
 const referenceResolution = async (owner: object, documentText: string) => {
-  const activeShelf = await configuredPrivateShelf.getActive(owner);
+  const activeShelf = await getConfiguredPrivateShelf().getActive(owner);
   if (activeShelf.kind === "error") {
     return {
       kind: "error" as const,
@@ -1097,7 +1135,7 @@ function createMainWindow(): BrowserWindow {
   const cloudOwner = window.webContents;
   // Resolve once at window creation so an existing explicit registry is ready
   // for normal Shelf use. The shared binding also reloads it on demand.
-  void configuredPrivateShelf.getActive(window.webContents);
+  void getConfiguredPrivateShelf().getActive(window.webContents);
 
   const rendererPath = path.join(__dirname, "..", "renderer", "index.html");
 

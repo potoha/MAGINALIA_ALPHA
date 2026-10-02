@@ -61,12 +61,33 @@ export class ConfiguredPrivateShelf {
     return opened.kind === "opened" ? opened : this.configuredOpenFailure(opened);
   }
 
+  /** True only for a valid registry whose Private Shelf is explicitly null. */
+  public async isPrivateShelfUnconfigured(): Promise<boolean> {
+    const loaded = await this.locations.load();
+    return loaded.kind === "loaded" && loaded.config.privateShelf.registry === null;
+  }
+
+  /**
+   * Bind a user-selected canonical Shelf only after LibraryService accepts it,
+   * then persist just its registry location and return the normal owner view.
+   */
+  public async configureAndOpen(owner: object, registry: string): Promise<ActivePrivateShelfResult> {
+    const opened = await this.libraries.openConfiguredPrivateShelfForOwner(owner, registry);
+    if (opened.kind !== "opened") return this.configuredOpenFailure(opened);
+
+    const saved = await this.locations.savePrivateShelfRegistry(registry);
+    if (saved.kind === "error") return configurationFailure(saved.message);
+    return this.libraries.getActivePrivateShelfForOwner(owner);
+  }
+
   private async loadPrivateShelf(): Promise<string | LibraryFailure> {
     const loaded = await this.locations.load();
     if (loaded.kind === "error") return configurationFailure(loaded.message);
     const registry = loaded.config.privateShelf.registry;
     if (registry === null) {
-      return configurationFailure("Private Shelf is not configured: private_shelf.registry is null.");
+      return configurationFailure(
+        `Private Shelf is not configured: private_shelf.registry is null.\n${this.locations.configurationPath}`,
+      );
     }
     return registry;
   }

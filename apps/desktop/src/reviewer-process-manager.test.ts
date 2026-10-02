@@ -194,6 +194,28 @@ describe("ReviewerProcessManager", () => {
     expect(manager.getStatus().baseUrl).toBeNull();
   });
 
+  it("passes an explicit Unicode NDLOCR configuration path to the managed Reviewer", async () => {
+    const launchStrategy = new FakeLaunchStrategy();
+    const ndlocrConfigPath = path.join(path.resolve(process.cwd()), "設定", "ndlocr.json");
+    const manager = new ReviewerProcessManager({
+      launchStrategy,
+      workspaceLocator: new FakeWorkspaceLocator(),
+      ndlocrConfigPath,
+      fetcher: vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ service: "maginalia-reviewer", contractVersion: 1 })
+      }) as unknown as Response),
+      readinessTimeoutMs: 1_000,
+      readinessPollIntervalMs: 10,
+    });
+
+    await manager.ensureReady();
+    expect(launchStrategy.lastOptions?.ndlocrConfigPath).toBe(ndlocrConfigPath);
+    expect(manager.getStatus().ndlocrConfigPath).toBe(ndlocrConfigPath);
+    await manager.shutdown();
+  });
+
   it("deduplicates concurrent ensureReady calls and starts only one child process", async () => {
     const launchStrategy = new FakeLaunchStrategy();
     const fakeFetcher: typeof fetch = vi.fn(async () => {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import stat
 import sys
 import threading
@@ -394,6 +395,12 @@ def test_ocr_pin_and_raw_provenance(tmp_path: Path) -> None:
     config.write_text(json.dumps({"engine": "NDLOCR-Lite", "version": "1.2.4", "commit": NDLOCR_LITE_COMMIT, "distributionSha256": NDLOCR_LITE_WINDOWS_SHA256, "command": ["x", "{input}", "{output}"]}), encoding="utf-8")
     with pytest.raises(OcrConfigurationError, match="1.2.3"):
         NdlocrLiteAdapter(config)
+
+
+def test_ocr_missing_configuration_reports_the_attempted_path(tmp_path: Path) -> None:
+    missing = tmp_path / "設定" / "ndlocr.json"
+    with pytest.raises(OcrConfigurationError, match=re.escape(str(missing))):
+        NdlocrLiteAdapter(missing)
 
 
 def test_ocr_accepts_official_123_json_and_output_directory(tmp_path: Path) -> None:

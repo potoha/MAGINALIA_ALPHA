@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -106,17 +106,120 @@ describe("shelf_location.yml", () => {
     });
   });
 
+  it("preserves optional URL metadata as local storage without URL validation or network access", async () => {
+    await withTempDirectory(async (directory) => {
+      const configPath = path.join(directory, SHELF_LOCATION_FILE_NAME);
+      const registryPath = path.join(directory, "資料", "引用棚");
+      await writeFile(configPath, [
+        "version: 1",
+        "private_shelf:",
+        `  registry: ${JSON.stringify(registryPath)}`,
+        "  urls:",
+        "    github: not-a-network-url",
+        "    homepage: ''",
+        "    other: ['maginalia://local', 'https://example.test/metadata']",
+        "public_shelf:",
+        "  registry: null",
+        "  urls:",
+        "    github: null",
+        "    homepage: null",
+        "    other: []",
+        "",
+      ].join("\n"), "utf8");
+
+      const sourceBeforeLoad = await readFile(configPath, "utf8");
+      await expect(new ShelfLocationRegistry(configPath).load()).resolves.toEqual({
+        kind: "loaded",
+        config: {
+          version: 1,
+          privateShelf: {
+            registry: registryPath,
+            urls: {
+              github: "not-a-network-url",
+              homepage: "",
+              other: ["maginalia://local", "https://example.test/metadata"],
+            },
+          },
+          publicShelf: { registry: null, urls: { github: null, homepage: null, other: [] } },
+        },
+      });
+      expect(await readFile(configPath, "utf8")).toBe(sourceBeforeLoad);
+    });
+  });
+
   it("rejects malformed, relative, and missing configuration without reading a Shelf", async () => {
     await withTempDirectory(async (directory) => {
       const configPath = path.join(directory, SHELF_LOCATION_FILE_NAME);
       const registry = new ShelfLocationRegistry(configPath);
-      await expect(registry.load()).resolves.toMatchObject({ kind: "error", message: expect.stringContaining("not found") });
+      await expect(registry.load()).resolves.toMatchObject({
+        kind: "error",
+        message: expect.stringContaining(configPath),
+      });
 
       await writeFile(configPath, "version: 1\nprivate_shelf:\n  registry: relative\npublic_shelf:\n  registry: null\n", "utf8");
       await expect(registry.load()).resolves.toMatchObject({ kind: "error", message: expect.stringContaining("invalid") });
 
       await writeFile(configPath, "version: [\n", "utf8");
       await expect(registry.load()).resolves.toMatchObject({ kind: "error", message: expect.stringContaining("invalid") });
+    });
+  });
+
+  it("reports the attempted configuration path when Private Shelf is explicitly absent", async () => {
+    await withTempDirectory(async (directory) => {
+      const configPath = path.join(directory, SHELF_LOCATION_FILE_NAME);
+      await writeFile(configPath, locationYaml(null), "utf8");
+      const configured = new ConfiguredPrivateShelf(new ShelfLocationRegistry(configPath), new LibraryService());
+
+      await expect(configured.getActive({})).resolves.toMatchObject({
+        kind: "error",
+        code: "invalid-library-config",
+        message: expect.stringContaining(configPath),
+      });
+    });
+  });
+
+  it("persists a user-selected canonical Shelf without changing Public Shelf or URL metadata", async () => {
+    await withTempDirectory(async (directory) => {
+      const configPath = path.join(directory, SHELF_LOCATION_FILE_NAME);
+      const shelfRoot = path.join(directory, "資料", "選択した引用棚");
+      await createCanonicalShelf(shelfRoot);
+      await writeFile(configPath, [
+        "version: 1",
+        "private_shelf:",
+        "  registry: null",
+        "  urls:",
+        "    github: private-metadata",
+        "    homepage: ''",
+        "    other: ['maginalia://private']",
+        "public_shelf:",
+        "  registry: null",
+        "  urls:",
+        "    github: public-metadata",
+        "    homepage: null",
+        "    other: ['maginalia://public']",
+        "",
+      ].join("\n"), "utf8");
+
+      const configured = new ConfiguredPrivateShelf(new ShelfLocationRegistry(configPath), new LibraryService());
+      expect(await configured.isPrivateShelfUnconfigured()).toBe(true);
+      await expect(configured.configureAndOpen({}, shelfRoot)).resolves.toMatchObject({
+        kind: "private-shelf",
+        records: [{ annotationId: ANNOTATION_ID }],
+      });
+      await expect(new ShelfLocationRegistry(configPath).load()).resolves.toEqual({
+        kind: "loaded",
+        config: {
+          version: 1,
+          privateShelf: {
+            registry: shelfRoot,
+            urls: { github: "private-metadata", homepage: "", other: ["maginalia://private"] },
+          },
+          publicShelf: {
+            registry: null,
+            urls: { github: "public-metadata", homepage: null, other: ["maginalia://public"] },
+          },
+        },
+      });
     });
   });
 
@@ -171,7 +274,7 @@ describe("shelf_location.yml", () => {
       await expect(configured.getActive(owner)).resolves.toMatchObject({
         kind: "error",
         code: "invalid-library-config",
-        message: expect.stringContaining("not found"),
+        message: expect.stringContaining(configPath),
       });
     });
   });

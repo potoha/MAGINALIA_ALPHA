@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
-import { parseDocument } from "yaml";
+import { parseDocument, stringify } from "yaml";
 
 export const SHELF_LOCATION_FILE_NAME = "shelf_location.yml";
 
@@ -47,24 +47,16 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
-function isHttpUrl(value: unknown): value is string {
-  if (typeof value !== "string" || value.length === 0) return false;
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "https:" || parsed.protocol === "http:";
-  } catch {
-    return false;
-  }
-}
-
 function parseUrls(value: unknown): ShelfUrls | undefined {
   if (value === undefined) return DEFAULT_URLS;
+  if (value === null) return DEFAULT_URLS;
   if (!isPlainRecord(value) || !hasOnlyKeys(value, ["github", "homepage", "other"])) return undefined;
-  const github = value.github;
-  const homepage = value.homepage;
-  const other = value.other;
-  if ((github !== null && !isHttpUrl(github)) || (homepage !== null && !isHttpUrl(homepage))) return undefined;
-  if (!Array.isArray(other) || !other.every(isHttpUrl)) return undefined;
+  // URL metadata is descriptive storage in this slice. It must never cause a
+  // network request or make an otherwise valid local Shelf unreadable merely
+  // because a legacy value is not a syntactically valid URL.
+  const github = typeof value.github === "string" ? value.github : null;
+  const homepage = typeof value.homepage === "string" ? value.homepage : null;
+  const other = Array.isArray(value.other) ? value.other.filter((entry): entry is string => typeof entry === "string") : [];
   return Object.freeze({ github, homepage, other: Object.freeze([...other]) });
 }
 
@@ -88,17 +80,82 @@ function parseConfig(value: unknown): ShelfLocationRegistryConfig | undefined {
   return Object.freeze({ version: 1, privateShelf, publicShelf });
 }
 
+function copyUrls(urls: ShelfUrls): ShelfUrls {
+  return Object.freeze({
+    github: urls.github,
+    homepage: urls.homepage,
+    other: Object.freeze([...urls.other]),
+  });
+}
+
+function copyLocation(location: ShelfLocation): ShelfLocation {
+  return Object.freeze({ registry: location.registry, urls: copyUrls(location.urls) });
+}
+
+function copyConfig(config: ShelfLocationRegistryConfig): ShelfLocationRegistryConfig {
+  return Object.freeze({
+    version: 1,
+    privateShelf: copyLocation(config.privateShelf),
+    publicShelf: copyLocation(config.publicShelf),
+  });
+}
+
+function withPrivateShelfRegistry(
+  config: ShelfLocationRegistryConfig,
+  registry: string,
+): ShelfLocationRegistryConfig {
+  return Object.freeze({
+    version: 1,
+    privateShelf: Object.freeze({ registry, urls: copyUrls(config.privateShelf.urls) }),
+    publicShelf: copyLocation(config.publicShelf),
+  });
+}
+
+function serializeConfig(config: ShelfLocationRegistryConfig): string {
+  return stringify({
+    version: config.version,
+    private_shelf: {
+      registry: config.privateShelf.registry,
+      urls: {
+        github: config.privateShelf.urls.github,
+        homepage: config.privateShelf.urls.homepage,
+        other: [...config.privateShelf.urls.other],
+      },
+    },
+    public_shelf: {
+      registry: config.publicShelf.registry,
+      urls: {
+        github: config.publicShelf.urls.github,
+        homepage: config.publicShelf.urls.homepage,
+        other: [...config.publicShelf.urls.other],
+      },
+    },
+  });
+}
+
 /**
- * Read-only machine-local registry location configuration. It intentionally
- * stores no Shelf data, indexes, or selected document state.
+ * Machine-local registry location configuration. It intentionally stores no
+ * Shelf data, indexes, or selected document state.
  */
 export class ShelfLocationRegistry {
-  public constructor(private readonly filePath: string) {}
+  private readonly resolvedFilePath: string;
+
+  public constructor(filePath: string) {
+    if (!path.isAbsolute(filePath)) {
+      throw new Error(`Shelf configuration path must be absolute: ${filePath}`);
+    }
+    this.resolvedFilePath = path.resolve(filePath);
+  }
+
+  /** The one deterministic path read and, after an explicit selection, updated. */
+  public get configurationPath(): string {
+    return this.resolvedFilePath;
+  }
 
   public async load(): Promise<ShelfLocationRegistryResult> {
     let source: string;
     try {
-      source = await readFile(this.filePath, "utf8");
+      source = await readFile(this.resolvedFilePath, "utf8");
     } catch (error: unknown) {
       const code = error !== null && typeof error === "object" && "code" in error
         ? (error as { readonly code?: unknown }).code
@@ -106,23 +163,48 @@ export class ShelfLocationRegistry {
       return Object.freeze({
         kind: "error",
         message: code === "ENOENT"
-          ? "Private Shelf is not configured: shelf_location.yml was not found."
-          : "Private Shelf configuration could not be read. Check shelf_location.yml.",
+          ? `Shelf configuration not found:\n${this.resolvedFilePath}`
+          : `Shelf configuration could not be read:\n${this.resolvedFilePath}`,
       });
     }
 
     try {
       const document = parseDocument(source, { prettyErrors: false });
       if (document.errors.length > 0) {
-        return Object.freeze({ kind: "error", message: "Private Shelf configuration is invalid. Check shelf_location.yml." });
+        return Object.freeze({ kind: "error", message: `Private Shelf configuration is invalid:\n${this.resolvedFilePath}` });
       }
       const config = parseConfig(document.toJS());
       if (config === undefined) {
-        return Object.freeze({ kind: "error", message: "Private Shelf configuration is invalid. Check shelf_location.yml." });
+        return Object.freeze({ kind: "error", message: `Private Shelf configuration is invalid:\n${this.resolvedFilePath}` });
       }
       return Object.freeze({ kind: "loaded", config });
     } catch {
-      return Object.freeze({ kind: "error", message: "Private Shelf configuration is invalid. Check shelf_location.yml." });
+      return Object.freeze({ kind: "error", message: `Private Shelf configuration is invalid:\n${this.resolvedFilePath}` });
+    }
+  }
+
+  /**
+   * Persist only the Private Shelf registry path while preserving Public Shelf
+   * and optional URL metadata. Callers validate/open the selected Shelf first.
+   */
+  public async savePrivateShelfRegistry(registry: string): Promise<ShelfLocationRegistryResult> {
+    if (!path.isAbsolute(registry)) {
+      return Object.freeze({
+        kind: "error",
+        message: `Private Shelf registry must be an absolute path:\n${this.resolvedFilePath}`,
+      });
+    }
+    const loaded = await this.load();
+    if (loaded.kind === "error") return loaded;
+    const config = withPrivateShelfRegistry(loaded.config, path.resolve(registry));
+    try {
+      await writeFile(this.resolvedFilePath, serializeConfig(config), "utf8");
+      return Object.freeze({ kind: "loaded", config: copyConfig(config) });
+    } catch {
+      return Object.freeze({
+        kind: "error",
+        message: `Private Shelf configuration could not be saved:\n${this.resolvedFilePath}`,
+      });
     }
   }
 }

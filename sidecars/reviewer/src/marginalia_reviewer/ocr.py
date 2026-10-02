@@ -59,7 +59,10 @@ class NdlocrLiteAdapter:
     def __init__(self, config_path: Path, timeout_seconds: int = 600) -> None:
         self.config_path = config_path
         self.timeout_seconds = timeout_seconds
-        config = load_json_object(config_path)
+        try:
+            config = load_json_object(config_path)
+        except FileNotFoundError as exc:
+            raise OcrConfigurationError(f"NDLOCR configuration not found:\n{config_path}") from exc
         if config.get("engine") != "NDLOCR-Lite" or config.get("version") != NDLOCR_LITE_VERSION:
             raise OcrConfigurationError(
                 f"NDLOCR-Lite config must pin engine=NDLOCR-Lite and version={NDLOCR_LITE_VERSION}"

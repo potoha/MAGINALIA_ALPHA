@@ -44,6 +44,8 @@ export interface ReviewerStatusSnapshot {
   readonly baseUrl: string | null;
   readonly port: number | null;
   readonly error: string | null;
+  /** Diagnostic-only attempted configuration path; it contains no secret. */
+  readonly ndlocrConfigPath: string | null;
 }
 
 export const EXPECTED_REVIEWER_SERVICE = "maginalia-reviewer";
@@ -375,7 +377,8 @@ export class ReviewerProcessManager {
       status: this.status,
       baseUrl: this.baseUrl ? this.baseUrl.href : null,
       port: this.managedPort,
-      error: this.lastError
+      error: this.lastError,
+      ndlocrConfigPath: this.ndlocrConfigPath ?? null,
     };
   }
 
