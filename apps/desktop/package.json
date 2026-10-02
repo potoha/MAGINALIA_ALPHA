@@ -36,6 +36,7 @@
     "smoke:h": "npm run build && node test/h-smoke.mjs",
     "smoke:h5": "npm run build && node test/h5-smoke.mjs",
     "smoke:worker-job": "npm run build:main && electron dist/main/repository-materialization-worker-smoke.js",
+    "migrate:legacy-quotes": "npm run build:main && node dist/main/legacy-quotes-bootstrap-cli.js",
     "start": "npm run build && electron dist/main/main.js"
   },
   "devDependencies": {
