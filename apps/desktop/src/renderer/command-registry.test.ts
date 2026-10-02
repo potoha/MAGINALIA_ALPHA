@@ -5,8 +5,9 @@ describe("CommandRegistry", () => {
   it("registers, discovers, executes and unregisters commands", async () => {
     const registry = new CommandRegistry();
     const handler = vi.fn();
-    const dispose = registry.register({ id: "maginalia.editor.bold", title: "Toggle Bold", category: "Editor", keywords: ["strong"] }, handler);
-    expect(registry.discover("strong", {}).map((item) => item.id)).toEqual(["maginalia.editor.bold"]);
+    const dispose = registry.register({ id: "maginalia.editor.bold", title: "Toggle Bold", description: "Apply bold formatting.", category: "Editor", keywords: ["strong"] }, handler);
+    expect(registry.discover("formatting", {}).map((item) => item.id)).toEqual(["maginalia.editor.bold"]);
+    expect(registry.get("maginalia.editor.bold")?.description).toBe("Apply bold formatting.");
     expect(await registry.execute("maginalia.editor.bold", {})).toEqual({ kind: "executed" });
     expect(handler).toHaveBeenCalledOnce();
     dispose();
@@ -20,6 +21,13 @@ describe("CommandRegistry", () => {
     expect(() => registry.register({ id: "maginalia.editor.bold", title: "Again" }, handler)).toThrow("already registered");
     expect(await registry.execute("maginalia.editor.bold", { "editor.hasSelection": false })).toEqual({ kind: "disabled" });
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("requires stable namespaced identifiers and normalizes a missing description", () => {
+    const registry = new CommandRegistry();
+    expect(() => registry.register({ id: "bold", title: "Bold" }, () => undefined)).toThrow("Invalid command descriptor");
+    registry.register({ id: "maginalia.editor.bold", title: "Bold" }, () => undefined);
+    expect(registry.get("maginalia.editor.bold")?.description).toBe("Bold");
   });
 
   it("isolates failing commands from other commands", async () => {

@@ -70,6 +70,7 @@ export class CommandPalette {
       item.setAttribute("role", "option");
       item.setAttribute("aria-selected", String(index === this.selected));
       item.className = "command-palette-item";
+      item.dataset.commandId = command.id;
       item.textContent = command.category ? `${command.category}: ${command.title}` : command.title;
       item.title = command.id;
       item.addEventListener("mousedown", (event) => { event.preventDefault(); void this.run(command); });

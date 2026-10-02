@@ -211,6 +211,27 @@ describe("canonical Private Shelf IPC", () => {
     expect(reloadPrivateShelf).not.toHaveBeenCalled();
   });
 
+  it("keeps configured Shelf failures actionable instead of masking them as a generic selection error", async () => {
+    const handlers = createTestHandlers({
+      getActivePrivateShelf: async () => ({
+        kind: "error",
+        code: "invalid-library-config",
+        message: "Private Shelf is not configured: shelf_location.yml was not found.",
+      }),
+    });
+
+    await expect(handlers.searchShelf({ sender: {} }, { query: "引用" })).resolves.toEqual({
+      kind: "error",
+      code: "invalid-library-config",
+      message: "Private Shelf is not configured: shelf_location.yml was not found.",
+    });
+    await expect(handlers.refreshShelf({ sender: {} })).resolves.toEqual({
+      kind: "error",
+      code: "shelf-not-selected",
+      message: "Private Shelf is not configured: shelf_location.yml was not found.",
+    });
+  });
+
   it("preserves sync failures and skips the Shelf reload", async () => {
     const reloadPrivateShelf = vi.fn(async () => ({
       kind: "opened" as const,

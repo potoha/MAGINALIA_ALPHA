@@ -3,6 +3,8 @@ import { matchesWhen, type CommandContext } from "./command-context";
 export interface CommandDescriptor {
   readonly id: string;
   readonly title: string;
+  /** Short action summary shared by Palette and future discovery surfaces. */
+  readonly description?: string;
   readonly category?: string;
   readonly keywords?: readonly string[];
   readonly when?: string;
@@ -24,9 +26,10 @@ export type CommandExecutionResult =
   | { readonly kind: "failed"; readonly error: Error };
 
 function validDescriptor(value: CommandDescriptor): boolean {
-  return /^[-a-z0-9.]+$/iu.test(value.id)
+  return /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/iu.test(value.id)
     && value.title.trim().length > 0
-    && value.id.length <= 200;
+    && value.id.length <= 200
+    && (value.description === undefined || (typeof value.description === "string" && value.description.trim().length > 0 && value.description.length <= 500));
 }
 
 /** Workbench-owned command routing with failure isolation for Core and Mods. */
@@ -37,7 +40,15 @@ export class CommandRegistry {
   public register(descriptor: CommandDescriptor, handler: CommandHandler, origin: CommandOrigin = "core"): () => void {
     if (!validDescriptor(descriptor)) throw new Error("Invalid command descriptor.");
     if (this.commands.has(descriptor.id)) throw new Error(`Command already registered: ${descriptor.id}`);
-    this.commands.set(descriptor.id, { descriptor: Object.freeze({ ...descriptor, keywords: [...(descriptor.keywords ?? [])] }), handler, origin });
+    this.commands.set(descriptor.id, {
+      descriptor: Object.freeze({
+        ...descriptor,
+        description: descriptor.description?.trim() || descriptor.title.trim(),
+        keywords: [...(descriptor.keywords ?? [])]
+      }),
+      handler,
+      origin
+    });
     this.notify();
     return () => this.unregister(descriptor.id);
   }
@@ -61,7 +72,7 @@ export class CommandRegistry {
     const normalized = query.trim().toLocaleLowerCase();
     return this.list(context).filter((descriptor) => {
       if (normalized.length === 0) return true;
-      const searchable = [descriptor.title, descriptor.category ?? "", descriptor.id, ...(descriptor.keywords ?? [])]
+      const searchable = [descriptor.title, descriptor.description ?? "", descriptor.category ?? "", descriptor.id, ...(descriptor.keywords ?? [])]
         .join(" ").toLocaleLowerCase();
       return fuzzyIncludes(searchable, normalized);
     });

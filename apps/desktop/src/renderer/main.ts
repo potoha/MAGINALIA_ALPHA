@@ -25,6 +25,7 @@ import { ContextKeyService } from "./command-context";
 import { CommandRegistry } from "./command-registry";
 import { CommandPalette } from "./command-palette";
 import { registerCoreCommands } from "./core-commands";
+import { registerWorkbenchCommands } from "./workbench-commands";
 import { ContextMenuRegistry } from "./context-menu-registry";
 import { ContextMenuSurface } from "./context-menu-surface";
 import { UtilityBar } from "./utility-bar";
@@ -535,17 +536,17 @@ for (const button of activityViewButtons) {
     const registered = workbench.getViews("primary-sidebar").some((view) => view.id === viewId)
       || workbench.getViews("secondary-sidebar").some((view) => view.id === viewId);
     if (!registered) return;
-    workbench.showView(viewId);
+    void executeCommand(`maginalia.view.show.${viewId}`);
   });
 }
-togglePrimarySidebarButton.addEventListener("click", () => workbench.execute("maginalia.view.togglePrimarySidebar"));
-toggleSecondarySidebarButton.addEventListener("click", () => workbench.execute("maginalia.view.toggleSecondarySidebar"));
-toggleActivityBarButton.addEventListener("click", () => workbench.execute("maginalia.view.toggleActivityBar"));
-toggleEditorOnlyButton.addEventListener("click", () => workbench.execute("maginalia.view.toggleEditorOnly"));
-toolbarTogglePrimarySidebarButton.addEventListener("click", () => workbench.execute("maginalia.view.togglePrimarySidebar"));
-toolbarToggleSecondarySidebarButton.addEventListener("click", () => workbench.execute("maginalia.view.toggleSecondarySidebar"));
-toolbarToggleActivityBarButton.addEventListener("click", () => workbench.execute("maginalia.view.toggleActivityBar"));
-toolbarToggleEditorOnlyButton.addEventListener("click", () => workbench.execute("maginalia.view.toggleEditorOnly"));
+togglePrimarySidebarButton.addEventListener("click", () => void executeCommand("maginalia.view.togglePrimarySidebar"));
+toggleSecondarySidebarButton.addEventListener("click", () => void executeCommand("maginalia.view.toggleSecondarySidebar"));
+toggleActivityBarButton.addEventListener("click", () => void executeCommand("maginalia.view.toggleActivityBar"));
+toggleEditorOnlyButton.addEventListener("click", () => void executeCommand("maginalia.view.toggleEditorOnly"));
+toolbarTogglePrimarySidebarButton.addEventListener("click", () => void executeCommand("maginalia.view.togglePrimarySidebar"));
+toolbarToggleSecondarySidebarButton.addEventListener("click", () => void executeCommand("maginalia.view.toggleSecondarySidebar"));
+toolbarToggleActivityBarButton.addEventListener("click", () => void executeCommand("maginalia.view.toggleActivityBar"));
+toolbarToggleEditorOnlyButton.addEventListener("click", () => void executeCommand("maginalia.view.toggleEditorOnly"));
 
 type ResizeSession = {
   region: ViewRegion;
@@ -691,6 +692,14 @@ verticalDirectionButton.addEventListener("click", () => {
 // into Monaco.  Later toolbar/menu contributions use this same registry.
 const commandContext = new ContextKeyService();
 const commandRegistry = new CommandRegistry();
+function executeCommand(id: string): Promise<void> {
+  return commandRegistry.execute(id, commandContext.snapshot()).then((result) => {
+    if (result.kind === "failed") {
+      documentStatus.dataset.state = "error";
+      documentStatus.textContent = `Command failed: ${result.error.message}`;
+    }
+  });
+}
 const updateCommandContext = (): void => {
   const current = controller.getDocumentState();
   const selection = controller.getSelection();
@@ -720,6 +729,7 @@ const updateCommandContext = (): void => {
 };
 controller.onDocumentChange(() => updateCommandContext());
 controller.onSelectionChange(() => updateCommandContext());
+registerWorkbenchCommands(commandRegistry, workbench, WORKBENCH_VIEW_MANIFEST);
 registerCoreCommands(commandRegistry, {
   writing: controller,
   setPreviewDirection: (direction) => {
@@ -728,6 +738,7 @@ registerCoreCommands(commandRegistry, {
   },
   refreshReferences: () => { void referencesController?.refresh(); },
   exportMarkdown: () => { void exportController?.exportMarkdown(); },
+  saveDocument: () => { void controller.save(); },
   contextKeys: commandContext
 });
 commandRegistry.register({
@@ -833,7 +844,7 @@ commandRegistry.register({
   title: "Show Command Palette",
   category: "Workbench",
   keywords: ["commands", "actions", "more"]
-}, () => commandPalette?.open());
+}, () => commandPalette?.isOpen() ? commandPalette.close() : commandPalette?.open());
 commandRegistry.register({
   id: "maginalia.workdesk.open",
   title: "Open Workdesk",
@@ -2648,14 +2659,12 @@ newFileForm.addEventListener("submit", (event) => {
   });
 });
 
-saveButton.addEventListener("click", () => {
-  void controller.save();
-});
+saveButton.addEventListener("click", () => void executeCommand("maginalia.document.save"));
 
 window.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "p") {
     event.preventDefault();
-    commandPalette.isOpen() ? commandPalette.close() : commandPalette.open();
+    void executeCommand("maginalia.workbench.showCommandPalette");
     return;
   }
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && /^[0-6]$/u.test(event.key)) {
@@ -2676,17 +2685,17 @@ window.addEventListener("keydown", (event) => {
     const command = commandByKey[event.key.toLowerCase()];
     if (command) {
       event.preventDefault();
-      workbench.execute(command);
+      void executeCommand(command);
       return;
     }
   }
   if (event.key === "Escape" && workbench.isEditorOnly()) {
     event.preventDefault();
-    workbench.execute("maginalia.view.toggleEditorOnly");
+    void executeCommand("maginalia.view.toggleEditorOnly");
     return;
   }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
     event.preventDefault();
-    void controller.save();
+    void executeCommand("maginalia.document.save");
   }
 }, { capture: true });

@@ -8,6 +8,7 @@ export interface CoreCommandActions {
   readonly setPreviewDirection: (direction: "horizontal" | "vertical") => void;
   readonly refreshReferences: () => void;
   readonly exportMarkdown: () => void;
+  readonly saveDocument: () => void;
   readonly contextKeys: ContextKeyService;
 }
 
@@ -39,6 +40,7 @@ export function registerCoreCommands(registry: CommandRegistry, actions: CoreCom
   register("maginalia.editor.toggleBlockquote", "Toggle Blockquote", () => currentTextEdit(actions.writing, (text, start, end) => toggleLinePrefix(text, start, end, "> ")), "Editor", ["quote", "blockquote"]);
   register("maginalia.editor.insertInternalLink", "Insert Internal Link", () => currentTextEdit(actions.writing, (text, start, end) => insertLink(text, start, end, "internal")), "Editor", ["wiki", "link"]);
   register("maginalia.editor.insertExternalLink", "Insert External Link", () => currentTextEdit(actions.writing, (text, start, end) => insertLink(text, start, end, "external")), "Editor", ["url", "link"]);
+  register("maginalia.document.save", "Save Document", actions.saveDocument, "Document", ["save"], "editor.hasDocument");
   register("maginalia.renderer.setHorizontal", "Set Horizontal Writing", () => actions.setPreviewDirection("horizontal"), "Renderer", ["horizontal", "orientation"]);
   register("maginalia.renderer.setVertical", "Set Vertical Writing", () => actions.setPreviewDirection("vertical"), "Renderer", ["vertical", "orientation"]);
   register("maginalia.references.refresh", "Refresh References", actions.refreshReferences, "References", ["bibliography", "quote"], "editor.hasDocument");

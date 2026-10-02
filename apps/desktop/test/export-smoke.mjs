@@ -155,6 +155,25 @@ try {
       }
     }
   }), "utf8");
+  await mkdir(userDataRoot, { recursive: true });
+  await writeFile(path.join(userDataRoot, "shelf_location.yml"), [
+    "version: 1",
+    "",
+    "private_shelf:",
+    `  registry: ${JSON.stringify(shelfRoot)}`,
+    "  urls:",
+    "    github: null",
+    "    homepage: null",
+    "    other: []",
+    "",
+    "public_shelf:",
+    "  registry: null",
+    "  urls:",
+    "    github: null",
+    "    homepage: null",
+    "    other: []",
+    "",
+  ].join("\n"), "utf8");
   await writeFile(path.join(projectRoot, "a.md"), Buffer.from(smokeInitialA, "utf8"));
   await writeFile(path.join(projectRoot, "b.md"), Buffer.from(initialB, "utf8"));
   // Valid signatures are enough for the bounded Project-media resolver; the

@@ -8,8 +8,13 @@ const marker = "MAGINALIA_ELECTRON_SHELF_SMOKE_OK";
 const annotationId = "2b6c4e0c-7268-4da0-9ad3-f5d1c8b7f2a1";
 const sameBookAnnotationId = "8ad9f3d2-2a9a-4f14-a2f6-6f7f3dd8a9c1";
 const secondBookAnnotationId = "b1d8f4c7-6a1e-4fd1-8c22-2d8b7e5a4f30";
-const firstIsbn13 = "9780000000002";
-const secondIsbn13 = "9780000000019";
+const canonicalAnnotationIds = [
+  "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "ann:01ARZ3NDEKTSV4RRFFQ69G5FAW",
+  "ann:01ARZ3NDEKTSV4RRFFQ69G5FAX",
+];
+const firstIsbn13 = "9780306406157";
+const secondIsbn13 = "9780131103627";
 const quote = "これは日本語の引用です。";
 const sameBookQuote = "同じ本からの二つ目の引用です。";
 const secondBookQuote = "別の本からの引用です。";
@@ -22,9 +27,9 @@ const firstPublisher = "Shelf Smoke Publisher";
 const secondPublisher = "Shelf Smoke Second Publisher";
 const firstPublishedDate = "2024";
 const secondPublishedDate = "2025";
-const markerText = `<!-- maginalia:quote-ref v1 {"quoteId":"${annotationId}","mode":"normal"} -->`;
-const sameBookMarkerText = `<!-- maginalia:quote-ref v1 {"quoteId":"${sameBookAnnotationId}","mode":"normal"} -->`;
-const secondBookMarkerText = `<!-- maginalia:quote-ref v1 {"quoteId":"${secondBookAnnotationId}","mode":"normal"} -->`;
+const markerText = `<!-- maginalia:quote-ref v1 {"quoteId":"${canonicalAnnotationIds[0]}","mode":"normal"} -->`;
+const sameBookMarkerText = `<!-- maginalia:quote-ref v1 {"quoteId":"${canonicalAnnotationIds[1]}","mode":"normal"} -->`;
+const secondBookMarkerText = `<!-- maginalia:quote-ref v1 {"quoteId":"${canonicalAnnotationIds[2]}","mode":"normal"} -->`;
 const referenceStart = "<!-- maginalia:reference-list-start v1 -->";
 const referenceEnd = "<!-- maginalia:reference-list-end v1 -->";
 const manualReferenceText = "手書きの参考メモは保持されます。";
@@ -173,18 +178,85 @@ function closeReviewerFixture(server) {
   });
 }
 
+async function createConfiguredShelf(shelfRoot, userDataRoot) {
+  await mkdir(path.join(shelfRoot, "books"), { recursive: true });
+  await mkdir(path.join(shelfRoot, "annotations"), { recursive: true });
+  await writeFile(path.join(shelfRoot, "library.json"), `${JSON.stringify({
+    type: "library",
+    version: "0.1",
+    name: "Shelf Smoke Canonical Shelf",
+    booksPath: "books",
+    annotationsPath: "annotations",
+  })}\n`, "utf8");
+
+  const books = new Map([
+    [firstIsbn13, { title, authors: [author], publisher: firstPublisher, year: Number(firstPublishedDate) }],
+    [secondIsbn13, { title: secondBookTitle, authors: [secondBookAuthor], publisher: secondPublisher, year: Number(secondPublishedDate) }],
+  ]);
+  for (const [isbn13, metadata] of books) {
+    await writeFile(path.join(shelfRoot, "books", `${isbn13}.json`), `${JSON.stringify({
+      type: "book",
+      version: "0.1",
+      id: `isbn:${isbn13}`,
+      isbn13,
+      ...metadata,
+    })}\n`, "utf8");
+  }
+
+  for (const [index, quotation] of quotations.entries()) {
+    await writeFile(path.join(shelfRoot, "annotations", `annotation-${index}.json`), `${JSON.stringify({
+      type: "annotation",
+      version: "0.1",
+      id: canonicalAnnotationIds[index],
+      source: `isbn:${quotation.isbn13}`,
+      location: { page: Number(quotation.pageLabel) },
+      quote: quotation.quote,
+      privateMemo: quotation.comment,
+      deviceMetadata: {
+        maginaliaReviewer: {
+          version: 1,
+          annotationId: quotation.annotationId,
+          digest: `sha256:shelf-smoke-${index}`,
+        },
+      },
+    })}\n`, "utf8");
+  }
+
+  await mkdir(userDataRoot, { recursive: true });
+  await writeFile(path.join(userDataRoot, "shelf_location.yml"), [
+    "version: 1",
+    "",
+    "private_shelf:",
+    `  registry: ${JSON.stringify(shelfRoot)}`,
+    "  urls:",
+    "    github: null",
+    "    homepage: null",
+    "    other: []",
+    "",
+    "public_shelf:",
+    "  registry: null",
+    "  urls:",
+    "    github: null",
+    "    homepage: null",
+    "    other: []",
+    "",
+  ].join("\n"), "utf8");
+}
+
 let temporaryDirectory;
 let reviewerFixture;
 try {
   temporaryDirectory = await mkdtemp(path.join(tmpdir(), "maginalia-shelf-smoke-"));
   const projectRoot = path.join(temporaryDirectory, "project-root");
   const userDataRoot = path.join(temporaryDirectory, "electron-user-data");
+  const shelfRoot = path.join(temporaryDirectory, "private-shelf");
   await mkdir(projectRoot);
   await writeFile(path.join(projectRoot, "manuscript.md"), Buffer.from(initialText, "utf8"));
   await writeFile(
     path.join(projectRoot, "notes.md"),
     Buffer.from("\uFEFF# Shelf notes\r\n\r\n別の原稿です。\r\n", "utf8")
   );
+  await createConfiguredShelf(shelfRoot, userDataRoot);
 
   reviewerFixture = await startReviewerFixture();
   const result = await runElectronSmoke({

@@ -729,6 +729,11 @@ export class LibraryService {
     return this.openRootForOwner(owner, rootPath, true);
   }
 
+  /** Open a registry-configured Private Shelf only when it has a Library contract. */
+  public async openConfiguredPrivateShelfForOwner(owner: unknown, rootPath: unknown): Promise<LibraryOpenResult> {
+    return this.openRootForOwner(owner, rootPath, true, undefined, true);
+  }
+
   /** Reload the currently selected Private Shelf while keeping its Library ID stable. */
   public async reloadForOwner(owner: unknown): Promise<LibraryOpenResult> {
     if (!isOwner(owner)) return INVALID_OWNER;
@@ -742,6 +747,7 @@ export class LibraryService {
     rootPath: unknown,
     privateShelf: boolean,
     expectedSnapshot?: PrivateShelfLibrarySnapshot,
+    requireLibraryConfig = false,
   ): Promise<LibraryOpenResult> {
     if (!isOwner(owner)) return INVALID_OWNER;
     if (typeof rootPath !== "string" || rootPath.length === 0 || !path.isAbsolute(rootPath)) {
@@ -782,6 +788,7 @@ export class LibraryService {
     if (parsed.some((entity) => entity.kind === "invalid-library")) return INVALID_LIBRARY;
     const libraries = parsed.filter((entity): entity is Extract<ParsedEntity, { kind: "library" }> => entity.kind === "library");
     if (libraries.length > 1) return AMBIGUOUS_LIBRARY;
+    if (requireLibraryConfig && libraries.length === 0) return INVALID_LIBRARY_CONFIG;
 
     const library = libraries[0]?.value;
     const booksScope = await resolveConfiguredScope(canonicalRoot, library?.booksPath);

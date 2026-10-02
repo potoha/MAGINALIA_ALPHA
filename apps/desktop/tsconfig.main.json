@@ -32,6 +32,8 @@
     "src/project-links.ts",
     "src/project-link-ipc.ts",
     "src/library-service.ts",
+    "src/configured-private-shelf.ts",
+    "src/shelf-location-registry.ts",
     "src/reviewer-ipc.ts",
     "src/reviewer-process-manager.ts",
     "src/reviewer-view-controller.ts",
