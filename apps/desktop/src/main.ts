@@ -137,7 +137,7 @@ import { runWorkspaceSmoke } from "./workspace-smoke";
 import { runWritingSmoke } from "./writing-smoke";
 import { runD5Smoke, runD5RestoreSmoke } from "./d5-smoke";
 import { runExportSmoke } from "./export-smoke";
-import { runGSmoke } from "./g-smoke";
+import { runGRestoreSmoke, runGSmoke } from "./g-smoke";
 import { runHSmoke } from "./h-smoke";
 import { runH5Smoke } from "./h5-smoke";
 import {
@@ -1454,7 +1454,7 @@ function createMainWindow(): BrowserWindow {
       failGSmoke(new Error("The G smoke fixture root was not provided."));
     } else {
       window.webContents.once("did-finish-load", () => {
-        void runGSmoke(window, gSmoke.rootPath!).then(
+        void (gSmoke.restore ? runGRestoreSmoke(window) : runGSmoke(window, gSmoke.rootPath!)).then(
           () => completeGSmoke(),
           (error: unknown) => failGSmoke(error)
         );
@@ -1524,7 +1524,7 @@ function createMainWindow(): BrowserWindow {
                 : hSmoke.requested
                   ? { query: { smoke: "h" } }
                 : gSmoke.requested
-                  ? { query: { smoke: "g" } }
+                  ? { query: { smoke: gSmoke.restore ? "g-restore" : "g" } }
                   : undefined;
   void window.loadFile(rendererPath, loadOptions).catch((error: unknown) => {
     console.error("MAGINALIA renderer failed to load", error);

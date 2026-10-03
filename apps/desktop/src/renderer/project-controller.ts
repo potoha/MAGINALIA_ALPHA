@@ -124,11 +124,13 @@ export class ProjectNavigationController {
   }
 
   public syncOpenDocuments(documentIds: readonly string[]): void {
-    const open = new Set(documentIds);
-    for (const [fileId, sessionId] of this.fileSessionIds) {
-      if (open.has(sessionId)) this.openedFileIds.add(fileId);
-      else this.openedFileIds.delete(fileId);
-    }
+    const orderedFileIds = documentIds.flatMap((sessionId) => {
+      const fileId = [...this.fileSessionIds.entries()]
+        .find(([, candidateSessionId]) => candidateSessionId === sessionId)?.[0];
+      return fileId === undefined ? [] : [fileId];
+    });
+    this.openedFileIds.clear();
+    for (const fileId of orderedFileIds) this.openedFileIds.add(fileId);
   }
 
   public syncActiveDocument(documentId: string | null): void {
@@ -333,11 +335,11 @@ export class ProjectNavigationController {
   }
 
   private async applyProject(result: ProjectOpened): Promise<boolean> {
-    this.openedFileIds.clear();
-    this.fileSessionIds.clear();
     const first = result.files[0];
     if (!first) {
-    this.writing.clearDocuments();
+      this.openedFileIds.clear();
+      this.fileSessionIds.clear();
+      this.writing.clearDocuments();
       this.replaceState({ project: result.project, files: result.files, activeFileId: null });
       this.showError(null);
       return true;
@@ -354,6 +356,9 @@ export class ProjectNavigationController {
       this.showError(opened.kind === "error" ? opened.message : FILE_OPEN_FAILED);
       return false;
     }
+    this.writing.clearDocuments();
+    this.openedFileIds.clear();
+    this.fileSessionIds.clear();
     this.writing.applyOpenedDocument(opened);
     this.openedFileIds.add(first.fileId);
     this.fileSessionIds.set(first.fileId, opened.sessionId);
@@ -374,8 +379,12 @@ export class ProjectNavigationController {
       return;
     }
     const knownSessionId = this.fileSessionIds.get(file.fileId);
-    if (file.fileId === this.state.activeFileId && knownSessionId !== undefined) {
+    if (knownSessionId !== undefined) {
       this.writing.activateDocument(knownSessionId);
+      if (file.fileId !== this.state.activeFileId) {
+        this.replaceState({ ...this.state, activeFileId: file.fileId });
+      }
+      this.showError(null);
       return;
     }
     if (!(await this.canSwitch({ kind: "manuscript", displayName: file.displayName }))) return;

@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { createWorkdeskHandlers } from "./workdesk-ipc";
+import { createWorkdeskHandlers, type WorkdeskFolderSelection } from "./workdesk-ipc";
 
 const owner = {};
 
 function dependencies() {
   return {
-    pickWorkdeskFolder: vi.fn(async () => ({ canceled: true, filePaths: [] })),
-    pickWorkdeskParent: vi.fn(async () => ({ canceled: true, filePaths: [] })),
+    pickWorkdeskFolder: vi.fn<() => Promise<WorkdeskFolderSelection>>(async () => ({ canceled: true, filePaths: [] })),
+    pickWorkdeskParent: vi.fn<() => Promise<WorkdeskFolderSelection>>(async () => ({ canceled: true, filePaths: [] })),
+    pickExistingProjectFolder: vi.fn<() => Promise<WorkdeskFolderSelection>>(async () => ({ canceled: true, filePaths: [] })),
     service: {
       open: vi.fn(),
       restorePrimary: vi.fn(async (): Promise<unknown> => undefined),
@@ -26,6 +27,27 @@ function dependencies() {
 }
 
 describe("Workdesk IPC boundary", () => {
+  it("opens a selected Workdesk and records it as the primary local path", async () => {
+    const values = dependencies();
+    const workdeskId = "11111111-1111-4111-8111-111111111111";
+    const desk = { canonicalRoot: "main-process-only", identity: { id: workdeskId, title: "Desk", kind: "workbench" } };
+    values.pickWorkdeskFolder.mockResolvedValue({ canceled: false, filePaths: ["C:\\資料\\Workdesk"] });
+    values.service.open.mockResolvedValue(desk);
+    values.projects.openForOwner.mockResolvedValue({
+      kind: "opened",
+      project: { projectId: workdeskId, displayName: "Desk" },
+      files: []
+    });
+    const handlers = createWorkdeskHandlers(values as never);
+
+    await expect(handlers.openWorkdesk({ sender: owner })).resolves.toMatchObject({
+      kind: "opened",
+      workdesk: { workdeskIdentityId: workdeskId, title: "Desk" }
+    });
+    expect(values.service.open).toHaveBeenCalledWith("C:\\資料\\Workdesk");
+    expect(values.service.setPrimary).toHaveBeenCalledWith(desk);
+  });
+
   it("rejects body creation before any service receives the request", async () => {
     const values = dependencies();
     const handlers = createWorkdeskHandlers(values as never);
@@ -46,21 +68,22 @@ describe("Workdesk IPC boundary", () => {
     values.projects.createFileForOwner.mockResolvedValue({ kind: "created", project: {}, files: [], file: {} });
     const handlers = createWorkdeskHandlers(values as never);
 
-    const result = await handlers.createWorkdeskFile({ sender: owner }, {
-      workdeskId: "11111111-1111-4111-8111-111111111111",
-      fileName: "memo.md",
-      title: "Memo",
-      documentType: "memo"
-    });
+    for (const documentType of ["memo", "draft", "other"] as const) {
+      const result = await handlers.createWorkdeskFile({ sender: owner }, {
+        workdeskId: "11111111-1111-4111-8111-111111111111",
+        fileName: `${documentType}.md`,
+        title: documentType,
+        documentType
+      });
+      expect(result).toMatchObject({ kind: "created" });
+    }
 
-    expect(result).toMatchObject({ kind: "created" });
-    expect(values.projects.createFileForOwner).toHaveBeenCalledWith(
-      owner,
-      "11111111-1111-4111-8111-111111111111",
-      "memo.md",
-      "Memo",
-      "memo"
-    );
+    expect(values.projects.createFileForOwner).toHaveBeenNthCalledWith(1, owner,
+      "11111111-1111-4111-8111-111111111111", "memo.md", "memo", "memo");
+    expect(values.projects.createFileForOwner).toHaveBeenNthCalledWith(2, owner,
+      "11111111-1111-4111-8111-111111111111", "draft.md", "draft", "draft");
+    expect(values.projects.createFileForOwner).toHaveBeenNthCalledWith(3, owner,
+      "11111111-1111-4111-8111-111111111111", "other.md", "other", "other");
   });
 
   it("does not allow renderer-supplied Project registration without an active Workdesk capability", async () => {

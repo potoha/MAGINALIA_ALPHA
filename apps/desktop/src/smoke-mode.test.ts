@@ -202,6 +202,11 @@ describe("G smoke mode", () => {
       rootPath: "C:\\Temp\\g-smoke"
     });
     expect(parseGSmokeMode(["--smoke-g", "--other"])).toEqual({ requested: true });
+    expect(parseGSmokeMode(["--smoke-g-restore", "C:\\Temp\\g-smoke"])).toEqual({
+      requested: true,
+      restore: true,
+      rootPath: "C:\\Temp\\g-smoke"
+    });
   });
 });
 

@@ -211,6 +211,28 @@ export class DocumentSessionStore {
     return true;
   }
 
+  /** Move one main-editor view before another without changing document state. */
+  public moveMainViewBefore(instanceId: string, beforeInstanceId: string): boolean {
+    if (instanceId === beforeInstanceId) return false;
+    const view = this.views.get(instanceId);
+    const before = this.views.get(beforeInstanceId);
+    if (view === undefined || before === undefined
+      || view.region !== MAIN_REGION || before.region !== MAIN_REGION
+      || view.groupId !== MAIN_GROUP || before.groupId !== MAIN_GROUP) return false;
+
+    const ordered = [...this.views.entries()];
+    const sourceIndex = ordered.findIndex(([id]) => id === instanceId);
+    const targetIndex = ordered.findIndex(([id]) => id === beforeInstanceId);
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex - 1) return false;
+    const [moved] = ordered.splice(sourceIndex, 1);
+    const nextTargetIndex = ordered.findIndex(([id]) => id === beforeInstanceId);
+    ordered.splice(nextTargetIndex, 0, moved);
+    this.views.clear();
+    for (const [id, candidate] of ordered) this.views.set(id, candidate);
+    this.notify();
+    return true;
+  }
+
   public closeView(instanceId: string): DocumentViewInstance | null {
     const view = this.views.get(instanceId);
     if (view === undefined) return null;

@@ -10,6 +10,7 @@ export const D5_SMOKE_FLAG = "--smoke-d5";
 export const D5_RESTORE_SMOKE_FLAG = "--smoke-d5-restore";
 export const EXPORT_SMOKE_FLAG = "--smoke-export";
 export const G_SMOKE_FLAG = "--smoke-g";
+export const G_RESTORE_SMOKE_FLAG = "--smoke-g-restore";
 export const H_SMOKE_FLAG = "--smoke-h";
 export const H_RESTORE_SMOKE_FLAG = "--smoke-h-restore";
 export const H5_SMOKE_FLAG = "--smoke-h5";
@@ -61,6 +62,7 @@ export interface ExportSmokeMode {
 export interface GSmokeMode {
   readonly requested: boolean;
   readonly rootPath?: string;
+  readonly restore?: boolean;
 }
 
 export interface HSmokeMode {
@@ -166,6 +168,12 @@ export function parseExportSmokeMode(args: readonly string[]): ExportSmokeMode {
 }
 
 export function parseGSmokeMode(args: readonly string[]): GSmokeMode {
+  const restoreIndex = args.indexOf(G_RESTORE_SMOKE_FLAG);
+  if (restoreIndex >= 0) {
+    const candidate = args[restoreIndex + 1];
+    if (!candidate || candidate.startsWith("--")) return { requested: true, restore: true };
+    return { requested: true, restore: true, rootPath: candidate };
+  }
   const flagIndex = args.indexOf(G_SMOKE_FLAG);
   if (flagIndex < 0) return { requested: false };
   const candidate = args[flagIndex + 1];

@@ -1116,6 +1116,14 @@ button:focus-visible {
   box-shadow: inset 0 2px 0 #9b4b36;
 }
 
+.document-tab.dragging {
+  opacity: 0.55;
+}
+
+.document-tab.drag-over {
+  box-shadow: inset 3px 0 0 #9b4b36;
+}
+
 .document-tab-label,
 .document-tab-close {
   border: 0;

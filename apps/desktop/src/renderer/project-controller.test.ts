@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { OpenMarkdownResult, SaveMarkdownRequest } from "../markdown-ipc";
-import type { ProjectFileOpenResult } from "../project-ipc";
+import type { ProjectFileOpenResult, ProjectOpenResult } from "../project-ipc";
 import type { ProjectFileSummary } from "../project-service";
 import { WritingController, type WritingStatus, type WritingSurface, type WritingTextRange, type WritingView } from "./controller";
 import { ProjectNavigationController, type ProjectNavigationApi, type ProjectNavigationState, type ProjectNavigationView } from "./project-controller";
@@ -50,7 +50,8 @@ function harness(
   decision: "save" | "discard" | "cancel",
   openFile: (file: ProjectFileSummary) => ProjectFileOpenResult = (file) => opened(file),
   tabs = false,
-  flushAllDocuments?: () => Promise<boolean>
+  flushAllDocuments?: () => Promise<boolean>,
+  openProjectResult: () => ProjectOpenResult = () => ({ kind: "opened", project, files })
 ) {
   const surface = new Surface();
   const writingView = new WritingViewStub();
@@ -64,7 +65,7 @@ function harness(
     kind: "saved" as const, sessionId: request.sessionId, displayName: "saved.md", text: request.text
   }));
   const api: ProjectNavigationApi = {
-    openProject: async () => ({ kind: "opened", project, files }),
+    openProject: async () => openProjectResult(),
     createProject: async () => ({ kind: "cancelled" }),
     restoreProject: async () => ({ kind: "none" }),
     openProjectFile,
@@ -137,6 +138,58 @@ describe("ProjectNavigationController", () => {
     expect(test.surface.text).toBe("first edited");
     expect(test.writing.getDocumentSessions()).toHaveLength(2);
     expect(test.view.state.activeFileId).toBe(files[0].fileId);
+    expect(test.openProjectFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps opened file IDs in the ordered main-view sequence for workspace persistence", async () => {
+    const test = harness("cancel", (file) => opened(file), true);
+    await test.navigation.openProject();
+    await test.navigation.openFile(files[1].fileId);
+    const [firstView, secondView] = test.writing.getDocumentViews();
+
+    expect(test.writing.moveMainDocumentViewBefore(secondView?.instanceId ?? "", firstView?.instanceId ?? "")).toBe(true);
+    test.navigation.syncOpenDocuments(test.writing.getDocumentViews().map((view) => view.documentId));
+
+    expect(test.navigation.getOpenedFileIds()).toEqual([files[1].fileId, files[0].fileId]);
+  });
+
+  it("keeps existing tab mappings when a replacement Project's first file fails", async () => {
+    let failReplacement = false;
+    const test = harness("cancel", (file) => failReplacement
+      ? ({ kind: "error", code: "project-file-open-failed", message: "replacement unavailable" } as const)
+      : opened(file), true);
+    await test.navigation.openProject();
+    await test.navigation.openFile(files[1].fileId);
+    const callsBeforeFailure = test.openProjectFile.mock.calls.length;
+    failReplacement = true;
+
+    await test.navigation.openProject();
+    await test.navigation.openFile(files[1].fileId);
+
+    expect(test.view.state.project).toEqual(project);
+    expect(test.view.error).toBeNull();
+    expect(test.writing.getDocumentSessions()).toHaveLength(2);
+    expect(test.openProjectFile).toHaveBeenCalledTimes(callsBeforeFailure + 1);
+  });
+
+  it("replaces old tabs only after the next Project's first file opens", async () => {
+    let replacement = false;
+    const secondProject = { projectId: "00000000-0000-4000-8000-000000000011", displayName: "Tea" };
+    const test = harness("cancel", (file) => opened(file), true, undefined, () => ({
+      kind: "opened" as const,
+      project: replacement ? secondProject : project,
+      files
+    }));
+    await test.navigation.openProject();
+    await test.navigation.openFile(files[1].fileId);
+    replacement = true;
+
+    await test.navigation.openProject();
+
+    expect(test.view.state.project).toEqual(secondProject);
+    expect(test.writing.getDocumentSessions()).toHaveLength(1);
+    expect(test.writing.getDocumentViews()).toHaveLength(1);
+    expect(test.navigation.getOpenedFileIds()).toEqual([files[0].fileId]);
   });
 
   it("flushes every session before replacing the Project", async () => {
