@@ -99,8 +99,8 @@ app.innerHTML = `
       </div>
       <div class="document-controls">
         <button id="open-markdown" type="button">Open</button>
-        <button id="save-markdown" type="button" disabled>Save</button>
-        <button id="export-markdown" type="button" disabled>Export Markdown</button>
+        <button id="save-markdown" data-command-id="maginalia.document.save" type="button" disabled>Save</button>
+        <button id="export-markdown" data-command-id="maginalia.document.export" type="button" disabled>Export Markdown</button>
         <span id="document-name" class="document-name">No document open</span>
         <span id="document-status" class="document-status" data-state="empty" role="status" aria-live="polite">No document open</span>
         <span id="export-status" class="export-status" data-state="empty" role="status" aria-live="polite">Open a document to export.</span>
@@ -233,8 +233,8 @@ app.innerHTML = `
           <button id="document-edit-mode" type="button" aria-pressed="true">Edit</button>
           <button id="document-preview-mode" type="button" aria-pressed="false">Preview</button>
           <span class="presentation-divider" aria-hidden="true"></span>
-          <button id="document-horizontal" type="button" aria-pressed="true">Horizontal</button>
-          <button id="document-vertical" type="button" aria-pressed="false">Vertical</button>
+          <button id="document-horizontal" data-command-id="maginalia.renderer.setHorizontal" type="button" aria-pressed="true">Horizontal</button>
+          <button id="document-vertical" data-command-id="maginalia.renderer.setVertical" type="button" aria-pressed="false">Vertical</button>
         </div>
         <section id="editor" class="editor" aria-label="Markdown editor"></section>
         <section id="markdown-preview" class="markdown-preview" aria-label="Markdown preview" hidden></section>
@@ -257,7 +257,7 @@ app.innerHTML = `
               <button id="open-reviewer" type="button" title="取り込む・確認する">取り込む・確認する</button>
               <button id="refresh-shelf" type="button" title="Sync Reviewer approvals into the selected Private Shelf">Shelfを更新</button>
               <button id="choose-library" type="button" hidden aria-hidden="true">Choose local Library</button>
-              <button id="refresh-references" type="button" disabled>Refresh References</button>
+              <button id="refresh-references" data-command-id="maginalia.references.refresh" type="button" disabled>Refresh References</button>
             </div>
             <form id="library-search-form" class="library-search-form">
               <label class="visually-hidden" for="library-query">Search quotations</label>
@@ -671,7 +671,7 @@ const previewController = new PreviewController({
             // through the command keeps the gesture equivalent to Palette and
             // future context-menu actions.
             pendingInternalLinkOpen = { fileId };
-            void commandRegistry.execute("maginalia.link.openInTab", commandContext.snapshot());
+            void executeCommand("maginalia.link.openInTab");
           }
         }, internalLinks, media);
       }).catch(() => undefined);
@@ -681,12 +681,8 @@ const previewController = new PreviewController({
 
 editModeButton.addEventListener("click", () => previewController.setMode("edit"));
 previewModeButton.addEventListener("click", () => previewController.setMode("preview"));
-horizontalDirectionButton.addEventListener("click", () => {
-  void commandRegistry.execute("maginalia.renderer.setHorizontal", commandContext.snapshot());
-});
-verticalDirectionButton.addEventListener("click", () => {
-  void commandRegistry.execute("maginalia.renderer.setVertical", commandContext.snapshot());
-});
+horizontalDirectionButton.addEventListener("click", () => void executeCommand("maginalia.renderer.setHorizontal"));
+verticalDirectionButton.addEventListener("click", () => void executeCommand("maginalia.renderer.setVertical"));
 
 // Command surfaces are deliberately mounted beside the Workbench rather than
 // into Monaco.  Later toolbar/menu contributions use this same registry.
@@ -736,9 +732,9 @@ registerCoreCommands(commandRegistry, {
     previewController.setDirection(direction);
     updateCommandContext();
   },
-  refreshReferences: () => { void referencesController?.refresh(); },
-  exportMarkdown: () => { void exportController?.exportMarkdown(); },
-  saveDocument: () => { void controller.save(); },
+  refreshReferences: () => referencesController?.refresh(),
+  exportMarkdown: () => exportController?.exportMarkdown(),
+  saveDocument: () => controller.save(),
   contextKeys: commandContext
 });
 commandRegistry.register({
@@ -2471,9 +2467,7 @@ if (referencesApi) {
     writing: controller,
     view: referencesView
   });
-  refreshReferencesButton.addEventListener("click", () => {
-    void referencesController?.refresh();
-  });
+  refreshReferencesButton.addEventListener("click", () => void executeCommand("maginalia.references.refresh"));
 } else {
   refreshReferencesButton.disabled = true;
   referencesStatus.dataset.state = "error";
@@ -2496,9 +2490,7 @@ if (exportApi) {
     writing: controller,
     view: exportView
   });
-  exportButton.addEventListener("click", () => {
-    void exportController?.exportMarkdown();
-  });
+  exportButton.addEventListener("click", () => void executeCommand("maginalia.document.export"));
 } else {
   exportButton.disabled = true;
   exportStatus.dataset.state = "error";
@@ -2672,7 +2664,7 @@ window.addEventListener("keydown", (event) => {
     const id = event.key === "0"
       ? "maginalia.editor.setParagraph"
       : `maginalia.editor.setHeading${event.key}`;
-    void commandRegistry.execute(id, commandContext.snapshot());
+    void executeCommand(id);
     return;
   }
   if ((event.ctrlKey || event.metaKey) && event.shiftKey) {

@@ -54,4 +54,27 @@ describe("ModContributionBridge", () => {
     }] });
     expect(commands.get("maginalia.core.keep")?.title).toBe("Keep");
   });
+
+  it("isolates a failed Mod invocation and leaves Core commands executable", async () => {
+    const commands = new CommandRegistry();
+    const core = vi.fn();
+    commands.register({ id: "maginalia.core.keep", title: "Keep" }, core);
+    const bridge = new ModContributionBridge({
+      commands,
+      menus: new ContextMenuRegistry(),
+      utilityBar: utilityBarStub() as never,
+      invoke: async () => ({ kind: "error", code: "mod-error", message: "Mod failed" }),
+    });
+    bridge.replace({ mods: [], contributions: [{
+      modId: "dev.example.fixture",
+      contribution: { kind: "command", id: "dev.example.fixture.fail", title: "Fail" },
+    }] });
+
+    await expect(commands.execute("dev.example.fixture.fail", {})).resolves.toMatchObject({
+      kind: "failed",
+      error: { message: "Mod failed" },
+    });
+    await expect(commands.execute("maginalia.core.keep", {})).resolves.toEqual({ kind: "executed" });
+    expect(core).toHaveBeenCalledOnce();
+  });
 });

@@ -62,6 +62,14 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
   await waitFor(window, (value) => value.text.startsWith("# "), "heading command");
   await script(window, `(() => { const undo = document.querySelector('[data-command-id="maginalia.editor.undo"]'); if (!(undo instanceof HTMLButtonElement)) return false; undo.click(); return true; })()`, "Undo command surface");
   await waitFor(window, (value) => !value.text.startsWith("# "), "undo restores source");
+  await script(window, `window.dispatchEvent(new KeyboardEvent("keydown", { key: "1", ctrlKey: true, bubbles: true, cancelable: true })); true`, "Ctrl+1 again");
+  await waitFor(window, (value) => value.text.startsWith("# "), "heading command before Save");
+  await script(window, `(() => { const save = document.querySelector('#save-markdown[data-command-id="maginalia.document.save"]'); if (!(save instanceof HTMLButtonElement)) return false; window.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true })); return true; })()`, "Save shortcut command");
+  await waitFor(window, (value) => value.status === "saved", "Save shortcut completes");
+  await script(window, `window.dispatchEvent(new KeyboardEvent("keydown", { key: "0", ctrlKey: true, bubbles: true, cancelable: true })); true`, "Ctrl+0");
+  await waitFor(window, (value) => !value.text.startsWith("# ") && value.status === "modified", "paragraph command after Save");
+  await script(window, `(() => { const save = document.querySelector('#save-markdown[data-command-id="maginalia.document.save"]'); if (!(save instanceof HTMLButtonElement) || save.disabled) return false; save.click(); return true; })()`, "Save button command");
+  await waitFor(window, (value) => value.status === "saved", "Save button completes");
 
   await script(window, `window.dispatchEvent(new KeyboardEvent("keydown", { key: "P", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })); true`, "open Palette");
   await script(window, `(() => { const input = document.querySelector(".command-palette input"); if (!(input instanceof HTMLInputElement)) return false; input.value = "vertical"; input.dispatchEvent(new Event("input", { bubbles: true })); const result = document.querySelector('.command-palette-item[data-command-id="maginalia.renderer.setVertical"]'); if (!(result instanceof HTMLElement)) return false; input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); return true; })()`, "execute vertical Palette command");
