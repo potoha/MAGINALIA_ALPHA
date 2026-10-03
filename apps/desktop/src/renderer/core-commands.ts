@@ -6,9 +6,9 @@ import { insertLink, setBlockStyle, toggleInline, toggleLinePrefix } from "./mar
 export interface CoreCommandActions {
   readonly writing: WritingController;
   readonly setPreviewDirection: (direction: "horizontal" | "vertical") => void;
-  readonly refreshReferences: () => void;
-  readonly exportMarkdown: () => void;
-  readonly saveDocument: () => void;
+  readonly refreshReferences: () => void | Promise<void>;
+  readonly exportMarkdown: () => void | Promise<void>;
+  readonly saveDocument: () => void | Promise<void>;
   readonly contextKeys: ContextKeyService;
 }
 
@@ -22,7 +22,7 @@ function currentTextEdit(writing: WritingController, transform: (text: string, s
 
 /** Register Core actions once.  Surfaces use these IDs instead of private handlers. */
 export function registerCoreCommands(registry: CommandRegistry, actions: CoreCommandActions): void {
-  const register = (id: string, title: string, handler: () => void, category = "Editor", keywords: readonly string[] = [], when = "editor.hasDocument") => {
+  const register = (id: string, title: string, handler: () => void | Promise<void>, category = "Editor", keywords: readonly string[] = [], when = "editor.hasDocument") => {
     registry.register({ id, title, category, keywords, when }, handler);
   };
   register("maginalia.editor.undo", "Undo", () => { actions.writing.undo(); }, "Editor", ["undo"]);
