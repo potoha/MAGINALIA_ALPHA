@@ -1,6 +1,6 @@
 ---
 id: architecture.core-invariants
-updated: 2026-09-28
+updated: 2026-10-04
 status: active
 kind: invariant
 canonical:
@@ -21,6 +21,15 @@ canonical:
 - Renderer/presentation rules must not silently mutate Markdown source semantics.
 - Primary user is a nontechnical humanities student/researcher/writer.
 - Normal UI should not require understanding Git, SQLite, Python, ports, OCR internals, or repository topology.
+
+## Command surface
+
+- Most discrete human-executable actions use stable namespaced command IDs.
+- Menu, context-menu, button/toolbar, Command Palette, shortcut, Mod, and future authorized automation surfaces should converge on the same command implementation where they expose the same action.
+- Command IDs describe user actions, not UI placement.
+- Do not duplicate feature logic per UI surface.
+- Command Registry/API is the public action boundary; Controller / Service / IPC / model layers remain responsible for implementation and low-level state transitions.
+- Do not mechanically command-wrap continuous pointer/drag state, selection changes, rendering lifecycle, filesystem validation, database access, or similar internal operations unless a concrete user-facing action requires it.
 
 ## D032
 

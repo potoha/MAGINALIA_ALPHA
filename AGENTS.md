@@ -110,6 +110,26 @@ ASCII-only assumptions are prohibited unless an unavoidable external limitation 
 - Normal-user flows must not require Git, Node, Python, PowerShell, PATH editing, npm, pip, or other developer setup in the final product.
 - Machine-local absolute paths must not become canonical portable project/user data.
 
+## Command surface principle
+
+Human-facing actions should, by default, have stable namespaced command IDs and be directly executable through the canonical Command Registry/API.
+
+When the same user action is exposed through multiple surfaces, those surfaces should converge on the same command ID and implementation wherever practical. This includes:
+
+- application menus such as File/Edit/View;
+- context menus;
+- visible buttons, toolbars, and panels;
+- Command Palette;
+- keyboard shortcuts;
+- Mod contributions;
+- future authorized automation surfaces.
+
+Do not duplicate feature logic per UI surface. A button, menu item, shortcut, or Mod entry should normally dispatch the same command rather than implement a separate behavior path.
+
+The command boundary represents public user actions, not every internal function. Low-level filesystem validation, database access, IPC, state synchronization, rendering lifecycle, pointer drag state, selection changes, and similar internal transitions remain in their appropriate Controller / Service / IPC / model layers unless there is a concrete user-facing command.
+
+When adding a new Core feature, first decide whether its user-executable actions need stable command IDs. Prefer the default answer to be yes unless the interaction is inherently continuous or state-internal.
+
 ## Git/GitHub freeze
 
 Decision D032 remains authoritative.
