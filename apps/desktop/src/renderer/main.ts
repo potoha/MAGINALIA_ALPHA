@@ -1200,6 +1200,8 @@ const modView: { setModState(state: ModControllerState): void } = {
   setModState: renderModState
 };
 
+let draggedDocumentViewId: string | null = null;
+
 function renderDocumentTabs(change: DocumentSessionChange): void {
   documentTabs.replaceChildren();
   const mainViews = change.views.filter((view) => view.region === "main" && view.groupId === "editor-group-1");
@@ -1211,8 +1213,33 @@ function renderDocumentTabs(change: DocumentSessionChange): void {
     tab.dataset.documentTab = session.documentId;
     tab.dataset.documentViewId = view.instanceId;
     tab.setAttribute("role", "presentation");
+    tab.draggable = true;
     tab.classList.toggle("active", change.activeDocumentId === session.documentId);
     tab.classList.toggle("dirty", session.currentText !== session.savedText);
+    tab.addEventListener("dragstart", (event) => {
+      draggedDocumentViewId = view.instanceId;
+      tab.classList.add("dragging");
+      event.dataTransfer?.setData("text/plain", view.instanceId);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    });
+    tab.addEventListener("dragover", (event) => {
+      if (draggedDocumentViewId === null || draggedDocumentViewId === view.instanceId) return;
+      event.preventDefault();
+      tab.classList.add("drag-over");
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    });
+    tab.addEventListener("dragleave", () => tab.classList.remove("drag-over"));
+    tab.addEventListener("drop", (event) => {
+      event.preventDefault();
+      tab.classList.remove("drag-over");
+      const sourceViewId = draggedDocumentViewId ?? event.dataTransfer?.getData("text/plain") ?? "";
+      draggedDocumentViewId = null;
+      if (sourceViewId) controller.moveMainDocumentViewBefore(sourceViewId, view.instanceId);
+    });
+    tab.addEventListener("dragend", () => {
+      draggedDocumentViewId = null;
+      tab.classList.remove("dragging", "drag-over");
+    });
 
     const activate = document.createElement("button");
     activate.type = "button";
@@ -1601,6 +1628,16 @@ async function restorePersistedProjectViews(): Promise<void> {
   const openFiles = persistedWorkspaceState.openFileIds;
   for (const fileId of openFiles) {
     if (validFileIds.has(fileId)) await projectController?.openFile(fileId);
+  }
+  let beforeViewId: string | undefined;
+  for (const fileId of [...openFiles].reverse()) {
+    const view = controller.getDocumentViews().find((candidate) =>
+      candidate.region === "main"
+      && candidate.groupId === "editor-group-1"
+      && projectController?.getFileIdForSession(candidate.documentId) === fileId);
+    if (!view) continue;
+    if (beforeViewId) controller.moveMainDocumentViewBefore(view.instanceId, beforeViewId);
+    beforeViewId = view.instanceId;
   }
   if (persistedWorkspaceState.activeFileId !== null && validFileIds.has(persistedWorkspaceState.activeFileId)) {
     await projectController?.openFile(persistedWorkspaceState.activeFileId);
@@ -2101,9 +2138,10 @@ const repositorySmokeMode = smokeQuery === "repository";
 const shelfSmokeMode = smokeQuery === "shelf";
 const d5SmokeMode = smokeQuery === "d5" || smokeQuery === "d5-restore";
 const exportSmokeMode = smokeQuery === "export";
-const gSmokeMode = smokeQuery === "g";
+const gSmokeMode = smokeQuery === "g" || smokeQuery === "g-restore";
+const gRestoreSmokeMode = smokeQuery === "g-restore";
 const projectSmokeMode = smokeQuery === "project";
-const projectRestoreSmokeMode = smokeQuery === "project-restore" || smokeQuery === "d5-restore";
+const projectRestoreSmokeMode = smokeQuery === "project-restore" || smokeQuery === "d5-restore" || gRestoreSmokeMode;
 const projectCreateSmokeMode = smokeQuery === "project-create";
 const workbenchSmokeMode = smokeQuery === "workbench";
 const smokeDecisionQueue: DirtySwitchDecision[] = [];
@@ -2292,6 +2330,17 @@ if (legacyWorkspaceMode) {
           if (result.kind === "opened") {
             await activateWorkdesk(result);
             return;
+          }
+          // A missing primary Workdesk is a normal first-run state. Ask for
+          // one explicit local folder and let the existing IPC open path bind
+          // it as primary; cancellation keeps the current authoring state.
+          if (result.kind === "none" && !projectLikeSmokeMode && !workbenchSmokeMode) {
+            const selected = await workdeskApi.openWorkdesk();
+            if (selected.kind === "opened") {
+              await activateWorkdesk(selected);
+              return;
+            }
+            if (selected.kind === "error") projectView.setProjectError(selected.message);
           }
           await projectController?.restoreProject();
           await restorePersistedProjectViews();
@@ -2564,16 +2613,23 @@ if (writingSmokeMode) {
     void workspaceController?.openDocument();
   });
 } else if (projectController) {
-  openButton.addEventListener("click", () => {
+  const clearWorkdeskAfterProjectReplacement = (previousProjectId: string | undefined): void => {
+    const project = projectController?.getState().project;
+    if (!project || project.projectId === previousProjectId) return;
     activeWorkdesk = null;
+    projectView.setProjectState(projectController.getState());
     updateCommandContext();
-    void projectController?.openProject();
+  };
+  const openStandaloneProject = (): void => {
+    const previousProjectId = projectController.getState().project?.projectId;
+    void projectController.openProject().then(() => clearWorkdeskAfterProjectReplacement(previousProjectId));
+  };
+  openButton.addEventListener("click", () => {
+    openStandaloneProject();
   });
   openProjectButton.addEventListener("click", () => {
     setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
-    activeWorkdesk = null;
-    updateCommandContext();
-    void projectController?.openProject();
+    openStandaloneProject();
   });
   openWorkdeskButton.addEventListener("click", () => {
     setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
@@ -2606,12 +2662,15 @@ newFileTitle.addEventListener("keydown", (event) => {
 projectCreateForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (!projectController) return;
-  activeWorkdesk = null;
-  updateCommandContext();
   const previousProjectId = projectController.getState().project?.projectId;
   void projectController.createProject(createProjectTitle.value).then(() => {
     const project = projectController?.getState().project;
-    if (project && project.projectId !== previousProjectId) cancelProjectCreation(false);
+    if (project && project.projectId !== previousProjectId) {
+      activeWorkdesk = null;
+      projectView.setProjectState(projectController.getState());
+      updateCommandContext();
+      cancelProjectCreation(false);
+    }
   });
 });
 

@@ -36,4 +36,21 @@ describe("DocumentSessionStore", () => {
     expect(store.getSession("a")).not.toBeNull();
     expect(store.getViewsForDocument("a")).toHaveLength(0);
   });
+
+  it("reorders only main views without changing active state or document source", () => {
+    const store = new DocumentSessionStore();
+    store.openSession({ documentId: "a", displayName: "a.md", text: "A" });
+    store.openSession({ documentId: "b", displayName: "b.md", text: "B" });
+    store.openSession({ documentId: "c", displayName: "c.md", text: "C" });
+    const a = store.openView("a");
+    store.openView("b");
+    const c = store.openView("c");
+    store.updateText("a", "A draft");
+
+    expect(store.moveMainViewBefore(c?.instanceId ?? "", a?.instanceId ?? "")).toBe(true);
+    expect(store.snapshot().views.map((view) => view.documentId)).toEqual(["c", "a", "b"]);
+    expect(store.snapshot().activeDocumentId).toBe("c");
+    expect(store.getSession("a")).toMatchObject({ currentText: "A draft", savedText: "A" });
+    expect(store.moveMainViewBefore(a?.instanceId ?? "", a?.instanceId ?? "")).toBe(false);
+  });
 });

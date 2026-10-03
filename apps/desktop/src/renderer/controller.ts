@@ -228,6 +228,11 @@ export class WritingController {
     return view;
   }
 
+  /** Reorder main tabs without activating, saving, or changing their source. */
+  public moveMainDocumentViewBefore(instanceId: string, beforeInstanceId: string): boolean {
+    return this.store.moveMainViewBefore(instanceId, beforeInstanceId);
+  }
+
   public async closeDocumentView(
     instanceId: string,
     decide: (displayName: string) => "save" | "discard" | "cancel" | Promise<"save" | "discard" | "cancel">

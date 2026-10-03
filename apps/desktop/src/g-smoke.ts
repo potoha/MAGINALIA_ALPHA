@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { readFile } from "node:fs/promises";
 import type { BrowserWindow } from "electron";
 
 const POLL_MS = 25;
@@ -54,6 +55,7 @@ async function waitForScript(window: BrowserWindow, source: string, description:
 
 /** Real Electron coverage of G's command/preview/link/search seams. */
 export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Promise<void> {
+  const initialC = await readFile(path.join(fixtureRoot, "c.md"), "utf8");
   await window.webContents.executeJavaScript("document.body?.offsetWidth ?? 0", true);
   await script(window, `(() => { const overflow = document.querySelector("#project-overflow"); const open = document.querySelector("#open-project"); if (!(overflow instanceof HTMLButtonElement) || !(open instanceof HTMLButtonElement)) return false; overflow.click(); open.click(); return true; })()`, "open Project");
   await waitFor(window, (value) => value.ready && value.active === "a.md", "A open");
@@ -78,10 +80,36 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
   await script(window, `(() => { const link = document.querySelector(".rendered-internal-link.resolved"); if (!(link instanceof HTMLElement)) return false; link.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true })); return true; })()`, "activate existing internal link target");
   await waitFor(window, (value) => value.active === "b.md" && value.tabs.length === 2, "existing B tab activated without duplicate");
 
+  await script(window, `(() => { const c = [...document.querySelectorAll("#manuscript-list button[data-manuscript-id]")].find((item) => item.dataset.manuscriptName === "c.md"); if (!(c instanceof HTMLButtonElement)) return false; c.click(); return true; })()`, "open C tab");
+  await waitFor(window, (value) => value.active === "c.md" && value.tabs.length === 3, "C opens as a third tab");
+  await script(window, `(() => { const tabs = [...document.querySelectorAll("#document-tabs .document-tab")]; const source = tabs.find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("c.md")); const target = tabs.find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("a.md")); if (!(source instanceof HTMLElement) || !(target instanceof HTMLElement) || typeof DataTransfer !== "function" || typeof DragEvent !== "function") return false; const transfer = new DataTransfer(); source.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: transfer })); target.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: transfer })); target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer })); source.dispatchEvent(new DragEvent("dragend", { bubbles: true, cancelable: true, dataTransfer: transfer })); return true; })()`, "drag C before A");
+  await waitFor(window, (value) => value.active === "c.md" && value.status === "saved" && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md", "reordered tabs without source mutation");
+  if (await readFile(path.join(fixtureRoot, "c.md"), "utf8") !== initialC) {
+    throw new Error("Tab reordering rewrote c.md.");
+  }
+  await script(window, `(() => { const editor = document.querySelector("#editor"); if (!(editor instanceof HTMLElement)) return false; editor.dispatchEvent(new CustomEvent("maginalia-smoke-append", { detail: "\\nC tab draft" })); return true; })()`, "edit C after reorder");
+  await waitFor(window, (value) => value.active === "c.md" && value.text.includes("C tab draft") && value.status === "modified", "C dirty session");
+  await script(window, `(() => { const tab = [...document.querySelectorAll("#document-tabs .document-tab")].find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("a.md")); const button = tab?.querySelector(".document-tab-label"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`, "switch to A after C edit");
+  await waitFor(window, (value) => value.active === "a.md", "A activates without closing C");
+  await script(window, `(() => { const tab = [...document.querySelectorAll("#document-tabs .document-tab")].find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("c.md")); const button = tab?.querySelector(".document-tab-label"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`, "return to dirty C");
+  await waitFor(window, (value) => value.active === "c.md" && value.text.includes("C tab draft") && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md", "C session text and tab order retained");
+
   await script(window, `(() => { const tab = [...document.querySelectorAll("#document-tabs .document-tab")].find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("a.md")); const button = tab?.querySelector(".document-tab-label"); const mode = document.querySelector('[data-unified-search-mode="project"]'); const query = document.querySelector("#library-query"); if (!(button instanceof HTMLButtonElement) || !(mode instanceof HTMLButtonElement) || !(query instanceof HTMLInputElement)) return false; button.click(); mode.click(); query.value = "PROJECT_LITERAL_SENTINEL"; query.form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); return true; })()`, "Project search");
   await waitFor(window, (value) => value.active === "a.md", "A active for Project search");
   await waitForScript(window, "document.querySelectorAll('#project-search-results button').length > 0", "Project result");
   await script(window, `(() => { const open = document.querySelector("#project-search-results button"); if (!(open instanceof HTMLButtonElement)) return false; open.click(); const source = document.querySelector("#project-search-source"); const insert = document.querySelector("#project-search-insert"); if (!(source instanceof HTMLTextAreaElement) || !(insert instanceof HTMLButtonElement)) return false; source.selectionStart = 0; source.selectionEnd = source.value.length; insert.click(); return true; })()`, "literal Project insertion");
   await waitFor(window, (value) => value.text.includes("PROJECT_LITERAL_SENTINEL") && value.status === "modified", "literal insertion into destination");
   if (path.basename(path.resolve(fixtureRoot)).length === 0) throw new Error("G smoke fixture root was invalid.");
+}
+
+/** Verify that G's ordered tabs survive the existing workspace restore path. */
+export async function runGRestoreSmoke(window: BrowserWindow): Promise<void> {
+  await window.webContents.executeJavaScript("document.body?.offsetWidth ?? 0", true);
+  await waitFor(
+    window,
+    (value) => value.ready
+      && value.active === "a.md"
+      && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md",
+    "restored C, A, B tab order"
+  );
 }
