@@ -54,6 +54,16 @@ export interface CapturedInsertionTarget {
   readonly range: WritingTextRange;
 }
 
+/** A Preview-originated UTF-16 patch against one rendered DocumentSession. */
+export interface WritingSourceEditTarget extends CapturedInsertionTarget {
+  readonly replacement: string;
+}
+
+export type WritingSourceEditResult =
+  | { readonly kind: "applied"; readonly revision: number; readonly range: WritingTextRange }
+  | WritingInsertionStaleFailure
+  | WritingInsertionSurfaceFailure;
+
 export interface WritingInsertionStaleFailure {
   readonly kind: "error";
   readonly code: "stale-target";
@@ -139,6 +149,7 @@ export class WritingController {
   private readonly documentChangeListeners = new Set<WritingDocumentChangeListener>();
   private readonly sessionChangeListeners = new Set<(change: DocumentSessionChange) => void>();
   private readonly selectionChangeListeners = new Set<(range: WritingTextRange) => void>();
+  private externalSelection: WritingTextRange | undefined;
 
   public constructor(options: WritingControllerOptions) {
     this.api = options.api;
@@ -284,7 +295,7 @@ export class WritingController {
   public captureInsertionTarget(): CapturedInsertionTarget | null {
     const current = this.getActiveSession();
     if (current === null) return null;
-    const range = this.surface.getSelection();
+    const range = this.getSelection();
     return {
       documentId: current.documentId,
       revision: current.revision,
@@ -294,7 +305,53 @@ export class WritingController {
 
   /** A primitive UTF-16 selection snapshot for command handlers. */
   public getSelection(): WritingTextRange {
-    return this.surface.getSelection();
+    return this.externalSelection ?? this.surface.getSelection();
+  }
+
+  /** Preview selection drives existing Markdown commands without a second model. */
+  public setExternalSelection(range: WritingTextRange | null): void {
+    const current = this.getActiveSession();
+    if (range === null || current === null
+      || !Number.isInteger(range.start) || !Number.isInteger(range.end)
+      || range.start < 0 || range.end < range.start || range.end > current.currentText.length) {
+      this.externalSelection = undefined;
+    } else {
+      this.externalSelection = { start: range.start, end: range.end };
+    }
+    this.notifySelectionChange(this.getSelection());
+  }
+
+  /** Apply a revision-checked Preview patch through WritingSurface and DocumentSession. */
+  public applySourceEdit(target: WritingSourceEditTarget): WritingSourceEditResult {
+    const current = this.getActiveSession();
+    if (current === null || !this.isInsertionTargetCurrent(target)) {
+      return { kind: "error", code: "stale-target", message: "The Preview edit is no longer current." };
+    }
+    const { start, end } = target.range;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end > current.currentText.length
+      || typeof target.replacement !== "string") {
+      return { kind: "error", code: "surface-failed", message: "The Preview edit range is invalid." };
+    }
+    const nextText = `${current.currentText.slice(0, start)}${target.replacement}${current.currentText.slice(end)}`;
+    const nextOffset = start + target.replacement.length;
+    const revisionBeforeEdit = current.revision;
+    try {
+      this.surface.applyEdit({ start, end }, target.replacement, { start: nextOffset, end: nextOffset });
+    } catch {
+      return { kind: "error", code: "surface-failed", message: "The Preview edit could not be applied." };
+    }
+    const surfaceEmittedChange = this.getActiveSession()?.revision !== revisionBeforeEdit;
+    if (!surfaceEmittedChange) {
+      this.store.updateText(current.documentId, nextText);
+      this.saveErrors.delete(current.documentId);
+    }
+    this.externalSelection = { start: nextOffset, end: nextOffset };
+    this.errorMessage = undefined;
+    this.render();
+    if (!surfaceEmittedChange) this.notifyDocumentChange();
+    const updated = this.getActiveSession();
+    if (updated === null) return { kind: "error", code: "surface-failed", message: "The Preview document is no longer available." };
+    return { kind: "applied", revision: updated.revision, range: { start, end: nextOffset } };
   }
 
   /** Monaco remains behind WritingSurface; undo follows its normal edit stack. */
@@ -452,7 +509,7 @@ export class WritingController {
       return false;
     }
 
-    const currentSelection = this.surface.getSelection();
+    const currentSelection = this.getSelection();
     const clamp = (offset: number): number => Math.max(0, Math.min(nextText.length, offset));
     const revisionBeforeEdit = current.revision;
     // Monaco stores a UTF-8 BOM as model metadata. `getText()` exposes that
@@ -658,6 +715,7 @@ export class WritingController {
 
   private handleTextChange(text: string): void {
     if (this.replacingSurface || this.activeDocumentId === null) return;
+    this.externalSelection = undefined;
     this.store.updateText(this.activeDocumentId, text);
     this.saveErrors.delete(this.activeDocumentId);
     this.errorMessage = undefined;

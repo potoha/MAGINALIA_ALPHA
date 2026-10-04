@@ -54,6 +54,19 @@ describe("PreviewController", () => {
     expect(writing.getDocumentState()?.savedText).toBe("# 初稿");
   });
 
+  it("defers Preview replacement while an editable text island has focus, then refreshes on blur", () => {
+    const writing = new FakeWriting("before");
+    const view: PreviewView = { setPreviewState: vi.fn() };
+    const controller = new PreviewController({ writing, api: null, view, preferences });
+    controller.setMode("preview");
+    const before = vi.mocked(view.setPreviewState).mock.calls.length;
+    controller.setInlineEditing("doc-1");
+    writing.setText("during composition");
+    expect(vi.mocked(view.setPreviewState).mock.calls).toHaveLength(before);
+    controller.setInlineEditing(null);
+    expect(vi.mocked(view.setPreviewState).mock.calls.at(-1)?.[0].document?.currentText).toBe("during composition");
+  });
+
   it("leaves a failed Reviewer lookup as an unresolved preview item", async () => {
     const marker = '<!-- maginalia:quote-ref v1 {"quoteId":"a","mode":"normal"} -->';
     const writing = new FakeWriting(marker);

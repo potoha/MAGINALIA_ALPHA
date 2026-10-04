@@ -2,6 +2,7 @@ import type { ResolvedQuoteRef, UnresolvedQuoteRef } from "../reviewer-resolutio
 import type { WritingDirection } from "./renderer-preferences";
 import { describeEmbed, parseSafeExternalUrl, type EmbedDescriptor } from "./embed-providers";
 import { internalLinkDisplayName, parseInternalLinkAt } from "../project-links";
+import { PreviewCompositionGate } from "./preview-editing";
 
 /** Safe, typed inline nodes.  Raw HTML is always plain text. */
 export type MarkdownInline =
@@ -407,24 +408,244 @@ export interface MarkdownPreviewRenderOptions {
    * This carries an opaque file ID, never a Project path or DOM/editor handle.
    */
   readonly onOpenInternal?: (link: { readonly target: string; readonly fileId: string }) => void;
+  /** Safe text-only authoring callback; HTML/DOM never becomes Markdown authority. */
+  readonly editable?: PreviewEditableOptions;
+}
+
+export interface PreviewEditableTextRange {
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
+}
+
+export interface PreviewEditableOptions {
+  readonly revision: number;
+  readonly onEdit: (request: { readonly revision: number; readonly range: PreviewEditableTextRange; readonly replacement: string }) =>
+    | { readonly kind: "applied"; readonly revision: number; readonly range: { readonly start: number; readonly end: number } }
+    | { readonly kind: "error" };
+  readonly onEditingChange?: (editing: boolean) => void;
+  readonly onSelectionChange?: (range: { readonly start: number; readonly end: number } | null) => void;
+}
+
+interface SourceLine { readonly text: string; readonly start: number; }
+
+function sourceLines(text: string): readonly SourceLine[] {
+  const lines: SourceLine[] = [];
+  let cursor = 0;
+  while (cursor <= text.length) {
+    const newline = text.indexOf("\n", cursor);
+    const rawEnd = newline < 0 ? text.length : newline;
+    const end = rawEnd > cursor && text[rawEnd - 1] === "\r" ? rawEnd - 1 : rawEnd;
+    const bom = cursor === 0 && text.startsWith("\uFEFF") ? 1 : 0;
+    lines.push({ text: text.slice(cursor + bom, end), start: cursor + bom });
+    if (newline < 0) break;
+    cursor = newline + 1;
+  }
+  return lines;
+}
+
+/** Collect only source ranges whose visible Markdown text is unambiguous. */
+function editableInlineRanges(text: string, sourceStart: number): readonly PreviewEditableTextRange[] {
+  // Raw HTML/comments, QuoteRefs, media and code remain protected in H.7.2.
+  if (/<(?:!--|\/?[A-Za-z])/u.test(text)) return [];
+  const ranges: PreviewEditableTextRange[] = [];
+  const visit = (value: string, base: number): void => {
+    let cursor = 0;
+    const push = (start: number, end: number): void => {
+      if (end > start) ranges.push({ start: base + start, end: base + end, text: value.slice(start, end) });
+    };
+    while (cursor < value.length) {
+      const marker = quoteMarkerAt(value, cursor);
+      if (marker !== null) { cursor = marker.end; continue; }
+      if (value[cursor] === "`") {
+        const end = value.indexOf("`", cursor + 1);
+        if (end > cursor + 1) { cursor = end + 1; continue; }
+      }
+      if (value.startsWith("![[", cursor)) {
+        const end = value.indexOf("]]", cursor + 3);
+        if (end >= 0) { cursor = end + 2; continue; }
+      }
+      const image = /^!\[[^\]]*\]\([^\s)]+\)/u.exec(value.slice(cursor));
+      if (image !== null) { cursor += image[0].length; continue; }
+      const internal = parseInternalLinkAt(value, cursor);
+      if (internal !== null) { cursor = internal.end; continue; }
+      const link = /^\[([^\]]+)\]\(([^\s)]+)\)/u.exec(value.slice(cursor));
+      const href = link === null ? null : safeExternalHref(link[2]);
+      if (link !== null && href !== null) {
+        // A generic external-link card is still an ordinary Markdown link:
+        // only the label is editable, never its destination. Provider embeds
+        // remain protected presentation structures.
+        const embed = describeEmbed(href);
+        if (embed === null || embed.kind === "generic-web") visit(link[1], base + cursor + 1);
+        cursor += link[0].length;
+        continue;
+      }
+      const wrapped = /^(\*\*|__|\*|_)([^\n]+?)\1/u.exec(value.slice(cursor));
+      if (wrapped !== null && wrapped[2].length > 0) {
+        visit(wrapped[2], base + cursor + wrapped[1].length);
+        cursor += wrapped[0].length;
+        continue;
+      }
+      const specials = ["`", "!", "[", "*", "_", "<"].map((character) => value.indexOf(character, cursor + 1)).filter((index) => index >= 0);
+      const end = specials.length === 0 ? value.length : Math.min(...specials);
+      push(cursor, end);
+      cursor = end;
+    }
+  };
+  visit(text, sourceStart);
+  return Object.freeze(ranges);
+}
+
+/**
+ * Renderer-local source maps in rendered-block order.  It reads original
+ * UTF-16 source offsets (including BOM/CRLF), never normalized preview text.
+ */
+export function collectEditablePreviewRanges(text: string): readonly (readonly PreviewEditableTextRange[])[] {
+  const lines = sourceLines(text);
+  const values = lines.map((line) => line.text);
+  const blocks: (readonly PreviewEditableTextRange[])[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index]!;
+    if (line.text.trim().length === 0) { index += 1; continue; }
+    const fence = fenceOpening(line.text);
+    if (fence !== null) {
+      const character = fence[1][0]; const minimum = fence[1].length;
+      index += 1;
+      while (index < lines.length && !isFenceClosing(lines[index]!.text, character, minimum)) index += 1;
+      if (index < lines.length) index += 1;
+      blocks.push(Object.freeze([]));
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.+)$/u.exec(line.text);
+    if (heading !== null) {
+      blocks.push(editableInlineRanges(heading[2], line.start + heading[0].length - heading[2].length));
+      index += 1;
+      continue;
+    }
+    const table = tableStart(values, index);
+    if (table !== null) {
+      const count = table.header.length;
+      index += 2;
+      while (index < lines.length) {
+        if (isTableTerminator(lines[index]!.text)) break;
+        const row = parseTableRow(lines[index]!.text);
+        if (row === null) break;
+        index += 1;
+        if (row.length < count) continue;
+      }
+      blocks.push(Object.freeze([]));
+      continue;
+    }
+    if (line.text.startsWith(">")) {
+      const quote: SourceLine[] = [];
+      while (index < lines.length && lines[index]!.text.startsWith(">")) quote.push(lines[index++]!);
+      const first = quote[0];
+      const prefix = first === undefined ? 0 : (/^>\s?/u.exec(first.text)?.[0].length ?? 1);
+      blocks.push(quote.length === 1 && first !== undefined
+        ? editableInlineRanges(first.text.slice(prefix), first.start + prefix)
+        : Object.freeze([]));
+      continue;
+    }
+    const list = /^(?:([-*+])\s+|(\d+)\.\s+)(.+)$/u.exec(line.text);
+    if (list !== null) {
+      const ordered = list[2] !== undefined;
+      const regions: PreviewEditableTextRange[] = [];
+      while (index < lines.length) {
+        const item = /^(?:([-*+])\s+|(\d+)\.\s+)(.+)$/u.exec(lines[index]!.text);
+        if (item === null || (item[2] !== undefined) !== ordered) break;
+        const source = lines[index]!;
+        regions.push(...editableInlineRanges(item[3], source.start + item[0].length - item[3].length));
+        index += 1;
+      }
+      blocks.push(Object.freeze(regions));
+      continue;
+    }
+    const paragraph: SourceLine[] = [line];
+    index += 1;
+    while (index < lines.length && lines[index]!.text.trim().length > 0
+      && fenceOpening(lines[index]!.text) === null
+      && !/^(#{1,6})\s+/u.test(lines[index]!.text)
+      && !lines[index]!.text.startsWith(">")
+      && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index]!.text)
+      && tableStart(values, index) === null) paragraph.push(lines[index++]!);
+    // A hard-wrapped paragraph contains non-contiguous source gaps; leave it
+    // protected rather than normalize its line endings or Markdown layout.
+    blocks.push(paragraph.length === 1 ? editableInlineRanges(line.text, line.start) : Object.freeze([]));
+  }
+  return Object.freeze(blocks);
+}
+
+interface EditableRenderState {
+  readonly ranges: readonly PreviewEditableTextRange[];
+  cursor: number;
+}
+
+function appendEditableText(
+  parent: HTMLElement,
+  text: string,
+  state: EditableRenderState | undefined,
+  options: MarkdownPreviewRenderOptions
+): void {
+  const range = state?.ranges[state.cursor];
+  if (range === undefined || range.text !== text || options.editable === undefined) {
+    parent.append(document.createTextNode(text));
+    return;
+  }
+  if (state !== undefined) state.cursor += 1;
+  const editable = options.editable;
+  const element = document.createElement("span");
+  element.className = "markdown-preview-editable-text";
+  element.contentEditable = "true";
+  element.spellcheck = true;
+  element.dataset.previewSourceStart = String(range.start);
+  element.dataset.previewSourceEnd = String(range.end);
+  element.dataset.previewRevision = String(editable.revision);
+  element.textContent = text;
+  const composition = new PreviewCompositionGate();
+  const apply = (compositionFinal = false): void => {
+    if (!compositionFinal && !composition.mayCommitInput()) return;
+    const replacement = element.textContent ?? "";
+    // New block structure needs Edit mode; a text island never guesses it.
+    if (/\r|\n/u.test(replacement)) return;
+    const result = editable.onEdit({
+      revision: Number(element.dataset.previewRevision),
+      range: {
+        start: Number(element.dataset.previewSourceStart),
+        end: Number(element.dataset.previewSourceEnd),
+        text: range.text
+      },
+      replacement
+    });
+    if (result.kind !== "applied") return;
+    element.dataset.previewSourceEnd = String(result.range.end);
+    element.dataset.previewRevision = String(result.revision);
+  };
+  element.addEventListener("compositionstart", () => composition.start());
+  element.addEventListener("compositionend", () => { if (composition.end()) apply(true); });
+  element.addEventListener("input", () => apply());
+  element.addEventListener("focus", () => editable.onEditingChange?.(true));
+  element.addEventListener("blur", () => editable.onEditingChange?.(false));
+  parent.append(element);
 }
 
 function appendInlines(
   parent: HTMLElement,
   nodes: readonly MarkdownInline[],
-  options: MarkdownPreviewRenderOptions
+  options: MarkdownPreviewRenderOptions,
+  editableState?: EditableRenderState
 ): void {
   for (const node of nodes) {
     switch (node.kind) {
-      case "text": parent.append(document.createTextNode(node.text)); break;
+      case "text": appendEditableText(parent, node.text, editableState, options); break;
       case "code": {
         const code = document.createElement("code"); code.textContent = node.text; parent.append(code); break;
       }
       case "strong": {
-        const element = document.createElement("strong"); appendInlines(element, node.children, options); parent.append(element); break;
+        const element = document.createElement("strong"); appendInlines(element, node.children, options, editableState); parent.append(element); break;
       }
       case "emphasis": {
-        const element = document.createElement("em"); appendInlines(element, node.children, options); parent.append(element); break;
+        const element = document.createElement("em"); appendInlines(element, node.children, options, editableState); parent.append(element); break;
       }
       case "link": {
         if (node.embed !== undefined) {
@@ -432,7 +653,7 @@ function appendInlines(
           card.className = `rendered-embed-card ${node.embed.kind}`;
           card.dataset.embedKind = node.embed.kind;
           const label = document.createElement("span");
-          appendInlines(label, node.label, options);
+          appendInlines(label, node.label, options, editableState);
           card.append(label);
           const button = document.createElement("button");
           button.type = "button";
@@ -443,7 +664,10 @@ function appendInlines(
         } else {
           const link = document.createElement("a");
           link.href = node.href; link.rel = "noreferrer noopener"; link.target = "_blank";
-          appendInlines(link, node.label, options); parent.append(link);
+          link.addEventListener("click", (event) => {
+            if (event.target instanceof Element && event.target.closest(".markdown-preview-editable-text") !== null) event.preventDefault();
+          });
+          appendInlines(link, node.label, options, editableState); parent.append(link);
         }
         break;
       }
@@ -459,7 +683,7 @@ function appendInlines(
             options.onOpenInternal?.({ target: node.target, fileId: node.fileId as string });
           });
         }
-        appendInlines(link, node.label, options);
+        appendInlines(link, node.label, options, editableState);
         parent.append(link);
         break;
       }
@@ -518,21 +742,24 @@ export function renderMarkdownPreview(
   const root = document.createElement("article");
   root.className = "markdown-preview-document";
   root.dataset.writingDirection = direction;
-  for (const block of parseMarkdownBlocks(text, quotes, internalLinks, media)) {
+  const rangesByBlock = options.editable === undefined ? [] : collectEditablePreviewRanges(text);
+  const blocks = parseMarkdownBlocks(text, quotes, internalLinks, media);
+  blocks.forEach((block, blockIndex) => {
+    const editableState = options.editable === undefined ? undefined : { ranges: rangesByBlock[blockIndex] ?? [], cursor: 0 };
     let element: HTMLElement;
     switch (block.kind) {
-      case "heading": element = document.createElement(`h${block.depth}`); appendInlines(element, block.content, options); break;
+      case "heading": element = document.createElement(`h${block.depth}`); appendInlines(element, block.content, options, editableState); break;
       case "paragraph": {
         element = document.createElement(block.presentation === "prose" ? "p" : "div");
         element.className = block.presentation === "prose" ? "markdown-prose" : "markdown-structural-paragraph";
-        appendInlines(element, block.content, options);
+        appendInlines(element, block.content, options, editableState);
         break;
       }
-      case "blockquote": element = document.createElement("blockquote"); appendInlines(element, block.content, options); break;
+      case "blockquote": element = document.createElement("blockquote"); appendInlines(element, block.content, options, editableState); break;
       case "code": element = document.createElement("pre"); element.textContent = block.text; break;
       case "list": {
         element = document.createElement(block.ordered ? "ol" : "ul");
-        for (const item of block.items) { const li = document.createElement("li"); appendInlines(li, item, options); element.append(li); }
+        for (const item of block.items) { const li = document.createElement("li"); appendInlines(li, item, options, editableState); element.append(li); }
         break;
       }
       case "table": {
@@ -546,7 +773,7 @@ export function renderMarkdownPreview(
           const header = document.createElement("th");
           header.scope = "col";
           header.dataset.alignment = block.alignments[index];
-          appendInlines(header, cell, options);
+          appendInlines(header, cell, options, editableState);
           headerRow.append(header);
         });
         head.append(headerRow);
@@ -557,7 +784,7 @@ export function renderMarkdownPreview(
           cells.forEach((cell, index) => {
             const data = document.createElement("td");
             data.dataset.alignment = block.alignments[index];
-            appendInlines(data, cell, options);
+            appendInlines(data, cell, options, editableState);
             row.append(data);
           });
           body.append(row);
@@ -568,6 +795,38 @@ export function renderMarkdownPreview(
       }
     }
     root.append(element);
+  });
+  if (options.editable !== undefined) {
+    const selection = (): void => {
+      const selected = document.getSelection();
+      if (selected === null) {
+        options.editable?.onSelectionChange?.(null);
+        return;
+      }
+      const anchor = selected.anchorNode;
+      const focus = selected.focusNode;
+      const anchorElement = anchor instanceof Element ? anchor.closest(".markdown-preview-editable-text") : anchor?.parentElement?.closest(".markdown-preview-editable-text");
+      const focusElement = focus instanceof Element ? focus.closest(".markdown-preview-editable-text") : focus?.parentElement?.closest(".markdown-preview-editable-text");
+      if (!(anchorElement instanceof HTMLElement) || anchorElement !== focusElement || anchor === null || focus === null) {
+        options.editable?.onSelectionChange?.(null);
+        return;
+      }
+      const offset = (node: Node, value: number): number => {
+        const range = document.createRange();
+        range.setStart(anchorElement, 0);
+        range.setEnd(node, value);
+        return range.toString().length;
+      };
+      try {
+        const base = Number(anchorElement.dataset.previewSourceStart);
+        const start = base + offset(anchor, selected.anchorOffset);
+        const end = base + offset(focus, selected.focusOffset);
+        options.editable?.onSelectionChange?.({ start: Math.min(start, end), end: Math.max(start, end) });
+      } catch { options.editable?.onSelectionChange?.(null); }
+    };
+    root.addEventListener("mouseup", selection);
+    root.addEventListener("keyup", selection);
+    root.addEventListener("focusin", selection);
   }
   container.replaceChildren(root);
 }

@@ -212,6 +212,33 @@ describe("WritingController", () => {
     expect(view.saveEnabled).toBe(true);
   });
 
+  it("applies a revision-checked Preview source range through the normal session surface", async () => {
+    const { controller, surface, view } = makeHarness({
+      open: () => Promise.resolve(opened("preview-1", "preview.md", "\uFEFF前\r\nMoon.\r\nMoon."))
+    });
+    await controller.open();
+    const initial = controller.getDocumentState();
+    if (initial === null) throw new Error("Expected open session");
+    const secondMoon = initial.currentText.lastIndexOf("Moon.");
+    const result = controller.applySourceEdit({
+      documentId: initial.documentId,
+      revision: initial.revision,
+      range: { start: secondMoon, end: secondMoon + "Moon.".length },
+      replacement: "月🌕"
+    });
+    expect(result).toMatchObject({ kind: "applied", range: { start: secondMoon, end: secondMoon + "月🌕".length } });
+    expect(surface.appliedEdits).toHaveLength(1);
+    expect(surface.appliedEdits[0]).toMatchObject({ range: { start: secondMoon, end: secondMoon + 5 }, text: "月🌕" });
+    expect(controller.getDocumentState()?.currentText).toBe("\uFEFF前\r\nMoon.\r\n月🌕");
+    expect(view.status).toEqual({ kind: "modified", message: "Modified" });
+    expect(controller.applySourceEdit({
+      documentId: initial.documentId,
+      revision: initial.revision,
+      range: { start: secondMoon, end: secondMoon + 5 },
+      replacement: "wrong"
+    })).toMatchObject({ kind: "error", code: "stale-target" });
+  });
+
   it("returns to clean when an edit reverts to the saved text", async () => {
     const { controller, surface, view } = makeHarness();
     await openDefault(controller);

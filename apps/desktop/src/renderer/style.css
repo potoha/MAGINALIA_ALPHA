@@ -1429,6 +1429,18 @@ button:focus-visible {
   text-decoration: underline;
 }
 
+/* Text islands carry exact source spans; the surrounding rendered DOM is not editable. */
+.markdown-preview-editable-text {
+  cursor: text;
+  border-radius: 0.12rem;
+  outline: none;
+}
+
+.markdown-preview-editable-text:focus {
+  background: color-mix(in srgb, #d9b79b 26%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, #8a402d 55%, transparent);
+}
+
 .rendered-local-media {
   display: block;
   max-width: 100%;
