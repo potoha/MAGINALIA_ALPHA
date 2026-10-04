@@ -72,6 +72,23 @@ describe("Workdesk portable and local state", () => {
     expect(local.workdesks[desk.identity.id]?.projects[project.identity.id]?.rootPath).toBe(await realpath(project.root));
   });
 
+  it("removes Workdesk membership without deleting the Project directory", async () => {
+    const desk = await fixture("workbench", "Desk");
+    const project = await fixture("project", "External Project");
+    const localPath = path.join(desk.root, "app-local.json");
+    const service = new WorkdeskService(new FileWorkdeskPathStore(localPath));
+    const opened = await service.open(desk.root);
+    await service.registerPortableProject(opened, project.identity);
+    await service.registerProjectPath(opened, await service.validateExternalProject(project.root));
+
+    await service.unregisterProject(opened, project.identity.id);
+
+    expect((await service.loadPortableIndex(opened)).projects).toEqual([]);
+    expect(await readFile(path.join(project.root, ".maginalia", "repository.json"), "utf8")).toContain(project.identity.id);
+    const local = JSON.parse(await readFile(localPath, "utf8")) as { workdesks: Record<string, { projects: Record<string, unknown> }> };
+    expect(local.workdesks[desk.identity.id]?.projects[project.identity.id]).toBeUndefined();
+  });
+
   it("safely falls back from corrupt local state", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-local-"));
     roots.push(root);

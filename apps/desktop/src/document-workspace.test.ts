@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -24,6 +24,105 @@ function opened(result: DocumentWorkspaceResult): DocumentWorkspaceOpened {
 }
 
 describe("Document workspace service", () => {
+  it("lists safe hierarchical metadata while hiding dot names and leading-quote directories only in Explorer", async () => {
+    await withTempDirectory(async (root) => {
+      for (const name of [".maginalia", ".git", ".codex", ".研究", "'temp", "'資料", "Alice's notes", "資料", "assets", "projects"]) {
+        await mkdir(path.join(root, name));
+        await writeFile(path.join(root, name, "memo.md"), name, "utf8");
+      }
+      await writeFile(path.join(root, ".hidden.md"), "hidden", "utf8");
+      await writeFile(path.join(root, "'quoted-file.md"), "file", "utf8");
+      await writeFile(path.join(root, "assets", "図.png"), "image", "utf8");
+      const owner = {};
+      const service = new DocumentWorkspaceService();
+      const documentId = opened(await service.openForOwner(owner, root)).document.documentId;
+      const listed = await service.listExplorerForOwner(owner, documentId, ["projects"]);
+      expect(listed.kind).toBe("listed");
+      if (listed.kind !== "listed") throw new Error("Explorer unavailable");
+      expect(listed.entries.map((entry) => entry.relativeName)).toEqual([
+        "'quoted-file.md", "Alice's notes", "Alice's notes/memo.md", "assets", "assets/memo.md", "assets/図.png", "資料", "資料/memo.md"
+      ]);
+      const folder = listed.entries.find((entry) => entry.relativeName === "資料")!;
+      expect(listed.entries.find((entry) => entry.relativeName === "資料/memo.md")?.parentId).toBe(folder.entryId);
+      expect(listed.entries.find((entry) => entry.relativeName === "assets/図.png")?.kind).toBe("file");
+      expect(JSON.stringify(listed)).not.toContain(root);
+      expect((await readdir(root)).includes("'temp")).toBe(true);
+      expect(await readFile(path.join(root, "'資料", "memo.md"), "utf8")).toBe("'資料");
+      const searchable = await service.listProjectMarkdownForOwner(owner, documentId);
+      expect(Array.isArray(searchable) && searchable.some((entry) => entry.displayName === "'資料/memo.md")).toBe(true);
+      expect(await service.listExplorerForOwner({}, documentId)).toMatchObject({ kind: "error", code: "document-not-owned" });
+      const again = await service.listExplorerForOwner(owner, documentId, ["projects"]);
+      expect(again).toEqual(listed);
+    });
+  });
+
+  it("creates Unicode root and nested folders and Markdown without overwriting collisions", async () => {
+    await withTempDirectory(async (root) => {
+      const owner = {};
+      const service = new DocumentWorkspaceService();
+      const documentId = opened(await service.openForOwner(owner, root)).document.documentId;
+      const folder = await service.createFolderForOwner(owner, documentId, null, "資料");
+      expect(folder.kind).toBe("created");
+      if (folder.kind !== "created") throw new Error("Folder unavailable");
+      const nested = await service.createFolderForOwner(owner, documentId, folder.entry.entryId, "第一章");
+      expect(nested).toMatchObject({ kind: "created", entry: { relativeName: "資料/第一章", parentId: folder.entry.entryId } });
+      const manuscript = await service.createManuscriptForOwner(owner, documentId, "覚書.md", "---\ndocumentType: memo\n---\n本文", folder.entry.entryId);
+      expect(manuscript).toMatchObject({ kind: "created", manuscript: { displayName: "資料/覚書.md" } });
+      expect(await readFile(path.join(root, "資料", "覚書.md"), "utf8")).toContain("本文");
+      const listed = await service.listExplorerForOwner(owner, documentId);
+      if (listed.kind !== "listed" || manuscript.kind !== "created") throw new Error("Creation unavailable");
+      const file = listed.entries.find((entry) => entry.relativeName === "資料/覚書.md")!;
+      expect(file.entryId).toBe(manuscript.manuscript.manuscriptId);
+      expect(await service.resolveExplorerFilePath(owner, documentId, file.entryId)).toMatchObject({ kind: "resolved", canonicalPath: path.join(await realpath(root), "資料", "覚書.md") });
+      expect(await service.resolveExplorerFilePath(owner, documentId, folder.entry.entryId)).toMatchObject({ kind: "error", code: "explorer-entry-unavailable" });
+      expect(await service.createFolderForOwner(owner, documentId, null, "資料")).toMatchObject({ kind: "error", code: "folder-exists" });
+      expect(await service.createManuscriptForOwner(owner, documentId, "覚書.MD", "overwrite", folder.entry.entryId)).toMatchObject({ kind: "error", code: "manuscript-exists" });
+      expect(await service.createFolderForOwner(owner, documentId, null, "'presentational")).toMatchObject({ kind: "created" });
+    });
+  });
+
+  it("rejects unsafe or hidden creation names and guessed parent identities", async () => {
+    await withTempDirectory(async (root) => {
+      const owner = {};
+      const service = new DocumentWorkspaceService();
+      const documentId = opened(await service.openForOwner(owner, root)).document.documentId;
+      for (const name of ["", " ", ".", "..", ".codex", " .hidden", "../escape", "a/b", "a\\b", root, "C:\\escape", "CON", "nul.txt", "COM1", "LPT²", "bad:", "trailing.", "a\u0000b"]) {
+        expect(await service.createFolderForOwner(owner, documentId, null, name), name).toMatchObject({ kind: "error", code: "invalid-folder-name" });
+      }
+      for (const name of [".hidden.md", "../escape.md", "NUL.md", "a/b.md"]) {
+        expect(await service.createManuscriptForOwner(owner, documentId, name, "text"), name).toMatchObject({ kind: "error", code: "invalid-manuscript-name" });
+      }
+      expect(await service.createFolderForOwner(owner, documentId, "../../outside", "safe")).toMatchObject({ kind: "error", code: "explorer-entry-unavailable" });
+      expect(await service.createFolderForOwner(owner, documentId, "11111111-1111-4111-8111-111111111111", "safe")).toMatchObject({ kind: "error", code: "explorer-entry-unavailable" });
+      expect(await readdir(root)).toEqual([]);
+    });
+  });
+
+  it("rejects a selected parent replaced by a junction before creation or file resolution", async () => {
+    await withTempDirectory(async (directory) => {
+      const root = path.join(directory, "root");
+      const outside = path.join(directory, "outside");
+      await mkdir(root);
+      await mkdir(outside);
+      await mkdir(path.join(root, "notes"));
+      await writeFile(path.join(root, "notes", "memo.md"), "inside");
+      await writeFile(path.join(outside, "memo.md"), "outside");
+      const owner = {};
+      const service = new DocumentWorkspaceService();
+      const documentId = opened(await service.openForOwner(owner, root)).document.documentId;
+      const listed = await service.listExplorerForOwner(owner, documentId);
+      if (listed.kind !== "listed") throw new Error("Explorer unavailable");
+      const parent = listed.entries.find((entry) => entry.kind === "folder")!;
+      const file = listed.entries.find((entry) => entry.kind === "markdown")!;
+      await rm(path.join(root, "notes"), { recursive: true });
+      await symlink(outside, path.join(root, "notes"), "junction");
+      expect(await service.createFolderForOwner(owner, documentId, parent.entryId, "new")).toMatchObject({ kind: "error", code: "explorer-entry-unavailable" });
+      expect(await service.createManuscriptForOwner(owner, documentId, "new.md", "new", parent.entryId)).toMatchObject({ kind: "error", code: "explorer-entry-unavailable" });
+      expect(await service.resolveExplorerFilePath(owner, documentId, file.entryId)).toMatchObject({ kind: "error", code: "explorer-entry-unavailable" });
+      expect(await readdir(outside)).toEqual(["memo.md"]);
+    });
+  });
+
   it("canonicalizes a root and returns deterministic opaque document/manuscript metadata", async () => {
     await withTempDirectory(async (directory) => {
       const root = path.join(directory, "document");

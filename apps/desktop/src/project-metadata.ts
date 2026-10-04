@@ -65,7 +65,7 @@ export function parseProjectMetadata(value: string, fileName: string): ParsedPro
 
 export function normalizeProjectFileName(value: string): string | undefined {
   const name = value.trim();
-  if (!name || name === "." || name === "..") return undefined;
+  if (!name || name.startsWith(".") || name === "." || name === "..") return undefined;
   if (/[<>:"/\\|?*\u0000-\u001f]/u.test(name) || /[. ]$/u.test(name)) return undefined;
   if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu.test(name)) return undefined;
   if (!/\.md$/iu.test(name)) return `${name}.md`;
@@ -74,7 +74,7 @@ export function normalizeProjectFileName(value: string): string | undefined {
 
 export function normalizeProjectFolderName(value: string): string | undefined {
   const name = value.trim();
-  if (!name || name === "." || name === "..") return undefined;
+  if (!name || name.startsWith(".") || name === "." || name === "..") return undefined;
   if (/[<>:"/\\|?*\u0000-\u001f]/u.test(name) || /[. ]$/u.test(name)) return undefined;
   if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu.test(name)) return undefined;
   return name;

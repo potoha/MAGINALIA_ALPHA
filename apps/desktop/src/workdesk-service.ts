@@ -472,6 +472,39 @@ export class WorkdeskService {
   }
 
   /**
+   * Remove only the Workdesk membership. The Project directory and its
+   * repository remain untouched, whether it is an external registration or
+   * a direct child below `projects/`.
+   */
+  public async unregisterProject(workdesk: ValidatedWorkdesk, projectIdentityId: string): Promise<void> {
+    if (!isUuid(projectIdentityId)) {
+      throw new WorkdeskBoundaryError("invalid-project", "The Project identity is invalid.");
+    }
+    const current = await this.loadPortableIndex(workdesk);
+    if (!current.projects.some((entry) => entry.projectIdentityId.toLowerCase() === projectIdentityId.toLowerCase())) {
+      throw new WorkdeskBoundaryError("invalid-project", "This Project is not registered with the Workdesk.");
+    }
+    const next = Object.freeze({
+      schemaVersion: 1 as const,
+      projects: Object.freeze(current.projects.filter((entry) => entry.projectIdentityId.toLowerCase() !== projectIdentityId.toLowerCase()))
+    });
+    await this.savePortableIndex(workdesk, next);
+
+    const stored = await this.localStore.load();
+    const desk = stored.workdesks[workdesk.identity.id];
+    if (!desk || !desk.projects[projectIdentityId]) return;
+    const projects = { ...desk.projects };
+    delete projects[projectIdentityId];
+    await this.localStore.save(Object.freeze({
+      ...stored,
+      workdesks: Object.freeze({
+        ...stored.workdesks,
+        [workdesk.identity.id]: Object.freeze({ projects: Object.freeze(projects) })
+      })
+    }));
+  }
+
+  /**
    * List only verified immediate children.  Ordinary data in `projects/` is
    * deliberately ignored: it is not silently promoted, moved, or deleted.
    */

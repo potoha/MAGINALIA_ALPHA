@@ -35,6 +35,7 @@ describe("Project Markdown metadata", () => {
     expect(normalizeProjectFileName("idea")).toBe("idea.md");
     expect(normalizeProjectFileName("idea.md")).toBe("idea.md");
     expect(normalizeProjectFileName("../secret")).toBeUndefined();
+    expect(normalizeProjectFileName(".private.md")).toBeUndefined();
     const text = createProjectMarkdown("A note", "memo", new Date("2026-09-19T00:00:00Z"));
     expect(text).toContain("type: memo");
     expect(text).toContain("title: A note");
@@ -42,7 +43,7 @@ describe("Project Markdown metadata", () => {
   });
 
   it("keeps Project folder validation separate from document title validation", () => {
-    for (const name of ["../project", "foo/bar", "CON", "bad:name", ".", "..", "folder."]) {
+    for (const name of ["../project", "foo/bar", "CON", "bad:name", ".", "..", ".private", "folder."]) {
       expect(normalizeProjectFolderName(name)).toBeUndefined();
     }
     expect(normalizeProjectFolderName(" Coffee Sapling ")).toBe("Coffee Sapling");

@@ -15,14 +15,22 @@ function dependencies() {
       listRegisteredProjects: vi.fn(async () => []),
       setPrimary: vi.fn(async () => undefined),
       resolveRegisteredProject: vi.fn(),
+      validateExternalProject: vi.fn(),
+      validateDirectChildProject: vi.fn(),
+      prepareChildProjectDirectory: vi.fn(),
+      registerPortableProject: vi.fn(async () => undefined),
+      registerProjectPath: vi.fn(async () => undefined),
+      unregisterProject: vi.fn(async () => undefined),
     },
     repositories: { createForOwner: vi.fn(), resolveForOwner: vi.fn() },
     projects: {
       openForOwner: vi.fn(),
+      validateProjectRoot: vi.fn(),
       createFileForOwner: vi.fn(),
       readCopySourceForOwner: vi.fn(),
       copySourceToProjectForOwner: vi.fn()
-    }
+    },
+    isPermittedWorkdeskFolder: vi.fn(async () => true)
   };
 }
 
@@ -46,6 +54,28 @@ describe("Workdesk IPC boundary", () => {
     });
     expect(values.service.open).toHaveBeenCalledWith("C:\\資料\\Workdesk");
     expect(values.service.setPrimary).toHaveBeenCalledWith(desk);
+  });
+
+  it("does not return child Project Markdown as loose Workdesk files", async () => {
+    const values = dependencies();
+    const workdeskId = "11111111-1111-4111-8111-111111111111";
+    const desk = { canonicalRoot: "main-process-only", identity: { id: workdeskId, title: "Desk", kind: "workbench" } };
+    values.pickWorkdeskFolder.mockResolvedValue({ canceled: false, filePaths: ["C:\\資料\\Workdesk"] });
+    values.service.open.mockResolvedValue(desk);
+    values.projects.openForOwner.mockResolvedValue({
+      kind: "opened",
+      project: { projectId: workdeskId, displayName: "Desk" },
+      files: [
+        { fileId: "22222222-2222-4222-8222-222222222222", displayName: "memo.md", title: "Memo", documentType: "memo" },
+        { fileId: "33333333-3333-4333-8333-333333333333", displayName: "projects/Child/notes.md", title: "Child", documentType: "other" }
+      ]
+    });
+    const handlers = createWorkdeskHandlers(values as never);
+
+    await expect(handlers.openWorkdesk({ sender: owner })).resolves.toMatchObject({
+      kind: "opened",
+      files: [{ displayName: "memo.md" }]
+    });
   });
 
   it("rejects body creation before any service receives the request", async () => {
@@ -79,11 +109,26 @@ describe("Workdesk IPC boundary", () => {
     }
 
     expect(values.projects.createFileForOwner).toHaveBeenNthCalledWith(1, owner,
-      "11111111-1111-4111-8111-111111111111", "memo.md", "memo", "memo");
+      "11111111-1111-4111-8111-111111111111", "memo.md", "memo", "memo", null);
     expect(values.projects.createFileForOwner).toHaveBeenNthCalledWith(2, owner,
-      "11111111-1111-4111-8111-111111111111", "draft.md", "draft", "draft");
+      "11111111-1111-4111-8111-111111111111", "draft.md", "draft", "draft", null);
     expect(values.projects.createFileForOwner).toHaveBeenNthCalledWith(3, owner,
-      "11111111-1111-4111-8111-111111111111", "other.md", "other", "other");
+      "11111111-1111-4111-8111-111111111111", "other.md", "other", "other", null);
+  });
+
+  it("does not create a loose Workdesk file below a hidden child Project root", async () => {
+    const values = dependencies();
+    values.isPermittedWorkdeskFolder.mockResolvedValue(false);
+    const handlers = createWorkdeskHandlers(values as never);
+
+    await expect(handlers.createWorkdeskFile({ sender: owner }, {
+      workdeskId: "11111111-1111-4111-8111-111111111111",
+      fileName: "memo.md",
+      title: "Memo",
+      documentType: "memo",
+      parentEntryId: "22222222-2222-4222-8222-222222222222"
+    })).resolves.toMatchObject({ kind: "error", code: "invalid-request" });
+    expect(values.projects.createFileForOwner).not.toHaveBeenCalled();
   });
 
   it("does not allow renderer-supplied Project registration without an active Workdesk capability", async () => {
@@ -94,6 +139,44 @@ describe("Workdesk IPC boundary", () => {
     });
     expect(result).toMatchObject({ kind: "error", code: "workdesk-not-active" });
     expect(values.pickWorkdeskFolder).not.toHaveBeenCalled();
+  });
+
+  it("opens and validates an external Project before committing Workdesk membership", async () => {
+    const values = dependencies();
+    const workdeskId = "11111111-1111-4111-8111-111111111111";
+    const projectId = "22222222-2222-4222-8222-222222222222";
+    const desk = { canonicalRoot: "desk-main-process-only", identity: { id: workdeskId, title: "Desk", kind: "workbench" } };
+    const boundary = { canonicalRoot: "project-main-process-only", projectIdentity: { id: projectId, title: "External", kind: "project" } };
+    values.service.restorePrimary.mockResolvedValue(desk);
+    values.service.validateExternalProject.mockResolvedValue(boundary);
+    values.projects.openForOwner
+      .mockResolvedValueOnce({ kind: "opened", project: { projectId: workdeskId, displayName: "Desk" }, files: [] })
+      .mockResolvedValueOnce({ kind: "opened", project: { projectId, displayName: "External" }, files: [] });
+    values.projects.validateProjectRoot.mockResolvedValue({ kind: "opened", project: { projectId, displayName: "External" }, files: [] });
+    const handlers = createWorkdeskHandlers(values as never);
+
+    expect(await handlers.restoreWorkdesk({ sender: owner })).toMatchObject({ kind: "opened" });
+    expect(await handlers.registerWorkdeskProject({ sender: owner }, { workdeskIdentityId: workdeskId })).toMatchObject({ kind: "cancelled" });
+    values.pickExistingProjectFolder.mockResolvedValue({ canceled: false, filePaths: ["D:\\研究\\External"] });
+    expect(await handlers.registerWorkdeskProject({ sender: owner }, { workdeskIdentityId: workdeskId })).toMatchObject({ kind: "opened", node: { projectIdentityId: projectId } });
+    expect(values.projects.validateProjectRoot).toHaveBeenCalledWith(boundary.canonicalRoot);
+    expect(values.service.registerPortableProject).toHaveBeenCalledWith(desk, boundary.projectIdentity);
+    expect(values.service.registerProjectPath).toHaveBeenCalledWith(desk, boundary);
+  });
+
+  it("removes only active Workdesk membership through opaque identities", async () => {
+    const values = dependencies();
+    const workdeskId = "11111111-1111-4111-8111-111111111111";
+    const projectId = "22222222-2222-4222-8222-222222222222";
+    const desk = { canonicalRoot: "desk-main-process-only", identity: { id: workdeskId, title: "Desk", kind: "workbench" } };
+    values.service.restorePrimary.mockResolvedValue(desk);
+    values.projects.openForOwner.mockResolvedValue({ kind: "opened", project: { projectId: workdeskId, displayName: "Desk" }, files: [] });
+    const handlers = createWorkdeskHandlers(values as never);
+
+    await handlers.restoreWorkdesk({ sender: owner });
+    expect(await handlers.removeWorkdeskProject({ sender: owner }, { workdeskIdentityId: workdeskId, projectIdentityId: projectId }))
+      .toEqual({ kind: "removed", projectIdentityId: projectId });
+    expect(values.service.unregisterProject).toHaveBeenCalledWith(desk, projectId);
   });
 
   it("copies only an active opaque Workdesk source into a resolved registered Project", async () => {

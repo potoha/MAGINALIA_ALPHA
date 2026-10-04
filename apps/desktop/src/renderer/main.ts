@@ -38,6 +38,7 @@ import {
   type UnifiedSearchMode
 } from "./unified-search";
 import type { DocumentSessionChange } from "./document-sessions";
+import type { ExplorerEntry } from "../document-workspace";
 import type { WorkspaceState } from "../workspace-state-ipc";
 import { ModController, type ModControllerState } from "./mod-controller";
 import {
@@ -142,6 +143,7 @@ app.innerHTML = `
             <div id="project-new-menu" class="project-action-menu" role="menu" aria-label="New Markdown file" hidden>
               <span class="project-action-menu-label">New Markdown</span>
               ${PROJECT_DOCUMENT_TYPES.map((type) => `<button type="button" role="menuitem" data-document-type="${type}">${type}</button>`).join("")}
+              <button id="explorer-new-folder" type="button" role="menuitem">New Folder</button>
             </div>
             <div id="project-overflow-menu" class="project-action-menu" role="menu" aria-label="Project actions" hidden>
               <button id="open-project" type="button" role="menuitem">Open Project</button>
@@ -411,6 +413,7 @@ const verticalDirectionButton = requiredElement<HTMLButtonElement>("#document-ve
 const projectHeaderActions = requiredElement<HTMLElement>("#project-header-actions");
 const projectNewButton = requiredElement<HTMLButtonElement>("#project-new");
 const projectNewMenu = requiredElement<HTMLElement>("#project-new-menu");
+const explorerNewFolderButton = requiredElement<HTMLButtonElement>("#explorer-new-folder");
 const projectOverflowButton = requiredElement<HTMLButtonElement>("#project-overflow");
 const projectOverflowMenu = requiredElement<HTMLElement>("#project-overflow-menu");
 const projectCreateButton = requiredElement<HTMLButtonElement>("#project-create");
@@ -720,6 +723,7 @@ const updateCommandContext = (): void => {
     "renderer.orientation": previewController.getDirection(),
     "document.type": "markdown",
     "view.id": previewController.getMode(),
+    "project.active": projectController?.getState().project !== null,
     "workdesk.active": activeWorkdesk !== null
   });
 };
@@ -882,7 +886,7 @@ commandRegistry.register({
 });
 commandRegistry.register({
   id: "maginalia.workdesk.registerProject",
-  title: "Register existing Project with Workdesk",
+  title: "Open and Register existing Project with Workdesk",
   category: "Workdesk",
   keywords: ["project", "register", "external"],
   when: "workdesk.active"
@@ -892,6 +896,25 @@ commandRegistry.register({
   if (!desk || !api) throw new Error("Open a Workdesk before registering a Project.");
   await openWorkdeskProjectResult(await api.registerWorkdeskProject({
     workdeskIdentityId: desk.workdesk.workdeskIdentityId
+  }));
+});
+commandRegistry.register({
+  id: "maginalia.workdesk.removeProject",
+  title: "Remove Project from Workdesk",
+  category: "Workdesk",
+  keywords: ["project", "remove", "membership"],
+  when: "workdesk.active"
+}, async () => {
+  const desk = activeWorkdesk;
+  const projectIdentityId = pendingWorkdeskProjectIdentityId;
+  pendingWorkdeskProjectIdentityId = null;
+  const api = getWorkdeskApi();
+  if (!desk || !api || projectIdentityId === null) throw new Error("The Workdesk Project is no longer available.");
+  const project = desk.projects.find((candidate) => candidate.projectIdentityId === projectIdentityId);
+  if (!project || !window.confirm(`Remove ${project.title} from this Workdesk? The Project files will remain where they are.`)) return;
+  await openWorkdeskProjectResult(await api.removeWorkdeskProject({
+    workdeskIdentityId: desk.workdesk.workdeskIdentityId,
+    projectIdentityId
   }));
 });
 commandRegistry.register({
@@ -959,6 +982,60 @@ commandRegistry.register({
   if (result.kind !== "created") throw new Error(result.message);
   documentStatus.dataset.state = "saved";
   documentStatus.textContent = `Copied to ${destination.title}: ${result.file.displayName}`;
+});
+for (const documentType of PROJECT_DOCUMENT_TYPES) {
+  commandRegistry.register({
+    id: `maginalia.explorer.new${documentType[0]!.toUpperCase()}${documentType.slice(1)}`,
+    title: `New ${documentType} Markdown`,
+    category: "Explorer",
+    keywords: ["new", "markdown", documentType],
+    when: "project.active"
+  }, () => {
+    if (activeWorkdesk && documentType === "body") {
+      projectView.setProjectError("Workdesk documents must be memo, draft, or other.");
+      return;
+    }
+    beginProjectFileCreation(documentType);
+  });
+}
+commandRegistry.register({
+  id: "maginalia.explorer.newFolder",
+  title: "New Folder",
+  category: "Explorer",
+  keywords: ["new", "folder", "directory"],
+  when: "project.active"
+}, async () => {
+  const project = projectController?.getState().project;
+  const api = getExplorerApi();
+  if (!project || !api) throw new Error("Open a Project before creating a folder.");
+  const name = window.prompt("New folder name");
+  if (name === null) return;
+  const result = await api.createExplorerFolder({ documentId: project.projectId, parentEntryId: selectedExplorerFolderId, name });
+  if (result.kind === "error") {
+    projectView.setProjectError(result.message);
+    return;
+  }
+  selectedExplorerFolderId = result.entry.entryId;
+  await refreshExplorer(project.projectId);
+});
+commandRegistry.register({
+  id: "maginalia.explorer.createFile",
+  title: "Create Markdown File",
+  description: "Create the Markdown file from the active Explorer form.",
+  category: "Explorer",
+  keywords: ["create", "file", "markdown"],
+  when: "project.active"
+}, async () => {
+  await createSelectedProjectFile();
+});
+commandRegistry.register({
+  id: "maginalia.explorer.delete",
+  title: "Delete Explorer File",
+  category: "Explorer",
+  keywords: ["delete", "remove", "trash"],
+  when: "project.active"
+}, async () => {
+  await deleteSelectedExplorerFile();
 });
 for (const documentType of ["memo", "draft", "other"] as const) {
   commandRegistry.register({
@@ -1314,6 +1391,10 @@ function renderWorkspaceState(state: WorkspaceNavigationState): void {
 
 let selectedProjectDocumentType: ProjectDocumentType | null = null;
 let selectedProjectFileId: string | null = null;
+let selectedExplorerEntryId: string | null = null;
+let selectedExplorerFolderId: string | null = null;
+let explorerDocumentId: string | null = null;
+let explorerEntries: readonly ExplorerEntry[] = [];
 type ActiveWorkdesk = Extract<WorkdeskOpenResult, { readonly kind: "opened" }>;
 let activeWorkdesk: ActiveWorkdesk | null = null;
 let pendingWorkdeskProjectIdentityId: string | null = null;
@@ -1334,7 +1415,16 @@ function renderWorkdeskProjectNodes(state: ActiveWorkdesk): void {
       pendingWorkdeskProjectIdentityId = project.projectIdentityId;
       void commandRegistry.execute("maginalia.workdesk.openProject", commandContext.snapshot());
     });
-    item.append(button);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "project-header-action";
+    remove.textContent = "Remove";
+    remove.title = `Remove ${project.title} from this Workdesk`;
+    remove.addEventListener("click", () => {
+      pendingWorkdeskProjectIdentityId = project.projectIdentityId;
+      void commandRegistry.execute("maginalia.workdesk.removeProject", commandContext.snapshot());
+    });
+    item.append(button, remove);
     workdeskProjectList.append(item);
   }
 }
@@ -1345,6 +1435,14 @@ function setWorkdeskDocumentTypes(enabled: boolean): void {
     button.hidden = enabled && isBody;
     button.disabled = enabled && isBody;
   }
+}
+
+function entriesContainId(
+  entries: readonly ExplorerEntry[],
+  files: ProjectNavigationState["files"],
+  entryId: string
+): boolean {
+  return entries.some((entry) => entry.entryId === entryId) || files.some((file) => file.fileId === entryId);
 }
 
 function renderProjectState(state: ProjectNavigationState): void {
@@ -1361,15 +1459,28 @@ function renderProjectState(state: ProjectNavigationState): void {
 
   if (!state.project) {
     selectedProjectFileId = null;
+    selectedExplorerEntryId = null;
+    selectedExplorerFolderId = null;
+    explorerDocumentId = null;
+    explorerEntries = [];
     emptyDocumentMessage.textContent = desk
       ? "Open or create a Workdesk to see its loose Markdown documents."
       : "Open or create a Project folder to see its Markdown files.";
     emptyDocumentMessage.hidden = false;
     return;
   }
+  if (explorerDocumentId !== state.project.projectId) {
+    explorerDocumentId = state.project.projectId;
+    explorerEntries = [];
+    selectedExplorerFolderId = null;
+    void refreshExplorer(state.project.projectId);
+  }
   const selectedFileStillExists = state.files.some((file) => file.fileId === selectedProjectFileId);
   if (!selectedFileStillExists) selectedProjectFileId = state.activeFileId ?? state.files[0]?.fileId ?? null;
-  if (state.files.length === 0) {
+  if (selectedExplorerEntryId === null || !entriesContainId(explorerEntries, state.files, selectedExplorerEntryId)) {
+    selectedExplorerEntryId = selectedProjectFileId;
+  }
+  if (state.files.length === 0 && explorerEntries.length === 0) {
     emptyDocumentMessage.textContent = desk
       ? "This Workdesk has no loose Markdown documents yet. Use + to create one."
       : "This Project has no Markdown files yet. Use + to create one.";
@@ -1378,9 +1489,68 @@ function renderProjectState(state: ProjectNavigationState): void {
   }
 
   emptyDocumentMessage.hidden = true;
-  for (const file of state.files) {
+  const entries = explorerDocumentId === state.project.projectId && explorerEntries.length > 0
+    ? explorerEntries
+    : state.files.map((file) => ({
+      entryId: file.fileId,
+      parentId: null,
+      displayName: file.displayName,
+      relativeName: file.displayName,
+      kind: "markdown" as const
+    }));
+  for (const entry of entries) {
+    const indent = Math.max(0, entry.relativeName.split("/").length - 1);
     const item = document.createElement("li");
     item.className = "project-file-row";
+    item.style.paddingInlineStart = `${indent * 0.9}rem`;
+    if (entry.kind === "folder") {
+      item.dataset.explorerFolderId = entry.entryId;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "manuscript-button explorer-folder";
+      button.textContent = `📁 ${entry.displayName}`;
+      button.title = entry.relativeName;
+      button.setAttribute("aria-selected", String(selectedExplorerFolderId === entry.entryId));
+      button.addEventListener("click", () => {
+        selectedExplorerFolderId = entry.entryId;
+        selectedProjectFileId = null;
+        selectedExplorerEntryId = null;
+        renderProjectState(projectController?.getState() ?? state);
+      });
+      item.append(button);
+      manuscriptList.append(item);
+      continue;
+    }
+    const file = entry.kind === "markdown"
+      ? state.files.find((candidate) => candidate.fileId === entry.entryId)
+      : undefined;
+    if (!file) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "manuscript-button explorer-ordinary-file";
+      button.textContent = entry.displayName;
+      button.title = entry.relativeName;
+      button.setAttribute("aria-selected", String(selectedExplorerEntryId === entry.entryId));
+      button.addEventListener("click", () => {
+        selectedExplorerEntryId = entry.entryId;
+        selectedProjectFileId = null;
+        selectedExplorerFolderId = null;
+        renderProjectState(projectController?.getState() ?? state);
+      });
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "project-header-action explorer-delete";
+      remove.textContent = "Delete";
+      remove.title = `Delete ${entry.displayName}`;
+      remove.addEventListener("click", () => {
+        selectedExplorerEntryId = entry.entryId;
+        selectedProjectFileId = null;
+        void commandRegistry.execute("maginalia.explorer.delete", commandContext.snapshot());
+      });
+      item.append(button, remove);
+      manuscriptList.append(item);
+      continue;
+    }
     item.dataset.projectFileId = file.fileId;
     const button = document.createElement("button");
     button.type = "button";
@@ -1404,7 +1574,17 @@ function renderProjectState(state: ProjectNavigationState): void {
       button.setAttribute("aria-current", "page");
     }
     item.setAttribute("role", "none");
-    item.append(button);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "project-header-action explorer-delete";
+    remove.textContent = "Delete";
+    remove.title = `Delete ${file.displayName}`;
+    remove.addEventListener("click", () => {
+      selectedProjectFileId = file.fileId;
+      selectedExplorerEntryId = file.fileId;
+      void commandRegistry.execute("maginalia.explorer.delete", commandContext.snapshot());
+    });
+    item.append(button, remove);
     manuscriptList.append(item);
   }
 }
@@ -1416,6 +1596,7 @@ function updateProjectActionAvailability(hasProject: boolean): void {
 
 function updateSelectedProjectFile(buttons: readonly HTMLButtonElement[], fileId: string | null): void {
   selectedProjectFileId = fileId;
+  selectedExplorerEntryId = fileId;
   for (const candidate of buttons) {
     candidate.setAttribute("aria-selected", String(candidate.dataset.manuscriptId === fileId));
   }
@@ -1462,6 +1643,57 @@ function beginProjectFileCreation(documentType: ProjectDocumentType): void {
   setProjectMenuOpen(projectNewMenu, projectNewButton, false);
   setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
   newFileTitle.focus();
+}
+
+async function createSelectedProjectFile(): Promise<void> {
+  const navigation = projectController;
+  if (!navigation) return;
+  const documentType = selectedProjectDocumentType ?? newFileType.value as ProjectDocumentType;
+  const fileName = selectedProjectDocumentType
+    ? createProjectFileName(
+      newFileTitle.value,
+      selectedProjectDocumentType,
+      navigation.getState().files.map((file) => file.displayName)
+    )
+    : newFileName.value;
+  newFileName.value = fileName;
+  if (activeWorkdesk) {
+    const desk = activeWorkdesk;
+    if (documentType === "body") {
+      projectView.setProjectError("Workdesk documents must be memo, draft, or other.");
+      return;
+    }
+    const api = getWorkdeskApi();
+    if (!api) {
+      projectView.setProjectError("Workdesk is unavailable. Reload MAGINALIA to try again.");
+      return;
+    }
+    try {
+      const result = await api.createWorkdeskFile({
+        workdeskId: desk.workdesk.documentId,
+        fileName,
+        title: newFileTitle.value,
+        documentType,
+        parentEntryId: selectedExplorerFolderId
+      });
+      if (result.kind === "created") {
+        await navigation.applyCreatedFile(result);
+        await refreshExplorer(desk.workdesk.documentId);
+        cancelProjectFileCreation(false);
+      } else if (result.kind === "error") {
+        projectView.setProjectError(result.message);
+      }
+    } catch {
+      projectView.setProjectError("The Workdesk Markdown file could not be created.");
+    }
+    return;
+  }
+  await navigation.createFile({ fileName, title: newFileTitle.value, documentType, parentEntryId: selectedExplorerFolderId });
+  if (selectedProjectDocumentType && navigation.getState().files.some((file) => file.displayName === fileName || file.displayName.endsWith(`/${fileName}`))) {
+    cancelProjectFileCreation(false);
+  }
+  const project = navigation.getState().project;
+  if (project) await refreshExplorer(project.projectId);
 }
 
 function bindProjectFileKeyboard(): void {
@@ -1560,6 +1792,7 @@ const workspaceView: WorkspaceNavigationView = {
 const projectView: ProjectNavigationView = {
   setProjectState(state: ProjectNavigationState): void {
     renderProjectState(state);
+    updateCommandContext();
     void persistWorkspaceState();
     bindProjectFileKeyboard();
     updateSmokeTextForSmoke?.();
@@ -1920,9 +2153,10 @@ type WorkdeskApi = {
   readonly openWorkdesk: () => Promise<WorkdeskOpenResult>;
   readonly createWorkdesk: (request: { readonly title: string }) => Promise<WorkdeskOpenResult>;
   readonly restoreWorkdesk: () => Promise<WorkdeskRestoreResult>;
-  readonly createWorkdeskFile: (request: { readonly workdeskId: string; readonly fileName: string; readonly title: string; readonly documentType: "memo" | "draft" | "other" }) => Promise<import("../workdesk-ipc").WorkdeskFileCreateResult>;
+  readonly createWorkdeskFile: (request: { readonly workdeskId: string; readonly fileName: string; readonly title: string; readonly documentType: "memo" | "draft" | "other"; readonly parentEntryId?: string | null }) => Promise<import("../workdesk-ipc").WorkdeskFileCreateResult>;
   readonly createWorkdeskProject: (request: { readonly workdeskIdentityId: string; readonly title: string }) => Promise<WorkdeskProjectResult>;
   readonly registerWorkdeskProject: (request: { readonly workdeskIdentityId: string }) => Promise<WorkdeskProjectResult>;
+  readonly removeWorkdeskProject: (request: { readonly workdeskIdentityId: string; readonly projectIdentityId: string }) => Promise<WorkdeskProjectResult>;
   readonly openWorkdeskProject: (request: { readonly workdeskIdentityId: string; readonly projectIdentityId: string }) => Promise<WorkdeskProjectResult>;
   readonly copyWorkdeskFileToProject: (request: { readonly workdeskId: string; readonly sourceFileId: string; readonly projectIdentityId: string; readonly documentType: ProjectDocumentType }) => Promise<WorkdeskCopyResult>;
 };
@@ -1936,6 +2170,7 @@ function getWorkdeskApi(): WorkdeskApi | null {
     || typeof api.createWorkdeskFile !== "function"
     || typeof api.createWorkdeskProject !== "function"
     || typeof api.registerWorkdeskProject !== "function"
+    || typeof api.removeWorkdeskProject !== "function"
     || typeof api.openWorkdeskProject !== "function"
     || typeof api.copyWorkdeskFileToProject !== "function") return null;
   return {
@@ -1945,9 +2180,76 @@ function getWorkdeskApi(): WorkdeskApi | null {
     createWorkdeskFile: (request) => api.createWorkdeskFile!(request),
     createWorkdeskProject: (request) => api.createWorkdeskProject!(request),
     registerWorkdeskProject: (request) => api.registerWorkdeskProject!(request),
+    removeWorkdeskProject: (request) => api.removeWorkdeskProject!(request),
     openWorkdeskProject: (request) => api.openWorkdeskProject!(request),
     copyWorkdeskFileToProject: (request) => api.copyWorkdeskFileToProject!(request)
   };
+}
+
+type ExplorerApi = {
+  readonly listExplorer: (request: { readonly documentId: string }) => Promise<import("../document-workspace").ExplorerListResult>;
+  readonly createExplorerFolder: (request: { readonly documentId: string; readonly parentEntryId: string | null; readonly name: string }) => Promise<import("../document-workspace").CreateFolderResult>;
+  readonly deleteExplorerFile: (request: { readonly documentId: string; readonly entryId: string }) => Promise<import("../document-workspace-ipc").ExplorerDeleteFileResult>;
+};
+
+function getExplorerApi(): ExplorerApi | null {
+  const api = window.maginalia;
+  if (!api
+    || typeof api.listExplorer !== "function"
+    || typeof api.createExplorerFolder !== "function"
+    || typeof api.deleteExplorerFile !== "function") return null;
+  return {
+    listExplorer: (request) => api.listExplorer!(request),
+    createExplorerFolder: (request) => api.createExplorerFolder!(request),
+    deleteExplorerFile: (request) => api.deleteExplorerFile!(request)
+  };
+}
+
+async function refreshExplorer(projectId: string): Promise<void> {
+  const api = getExplorerApi();
+  if (!api) return;
+  const result = await api.listExplorer({ documentId: projectId });
+  const activeProject = projectController?.getState().project;
+  if (activeProject?.projectId !== projectId) return;
+  if (result.kind === "error") {
+    projectView.setProjectError(result.message);
+    return;
+  }
+  explorerDocumentId = projectId;
+  explorerEntries = activeWorkdesk
+    ? result.entries.filter((entry) => entry.relativeName !== "projects" && !entry.relativeName.startsWith("projects/"))
+    : result.entries;
+  projectView.setProjectState(projectController?.getState() ?? { project: null, files: [], activeFileId: null });
+}
+
+async function deleteSelectedExplorerFile(): Promise<void> {
+  const navigation = projectController;
+  const project = navigation?.getState().project;
+  const entryId = selectedExplorerEntryId ?? selectedProjectFileId;
+  const api = getExplorerApi();
+  if (!navigation || !project || !entryId || !api) throw new Error("Select a file before deleting it.");
+  const entry = explorerEntries.find((candidate) => candidate.entryId === entryId);
+  if (entry?.kind === "folder") throw new Error("Folders cannot be deleted from the Explorer.");
+  const file = navigation.getState().files.find((candidate) => candidate.fileId === entryId);
+  const displayName = entry?.displayName ?? file?.displayName;
+  if (!displayName) throw new Error("The selected file is no longer available.");
+  const documentId = file ? navigation.getSessionIdForFile(entryId) : null;
+  const session = documentId ? controller.getDocumentState(documentId) : null;
+  if (session && session.currentText !== session.savedText
+    && !window.confirm(`Delete ${displayName}? Unsaved changes will be lost and the file will move to the Recycle Bin.`)) return;
+  if (!window.confirm(`Move ${displayName} to the Recycle Bin?`)) return;
+  const result = await api.deleteExplorerFile({ documentId: project.projectId, entryId });
+  if (result.kind !== "deleted") {
+    projectView.setProjectError(result.message);
+    return;
+  }
+  if (documentId) {
+    const views = controller.getDocumentViews().filter((view) => view.documentId === documentId);
+    for (const view of views) await controller.closeDocumentView(view.instanceId, () => "discard");
+  }
+  if (file) navigation.removeDeletedFile(entryId);
+  selectedExplorerEntryId = null;
+  await refreshExplorer(project.projectId);
 }
 
 function refreshActiveWorkdeskNode(node: { readonly projectIdentityId: string; readonly title: string; readonly available: boolean }): void {
@@ -1966,6 +2268,16 @@ async function openWorkdeskProjectResult(result: WorkdeskProjectResult): Promise
   if (result.kind === "cancelled") return;
   if (result.kind === "registered") {
     refreshActiveWorkdeskNode(result.node);
+    return;
+  }
+  if (result.kind === "removed") {
+    if (activeWorkdesk) {
+      activeWorkdesk = {
+        ...activeWorkdesk,
+        projects: activeWorkdesk.projects.filter((project) => project.projectIdentityId !== result.projectIdentityId)
+      };
+      projectView.setProjectState(projectController?.getState() ?? { project: null, files: [], activeFileId: null });
+    }
     return;
   }
   if (result.kind !== "opened") {
@@ -2180,10 +2492,14 @@ for (const button of projectNewMenu.querySelectorAll<HTMLButtonElement>("button[
   button.addEventListener("click", () => {
     const value = button.dataset.documentType;
     if ((PROJECT_DOCUMENT_TYPES as readonly string[]).includes(value ?? "")) {
-      beginProjectFileCreation(value as ProjectDocumentType);
+      const command = `maginalia.explorer.new${value![0]!.toUpperCase()}${value!.slice(1)}`;
+      void commandRegistry.execute(command, commandContext.snapshot());
     }
   });
 }
+explorerNewFolderButton.addEventListener("click", () => {
+  void commandRegistry.execute("maginalia.explorer.newFolder", commandContext.snapshot());
+});
 
 projectCreateButton.addEventListener("click", () => {
   cancelProjectFileCreation(false);
@@ -2613,6 +2929,10 @@ if (writingSmokeMode) {
     updateCommandContext();
   };
   const openStandaloneProject = (): void => {
+    if (activeWorkdesk) {
+      void commandRegistry.execute("maginalia.workdesk.registerProject", commandContext.snapshot());
+      return;
+    }
     const previousProjectId = projectController.getState().project?.projectId;
     void projectController.openProject().then(() => clearWorkdeskAfterProjectReplacement(previousProjectId));
   };
@@ -2668,46 +2988,7 @@ projectCreateForm.addEventListener("submit", (event) => {
 
 newFileForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (!projectController) return;
-  const documentType = selectedProjectDocumentType ?? newFileType.value as ProjectDocumentType;
-  const fileName = selectedProjectDocumentType
-    ? createProjectFileName(
-      newFileTitle.value,
-      selectedProjectDocumentType,
-      projectController.getState().files.map((file) => file.displayName)
-  )
-    : newFileName.value;
-  newFileName.value = fileName;
-  if (activeWorkdesk) {
-    if (documentType === "body") {
-      projectView.setProjectError("Workdesk documents must be memo, draft, or other.");
-      return;
-    }
-    const api = getWorkdeskApi();
-    if (!api) {
-      projectView.setProjectError("Workdesk is unavailable. Reload MAGINALIA to try again.");
-      return;
-    }
-    void api.createWorkdeskFile({
-      workdeskId: activeWorkdesk.workdesk.documentId,
-      fileName,
-      title: newFileTitle.value,
-      documentType
-    }).then((result) => {
-      if (result.kind === "created") {
-        void projectController?.applyCreatedFile(result);
-        cancelProjectFileCreation(false);
-      } else if (result.kind === "error") {
-        projectView.setProjectError(result.message);
-      }
-    }).catch(() => projectView.setProjectError("The Workdesk Markdown file could not be created."));
-    return;
-  }
-  void projectController.createFile({ fileName, title: newFileTitle.value, documentType }).then(() => {
-    if (selectedProjectDocumentType && projectController?.getState().files.some((file) => file.displayName === fileName)) {
-      cancelProjectFileCreation(false);
-    }
-  });
+  void executeCommand("maginalia.explorer.createFile");
 });
 
 saveButton.addEventListener("click", () => void executeCommand("maginalia.document.save"));

@@ -6,7 +6,14 @@ import {
 import {
   OPEN_DOCUMENT_CHANNEL,
   OPEN_MANUSCRIPT_CHANNEL,
+  LIST_EXPLORER_CHANNEL,
+  CREATE_EXPLORER_FOLDER_CHANNEL,
+  DELETE_EXPLORER_FILE_CHANNEL,
   type OpenDocumentResult,
+  type ExplorerDeleteFileRequest,
+  type ExplorerDeleteFileResult,
+  type ExplorerCreateFolderRequest,
+  type ExplorerListRequest,
   type OpenManuscriptRequest,
   type OpenManuscriptResult
 } from "./document-workspace-ipc";
@@ -114,6 +121,7 @@ import {
   type ProjectOpenResult,
   type ProjectRestoreResult
 } from "./project-ipc";
+import type { CreateFolderResult, ExplorerListResult } from "./document-workspace";
 import {
   CREATE_WORKDESK_CHANNEL,
   CREATE_WORKDESK_FILE_CHANNEL,
@@ -121,12 +129,14 @@ import {
   COPY_WORKDESK_FILE_TO_PROJECT_CHANNEL,
   OPEN_WORKDESK_CHANNEL,
   OPEN_WORKDESK_PROJECT_CHANNEL,
+  REMOVE_WORKDESK_PROJECT_CHANNEL,
   REGISTER_WORKDESK_PROJECT_CHANNEL,
   RESTORE_WORKDESK_CHANNEL,
   type CreateWorkdeskFileRequest,
   type CopyWorkdeskFileToProjectRequest,
   type CreateWorkdeskProjectRequest,
   type CreateWorkdeskRequest,
+  type RemoveWorkdeskProjectRequest,
   type OpenWorkdeskProjectRequest,
   type RegisterWorkdeskProjectRequest,
   type WorkdeskFileCreateResult,
@@ -167,7 +177,13 @@ import {
 
 export const OPEN_MARKDOWN_CHANNEL = "maginalia:open-markdown";
 export const SAVE_MARKDOWN_CHANNEL = "maginalia:save-markdown";
-export { OPEN_DOCUMENT_CHANNEL, OPEN_MANUSCRIPT_CHANNEL } from "./document-workspace-ipc";
+export {
+  OPEN_DOCUMENT_CHANNEL,
+  OPEN_MANUSCRIPT_CHANNEL,
+  LIST_EXPLORER_CHANNEL,
+  CREATE_EXPLORER_FOLDER_CHANNEL,
+  DELETE_EXPLORER_FILE_CHANNEL
+} from "./document-workspace-ipc";
 export {
   CREATE_PROJECT_CHANNEL,
   CREATE_PROJECT_FILE_CHANNEL,
@@ -182,6 +198,7 @@ export {
   CREATE_WORKDESK_PROJECT_CHANNEL,
   OPEN_WORKDESK_CHANNEL,
   OPEN_WORKDESK_PROJECT_CHANNEL,
+  REMOVE_WORKDESK_PROJECT_CHANNEL,
   REGISTER_WORKDESK_PROJECT_CHANNEL,
   RESTORE_WORKDESK_CHANNEL
 } from "./workdesk-ipc";
@@ -330,6 +347,9 @@ export interface MarkdownPreloadApi {
   saveMarkdown(request: SaveMarkdownRequest): Promise<SaveMarkdownResult>;
   openDocument?(): Promise<OpenDocumentResult>;
   openManuscript?(request: OpenManuscriptRequest): Promise<OpenManuscriptResult>;
+  listExplorer?(request: ExplorerListRequest): Promise<ExplorerListResult>;
+  createExplorerFolder?(request: ExplorerCreateFolderRequest): Promise<CreateFolderResult>;
+  deleteExplorerFile?(request: ExplorerDeleteFileRequest): Promise<ExplorerDeleteFileResult>;
   openProject?(): Promise<ProjectOpenResult>;
   createProject?(request: CreateProjectRequest): Promise<ProjectCreateResultWithCancel>;
   restoreProject?(): Promise<ProjectRestoreResult>;
@@ -341,6 +361,7 @@ export interface MarkdownPreloadApi {
   createWorkdeskFile?(request: CreateWorkdeskFileRequest): Promise<WorkdeskFileCreateResult>;
   createWorkdeskProject?(request: CreateWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
   registerWorkdeskProject?(request: RegisterWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
+  removeWorkdeskProject?(request: RemoveWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
   openWorkdeskProject?(request: OpenWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
   copyWorkdeskFileToProject?(request: CopyWorkdeskFileToProjectRequest): Promise<WorkdeskCopyResult>;
   openLibrary?(): Promise<OpenLibraryResult>;
@@ -386,6 +407,9 @@ export interface MarkdownPreloadApi {
 export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   openDocument(): Promise<OpenDocumentResult>;
   openManuscript(request: OpenManuscriptRequest): Promise<OpenManuscriptResult>;
+  listExplorer(request: ExplorerListRequest): Promise<ExplorerListResult>;
+  createExplorerFolder(request: ExplorerCreateFolderRequest): Promise<CreateFolderResult>;
+  deleteExplorerFile(request: ExplorerDeleteFileRequest): Promise<ExplorerDeleteFileResult>;
   openProject(): Promise<ProjectOpenResult>;
   createProject(request: CreateProjectRequest): Promise<ProjectCreateResultWithCancel>;
   restoreProject(): Promise<ProjectRestoreResult>;
@@ -397,6 +421,7 @@ export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   createWorkdeskFile(request: CreateWorkdeskFileRequest): Promise<WorkdeskFileCreateResult>;
   createWorkdeskProject(request: CreateWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
   registerWorkdeskProject(request: RegisterWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
+  removeWorkdeskProject(request: RemoveWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
   openWorkdeskProject(request: OpenWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
   copyWorkdeskFileToProject(request: CopyWorkdeskFileToProjectRequest): Promise<WorkdeskCopyResult>;
   openLibrary(): Promise<OpenLibraryResult>;
@@ -500,6 +525,9 @@ export function createMarkdownPreloadApi(
     saveMarkdown: (request) => invoke(SAVE_MARKDOWN_CHANNEL, request) as Promise<SaveMarkdownResult>,
     openDocument: () => invoke(OPEN_DOCUMENT_CHANNEL) as Promise<OpenDocumentResult>,
     openManuscript: (request) => invoke(OPEN_MANUSCRIPT_CHANNEL, request) as Promise<OpenManuscriptResult>,
+    listExplorer: (request) => invoke(LIST_EXPLORER_CHANNEL, request) as Promise<ExplorerListResult>,
+    createExplorerFolder: (request) => invoke(CREATE_EXPLORER_FOLDER_CHANNEL, request) as Promise<CreateFolderResult>,
+    deleteExplorerFile: (request) => invoke(DELETE_EXPLORER_FILE_CHANNEL, request) as Promise<ExplorerDeleteFileResult>,
     openProject: () => invoke(OPEN_PROJECT_CHANNEL) as Promise<ProjectOpenResult>,
     createProject: (request) => invoke(CREATE_PROJECT_CHANNEL, request) as Promise<ProjectCreateResultWithCancel>,
     restoreProject: () => invoke(RESTORE_PROJECT_CHANNEL) as Promise<ProjectRestoreResult>,
@@ -511,6 +539,7 @@ export function createMarkdownPreloadApi(
     createWorkdeskFile: (request) => invoke(CREATE_WORKDESK_FILE_CHANNEL, request) as Promise<WorkdeskFileCreateResult>,
     createWorkdeskProject: (request) => invoke(CREATE_WORKDESK_PROJECT_CHANNEL, request) as Promise<WorkdeskProjectResult>,
     registerWorkdeskProject: (request) => invoke(REGISTER_WORKDESK_PROJECT_CHANNEL, request) as Promise<WorkdeskProjectResult>,
+    removeWorkdeskProject: (request) => invoke(REMOVE_WORKDESK_PROJECT_CHANNEL, request) as Promise<WorkdeskProjectResult>,
     openWorkdeskProject: (request) => invoke(OPEN_WORKDESK_PROJECT_CHANNEL, request) as Promise<WorkdeskProjectResult>,
     copyWorkdeskFileToProject: (request) => invoke(COPY_WORKDESK_FILE_TO_PROJECT_CHANNEL, request) as Promise<WorkdeskCopyResult>,
     openLibrary: () => invoke(OPEN_LIBRARY_CHANNEL) as Promise<OpenLibraryResult>,

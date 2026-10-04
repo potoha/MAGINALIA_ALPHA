@@ -39,6 +39,8 @@ export interface CreateProjectFileRequest {
   readonly fileName: string;
   readonly title: string;
   readonly documentType: ProjectDocumentType;
+  /** Opaque Explorer folder ID; null creates at the Project root. */
+  readonly parentEntryId?: string | null;
 }
 
 export interface ProjectCancelled {
@@ -136,12 +138,17 @@ function isOpenProjectFileRequest(value: unknown): value is OpenProjectFileReque
 }
 
 function isCreateProjectFileRequest(value: unknown): value is CreateProjectFileRequest {
-  return isExactRecord(value, ["projectId", "fileName", "title", "documentType"])
-    && isOpaqueId(value.projectId)
+  if (!isRecord(value)) return false;
+  const keys = Reflect.ownKeys(value);
+  if (!(keys.length === 4 || keys.length === 5)
+    || !["projectId", "fileName", "title", "documentType"].every((key) => keys.includes(key))
+    || (keys.length === 5 && !keys.includes("parentEntryId"))) return false;
+  return isOpaqueId(value.projectId)
     && typeof value.fileName === "string"
     && typeof value.title === "string"
     && typeof value.documentType === "string"
-    && (PROJECT_DOCUMENT_TYPES as readonly string[]).includes(value.documentType);
+    && (PROJECT_DOCUMENT_TYPES as readonly string[]).includes(value.documentType)
+    && (value.parentEntryId === undefined || value.parentEntryId === null || isOpaqueId(value.parentEntryId));
 }
 
 export function createProjectHandlers(dependencies: ProjectHandlerDependencies): ProjectHandlers {
