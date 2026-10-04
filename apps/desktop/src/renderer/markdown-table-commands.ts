@@ -1,0 +1,155 @@
+export type TableAlignment = "left" | "center" | "right" | "none";
+export type TableRowKind = "header" | "body";
+
+export interface MarkdownTableCellTarget {
+  readonly rowKind: TableRowKind;
+  readonly rowIndex: number;
+  readonly columnIndex: number;
+  /** Exact original UTF-16 content range, excluding surrounding cell padding. */
+  readonly start: number;
+  readonly end: number;
+  readonly value: string;
+}
+
+export interface MarkdownTableTarget {
+  readonly start: number;
+  readonly end: number;
+  readonly header: readonly string[];
+  readonly rows: readonly (readonly string[])[];
+  readonly alignments: readonly TableAlignment[];
+  readonly cells: readonly MarkdownTableCellTarget[];
+}
+
+export type TableOperation = "addRowAbove" | "addRowBelow" | "deleteRow" | "addColumnBefore" | "addColumnAfter" | "deleteColumn";
+
+interface SourceLine { readonly text: string; readonly start: number; readonly end: number; }
+
+function linesOf(text: string): readonly SourceLine[] {
+  const lines: SourceLine[] = [];
+  let cursor = 0;
+  while (cursor <= text.length) {
+    const newline = text.indexOf("\n", cursor);
+    const rawEnd = newline < 0 ? text.length : newline;
+    const end = rawEnd > cursor && text[rawEnd - 1] === "\r" ? rawEnd - 1 : rawEnd;
+    const bom = cursor === 0 && text.startsWith("\uFEFF") ? 1 : 0;
+    lines.push({ text: text.slice(cursor + bom, end), start: cursor + bom, end });
+    if (newline < 0) break;
+    cursor = newline + 1;
+  }
+  return lines;
+}
+
+function alignment(value: string): TableAlignment | null {
+  const text = value.trim();
+  if (!/^:?-{3,}:?$/u.test(text)) return null;
+  if (text.startsWith(":") && text.endsWith(":")) return "center";
+  if (text.startsWith(":")) return "left";
+  if (text.endsWith(":")) return "right";
+  return "none";
+}
+
+function logicalCell(raw: string): string {
+  return raw.replace(/\\([|\\])/gu, "$1").trim();
+}
+
+function rowCells(line: SourceLine): readonly { readonly value: string; readonly start: number; readonly end: number }[] | null {
+  if (!line.text.includes("|")) return null;
+  let start = 0;
+  while (start < line.text.length && /[ \t]/u.test(line.text[start]!)) start += 1;
+  let end = line.text.length;
+  while (end > start && /[ \t]/u.test(line.text[end - 1]!)) end -= 1;
+  if (line.text[start] === "|") start += 1;
+  if (line.text[end - 1] === "|") end -= 1;
+  const cells: Array<{ value: string; start: number; end: number }> = [];
+  let cellStart = start;
+  let escaped = false;
+  for (let index = start; index <= end; index += 1) {
+    const boundary = index === end || (line.text[index] === "|" && !escaped);
+    if (boundary) {
+      let contentStart = cellStart;
+      let contentEnd = index;
+      while (contentStart < contentEnd && /[ \t]/u.test(line.text[contentStart]!)) contentStart += 1;
+      while (contentEnd > contentStart && /[ \t]/u.test(line.text[contentEnd - 1]!)) contentEnd -= 1;
+      cells.push({ value: logicalCell(line.text.slice(contentStart, contentEnd)), start: line.start + contentStart, end: line.start + contentEnd });
+      cellStart = index + 1;
+    }
+    if (index < end && line.text[index] === "\\") escaped = !escaped;
+    else escaped = false;
+  }
+  return cells;
+}
+
+export function collectMarkdownTables(text: string): readonly MarkdownTableTarget[] {
+  const lines = linesOf(text);
+  const tables: MarkdownTableTarget[] = [];
+  for (let index = 0; index + 1 < lines.length;) {
+    const header = rowCells(lines[index]!);
+    const divider = rowCells(lines[index + 1]!);
+    const alignments = header === null || divider === null || header.length === 0 || header.length !== divider.length
+      ? null : divider.map((cell) => alignment(cell.value));
+    if (header === null || alignments === null || alignments.some((item) => item === null)) { index += 1; continue; }
+    const rows: Array<readonly { readonly value: string; readonly start: number; readonly end: number }[]> = [];
+    let endIndex = index + 2;
+    while (endIndex < lines.length) {
+      const row = rowCells(lines[endIndex]!);
+      if (row === null || row.length < header.length) break;
+      rows.push(row.slice(0, header.length));
+      endIndex += 1;
+    }
+    const cells: MarkdownTableCellTarget[] = header.map((cell, columnIndex) => ({ ...cell, rowKind: "header", rowIndex: 0, columnIndex }));
+    rows.forEach((row, rowIndex) => row.forEach((cell, columnIndex) => cells.push({ ...cell, rowKind: "body", rowIndex, columnIndex })));
+    tables.push(Object.freeze({
+      start: lines[index]!.start,
+      end: lines[Math.max(index + 1, endIndex - 1)]!.end,
+      header: header.map((cell) => cell.value),
+      rows: rows.map((row) => row.map((cell) => cell.value)),
+      alignments: alignments as readonly TableAlignment[],
+      cells
+    }));
+    index = endIndex;
+  }
+  return Object.freeze(tables);
+}
+
+export function escapeTableCell(value: string): string {
+  return value.replace(/\\/gu, "\\\\").replace(/\|/gu, "\\|");
+}
+
+function divider(alignment: TableAlignment): string {
+  return alignment === "left" ? ":---" : alignment === "center" ? ":---:" : alignment === "right" ? "---:" : "---";
+}
+
+export function serializeMarkdownTable(table: Pick<MarkdownTableTarget, "header" | "rows" | "alignments">): string {
+  const row = (cells: readonly string[]) => `| ${cells.map(escapeTableCell).join(" | ")} |`;
+  return [row(table.header), `| ${table.alignments.map(divider).join(" | ")} |`, ...table.rows.map(row)].join("\n");
+}
+
+export function insertMarkdownTable(text: string, start: number, end: number): { readonly replacement: string } {
+  const before = text.slice(0, start);
+  const after = text.slice(end);
+  const prefix = before.length > 0 && !/\n\n$/u.test(before) ? (before.endsWith("\n") ? "\n" : "\n\n") : "";
+  const suffix = after.length > 0 && !/^\n\n/u.test(after) ? (after.startsWith("\n") ? "\n" : "\n\n") : "";
+  return { replacement: `${prefix}| Column 1 | Column 2 |\n| --- | --- |\n|  |  |${suffix}` };
+}
+
+export function transformMarkdownTable(table: MarkdownTableTarget, rowKind: TableRowKind, rowIndex: number, columnIndex: number, operation: TableOperation): string | null {
+  const header = [...table.header];
+  const rows = table.rows.map((row) => [...row]);
+  const alignments = [...table.alignments];
+  if (operation === "addRowAbove") {
+    if (rowKind === "header") return null;
+    rows.splice(rowIndex, 0, Array(header.length).fill(""));
+  } else if (operation === "addRowBelow") {
+    rows.splice(rowKind === "header" ? 0 : rowIndex + 1, 0, Array(header.length).fill(""));
+  } else if (operation === "deleteRow") {
+    if (rowKind === "header") return null;
+    rows.splice(rowIndex, 1);
+  } else if (operation === "addColumnBefore" || operation === "addColumnAfter") {
+    const at = operation === "addColumnBefore" ? columnIndex : columnIndex + 1;
+    header.splice(at, 0, ""); alignments.splice(at, 0, "none"); rows.forEach((row) => row.splice(at, 0, ""));
+  } else if (operation === "deleteColumn") {
+    if (header.length <= 1) return null;
+    header.splice(columnIndex, 1); alignments.splice(columnIndex, 1); rows.forEach((row) => row.splice(columnIndex, 1));
+  }
+  return serializeMarkdownTable({ header, rows, alignments });
+}
