@@ -3,6 +3,8 @@ import type { WritingDirection } from "./renderer-preferences";
 import { describeEmbed, parseSafeExternalUrl, type EmbedDescriptor } from "./embed-providers";
 import { internalLinkDisplayName, parseInternalLinkAt } from "../project-links";
 import { PreviewCompositionGate } from "./preview-editing";
+import { collectMarkdownTables, escapeTableCell, isMarkdownTableTerminator, type MarkdownTableCellTarget, type MarkdownTableTarget } from "./markdown-table-commands";
+import { isMarkdownFenceClosing, openingMarkdownFence } from "./markdown-fence";
 
 /** Safe, typed inline nodes.  Raw HTML is always plain text. */
 export type MarkdownInline =
@@ -98,15 +100,6 @@ function parseTableRow(line: string): readonly string[] | null {
   return cells.length > 0 ? cells : null;
 }
 
-function fenceOpening(line: string): RegExpExecArray | null {
-  return /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
-}
-
-function isFenceClosing(line: string, character: string, minimumLength: number): boolean {
-  const match = /^ {0,3}(`+|~+)[ \t]*$/u.exec(line);
-  return match !== null && match[1][0] === character && match[1].length >= minimumLength;
-}
-
 function tableAlignment(value: string): MarkdownTableAlignment | null {
   const trimmed = trimTableWhitespace(value);
   if (!/^:?-{3,}:?$/u.test(trimmed)) return null;
@@ -141,13 +134,6 @@ function isStructuralInline(node: MarkdownInline): boolean {
 function isStructuralParagraph(nodes: readonly MarkdownInline[]): boolean {
   return nodes.some((node) => isStructuralInline(node) && node.kind !== "text")
     && nodes.every(isStructuralInline);
-}
-
-function isTableTerminator(line: string): boolean {
-  return fenceOpening(line) !== null
-    || /^(#{1,6})\s+/u.test(line)
-    || line.startsWith(">")
-    || /^(?:[-*+]\s+|\d+\.\s+)/u.test(line);
 }
 
 function safeExternalHref(value: string): string | null {
@@ -303,13 +289,11 @@ export function parseMarkdownBlocks(
   while (index < lines.length) {
     const line = lines[index];
     if (line.trim().length === 0) { index += 1; continue; }
-    const fence = fenceOpening(line);
+    const fence = openingMarkdownFence(line);
     if (fence !== null) {
       const code: string[] = [];
-      const fenceCharacter = fence[1][0];
-      const fenceLength = fence[1].length;
       index += 1;
-      while (index < lines.length && !isFenceClosing(lines[index], fenceCharacter, fenceLength)) code.push(lines[index++]);
+      while (index < lines.length && !isMarkdownFenceClosing(lines[index], fence)) code.push(lines[index++]);
       if (index < lines.length) index += 1;
       blocks.push({ kind: "code", text: code.join("\n") });
       continue;
@@ -326,7 +310,7 @@ export function parseMarkdownBlocks(
       const rows: (readonly (readonly MarkdownInline[])[])[] = [];
       index += 2;
       while (index < lines.length) {
-        if (isTableTerminator(lines[index])) break;
+        if (isMarkdownTableTerminator(lines[index])) break;
         const row = parseTableRow(lines[index]);
         if (row === null) break;
         const cells = row.slice(0, columnCount);
@@ -367,7 +351,7 @@ export function parseMarkdownBlocks(
     const paragraph: string[] = [line];
     index += 1;
     while (index < lines.length && lines[index].trim().length > 0
-      && fenceOpening(lines[index]) === null
+      && openingMarkdownFence(lines[index]) === null
       && !/^(#{1,6})\s+/u.test(lines[index])
       && !lines[index].startsWith(">")
       && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index])
@@ -410,6 +394,9 @@ export interface MarkdownPreviewRenderOptions {
   readonly onOpenInternal?: (link: { readonly target: string; readonly fileId: string }) => void;
   /** Safe text-only authoring callback; HTML/DOM never becomes Markdown authority. */
   readonly editable?: PreviewEditableOptions;
+  /** Table authoring remains a Renderer projection over exact Markdown spans. */
+  readonly onTableTarget?: (target: MarkdownTableTarget, cell: MarkdownTableCellTarget) => void;
+  readonly onTableCommand?: (commandId: string, target: MarkdownTableTarget, cell: MarkdownTableCellTarget) => void;
 }
 
 export interface PreviewEditableTextRange {
@@ -508,11 +495,10 @@ export function collectEditablePreviewRanges(text: string): readonly (readonly P
   while (index < lines.length) {
     const line = lines[index]!;
     if (line.text.trim().length === 0) { index += 1; continue; }
-    const fence = fenceOpening(line.text);
+    const fence = openingMarkdownFence(line.text);
     if (fence !== null) {
-      const character = fence[1][0]; const minimum = fence[1].length;
       index += 1;
-      while (index < lines.length && !isFenceClosing(lines[index]!.text, character, minimum)) index += 1;
+      while (index < lines.length && !isMarkdownFenceClosing(lines[index]!.text, fence)) index += 1;
       if (index < lines.length) index += 1;
       blocks.push(Object.freeze([]));
       continue;
@@ -528,7 +514,7 @@ export function collectEditablePreviewRanges(text: string): readonly (readonly P
       const count = table.header.length;
       index += 2;
       while (index < lines.length) {
-        if (isTableTerminator(lines[index]!.text)) break;
+        if (isMarkdownTableTerminator(lines[index]!.text)) break;
         const row = parseTableRow(lines[index]!.text);
         if (row === null) break;
         index += 1;
@@ -564,7 +550,7 @@ export function collectEditablePreviewRanges(text: string): readonly (readonly P
     const paragraph: SourceLine[] = [line];
     index += 1;
     while (index < lines.length && lines[index]!.text.trim().length > 0
-      && fenceOpening(lines[index]!.text) === null
+      && openingMarkdownFence(lines[index]!.text) === null
       && !/^(#{1,6})\s+/u.test(lines[index]!.text)
       && !lines[index]!.text.startsWith(">")
       && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index]!.text)
@@ -627,6 +613,86 @@ function appendEditableText(
   element.addEventListener("focus", () => editable.onEditingChange?.(true));
   element.addEventListener("blur", () => editable.onEditingChange?.(false));
   parent.append(element);
+}
+
+function appendEditableTableCell(
+  parent: HTMLElement,
+  nodes: readonly MarkdownInline[],
+  cell: MarkdownTableCellTarget | undefined,
+  options: MarkdownPreviewRenderOptions
+): void {
+  if (cell === undefined || options.editable === undefined || nodes.length !== 1 || nodes[0]?.kind !== "text" || nodes[0].text !== cell.value) {
+    appendInlines(parent, nodes, options);
+    return;
+  }
+  const editable = options.editable;
+  const element = document.createElement("span");
+  element.className = "markdown-preview-editable-text markdown-preview-editable-table-cell";
+  element.contentEditable = "true";
+  element.spellcheck = true;
+  element.dataset.previewSourceStart = String(cell.start);
+  element.dataset.previewSourceEnd = String(cell.end);
+  element.dataset.previewRevision = String(editable.revision);
+  element.textContent = cell.value;
+  const composition = new PreviewCompositionGate();
+  const apply = (compositionFinal = false): void => {
+    if (!compositionFinal && !composition.mayCommitInput()) return;
+    const value = element.textContent ?? "";
+    if (/\r|\n/u.test(value)) return;
+    const result = editable.onEdit({
+      revision: Number(element.dataset.previewRevision),
+      range: { start: Number(element.dataset.previewSourceStart), end: Number(element.dataset.previewSourceEnd), text: cell.value },
+      replacement: escapeTableCell(value)
+    });
+    if (result.kind !== "applied") return;
+    element.dataset.previewSourceEnd = String(result.range.end);
+    element.dataset.previewRevision = String(result.revision);
+  };
+  element.addEventListener("compositionstart", () => composition.start());
+  element.addEventListener("compositionend", () => { if (composition.end()) apply(true); });
+  element.addEventListener("input", () => apply());
+  element.addEventListener("focus", () => editable.onEditingChange?.(true));
+  element.addEventListener("blur", () => editable.onEditingChange?.(false));
+  parent.append(element);
+}
+
+function appendTableControls(parent: HTMLElement, target: MarkdownTableTarget, currentCell: () => MarkdownTableCellTarget | undefined, options: MarkdownPreviewRenderOptions): void {
+  if (options.onTableCommand === undefined) return;
+  const controls = document.createElement("div");
+  controls.className = "markdown-table-controls";
+  controls.setAttribute("aria-label", "Table controls");
+  const buttons = new Map<string, HTMLButtonElement>();
+  const refreshAvailability = (): void => {
+    const cell = currentCell();
+    const headerCell = cell?.rowKind === "header";
+    buttons.get("maginalia.table.addRowAbove")!.disabled = headerCell || cell === undefined;
+    buttons.get("maginalia.table.addRowBelow")!.disabled = cell === undefined;
+    buttons.get("maginalia.table.deleteRow")!.disabled = !cell || headerCell;
+    buttons.get("maginalia.table.addColumnBefore")!.disabled = cell === undefined;
+    buttons.get("maginalia.table.addColumnAfter")!.disabled = cell === undefined;
+    buttons.get("maginalia.table.deleteColumn")!.disabled = cell === undefined || target.header.length <= 1;
+  };
+  for (const [id, label] of [
+    ["maginalia.table.addRowAbove", "Add row above"],
+    ["maginalia.table.addRowBelow", "Add row below"],
+    ["maginalia.table.deleteRow", "Delete row"],
+    ["maginalia.table.addColumnBefore", "Add column before"],
+    ["maginalia.table.addColumnAfter", "Add column after"],
+    ["maginalia.table.deleteColumn", "Delete column"]
+  ] as const) {
+    const button = document.createElement("button");
+    button.type = "button"; button.textContent = label; button.dataset.commandId = id;
+    button.addEventListener("click", () => {
+      const cell = currentCell();
+      if (cell !== undefined) options.onTableCommand?.(id, target, cell);
+    });
+    buttons.set(id, button);
+    controls.append(button);
+  }
+  parent.addEventListener("mouseover", refreshAvailability);
+  controls.addEventListener("focusin", refreshAvailability);
+  refreshAvailability();
+  parent.append(controls);
 }
 
 function appendInlines(
@@ -743,6 +809,8 @@ export function renderMarkdownPreview(
   root.className = "markdown-preview-document";
   root.dataset.writingDirection = direction;
   const rangesByBlock = options.editable === undefined ? [] : collectEditablePreviewRanges(text);
+  const tablesByBlock = options.editable === undefined ? [] : collectMarkdownTables(text);
+  let tableIndex = 0;
   const blocks = parseMarkdownBlocks(text, quotes, internalLinks, media);
   blocks.forEach((block, blockIndex) => {
     const editableState = options.editable === undefined ? undefined : { ranges: rangesByBlock[blockIndex] ?? [], cursor: 0 };
@@ -763,6 +831,8 @@ export function renderMarkdownPreview(
         break;
       }
       case "table": {
+        const tableTarget = tablesByBlock[tableIndex++];
+        let selectedTableCell = tableTarget?.cells[0];
         element = document.createElement("div");
         element.className = "markdown-table-wrapper";
         const table = document.createElement("table");
@@ -773,24 +843,35 @@ export function renderMarkdownPreview(
           const header = document.createElement("th");
           header.scope = "col";
           header.dataset.alignment = block.alignments[index];
-          appendInlines(header, cell, options, editableState);
+          const targetCell = tableTarget?.cells.find((candidate) => candidate.rowKind === "header" && candidate.columnIndex === index);
+          if (tableTarget !== undefined && targetCell !== undefined) {
+            header.addEventListener("focusin", () => { selectedTableCell = targetCell; options.onTableTarget?.(tableTarget, targetCell); });
+            header.addEventListener("mouseenter", () => { selectedTableCell = targetCell; options.onTableTarget?.(tableTarget, targetCell); });
+          }
+          appendEditableTableCell(header, cell, targetCell, options);
           headerRow.append(header);
         });
         head.append(headerRow);
         table.append(head);
         const body = document.createElement("tbody");
-        for (const cells of block.rows) {
+        for (const [rowIndex, cells] of block.rows.entries()) {
           const row = document.createElement("tr");
           cells.forEach((cell, index) => {
             const data = document.createElement("td");
             data.dataset.alignment = block.alignments[index];
-            appendInlines(data, cell, options, editableState);
+            const targetCell = tableTarget?.cells.find((candidate) => candidate.rowKind === "body" && candidate.rowIndex === rowIndex && candidate.columnIndex === index);
+            if (tableTarget !== undefined && targetCell !== undefined) {
+              data.addEventListener("focusin", () => { selectedTableCell = targetCell; options.onTableTarget?.(tableTarget, targetCell); });
+              data.addEventListener("mouseenter", () => { selectedTableCell = targetCell; options.onTableTarget?.(tableTarget, targetCell); });
+            }
+            appendEditableTableCell(data, cell, targetCell, options);
             row.append(data);
           });
           body.append(row);
         }
         table.append(body);
         element.append(table);
+        if (tableTarget !== undefined) appendTableControls(element, tableTarget, () => selectedTableCell, options);
         break;
       }
     }

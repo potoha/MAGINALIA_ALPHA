@@ -16,6 +16,8 @@ import {
 } from "./shelf-controller";
 import { MonacoMarkdownSurface } from "./monaco-surface";
 import { renderMarkdownPreview } from "./markdown-renderer";
+import { insertMarkdownTable, transformMarkdownTable, type MarkdownTableCellTarget, type MarkdownTableTarget, type TableOperation } from "./markdown-table-commands";
+import { mayDispatchTableTarget, ownsCurrentTableTarget, type ActiveTableTarget } from "./table-target";
 import { PreviewController } from "./preview-controller";
 import { createLocalStorageRendererPreferenceStore } from "./renderer-preferences";
 import { resolvePreviewMedia } from "./project-media";
@@ -630,6 +632,8 @@ controller.setAutosaveCoordinator(autosaveCoordinator);
 let projectController: ProjectNavigationController | undefined;
 const rendererPreferences = createLocalStorageRendererPreferenceStore();
 let previewMediaGeneration = 0;
+let activeTableTarget: ActiveTableTarget | null = null;
+let commandContextReady = false;
 let pendingInternalLinkOpen: { readonly fileId: string } | null = null;
 
 const previewApi = typeof window.maginalia.resolveReferences === "function"
@@ -642,6 +646,11 @@ const previewController = new PreviewController({
   view: {
     setPreviewState(state): void {
       const previewing = state.mode === "preview";
+      // Every rendered projection owns fresh ephemeral table targets.
+      if (activeTableTarget !== null) {
+        activeTableTarget = null;
+        if (commandContextReady) updateCommandContext();
+      }
       editorContainer.hidden = previewing;
       previewContainer.hidden = !previewing;
       editModeButton.setAttribute("aria-pressed", String(!previewing));
@@ -683,6 +692,15 @@ const previewController = new PreviewController({
         : undefined;
       const previewOptions = {
         editable,
+        onTableTarget: (table: MarkdownTableTarget, cell: MarkdownTableCellTarget) => {
+          const current = controller.getDocumentState();
+          if (current === null || current.documentId !== state.document!.documentId || current.revision !== state.document!.revision) return;
+          activeTableTarget = { documentId: state.document!.documentId, revision: state.document!.revision!, table, cell };
+          updateCommandContext();
+        },
+        onTableCommand: (commandId: string, table: MarkdownTableTarget, cell: MarkdownTableCellTarget) => {
+          if (mayDispatchTableTarget(activeTableTarget, controller.getDocumentState(), table, cell)) void executeCommand(commandId);
+        },
         onOpenInternal: ({ fileId }: { readonly target: string; readonly fileId: string }) => {
           pendingInternalLinkOpen = { fileId };
           void executeCommand("maginalia.link.openInTab");
@@ -737,6 +755,7 @@ const updateCommandContext = (): void => {
   const mediaType = mediaMatch === null
     ? "none"
     : /\.(?:mp4|webm|ogg)(?:[?#].*)?$/iu.test(mediaMatch[1] ?? line) ? "video" : "image";
+  const tableCurrent = ownsCurrentTableTarget(activeTableTarget, current);
   commandContext.patch({
     "editor.hasDocument": current !== null,
     "editor.hasSelection": selection.start !== selection.end,
@@ -744,6 +763,11 @@ const updateCommandContext = (): void => {
     "editor.linkType": linkType,
     "editor.mediaType": mediaType,
     "editor.hasQuoteRef": line.includes("<!-- maginalia:quote-ref "),
+    "table.active": tableCurrent,
+    "table.headerCell": tableCurrent && activeTableTarget?.cell.rowKind === "header",
+    "table.bodyCell": tableCurrent && activeTableTarget?.cell.rowKind === "body",
+    "table.canDeleteRow": tableCurrent && activeTableTarget?.cell.rowKind === "body",
+    "table.canDeleteColumn": tableCurrent && (activeTableTarget?.table.header.length ?? 0) > 1,
     "renderer.orientation": previewController.getDirection(),
     "document.type": "markdown",
     "view.id": previewController.getMode(),
@@ -751,7 +775,14 @@ const updateCommandContext = (): void => {
     "workdesk.active": activeWorkdesk !== null
   });
 };
-controller.onDocumentChange(() => updateCommandContext());
+commandContextReady = true;
+controller.onDocumentChange(() => {
+  const current = controller.getDocumentState();
+  if (!ownsCurrentTableTarget(activeTableTarget, current)) {
+    activeTableTarget = null;
+  }
+  updateCommandContext();
+});
 controller.onSelectionChange(() => updateCommandContext());
 registerWorkbenchCommands(commandRegistry, workbench, WORKBENCH_VIEW_MANIFEST);
 registerCoreCommands(commandRegistry, {
@@ -765,6 +796,40 @@ registerCoreCommands(commandRegistry, {
   saveDocument: () => controller.save(),
   contextKeys: commandContext
 });
+commandRegistry.register({ id: "maginalia.editor.insertTable", title: "Insert Table", category: "Editor", keywords: ["table", "insert", "markdown"], when: "editor.hasDocument" }, () => {
+  const target = controller.captureInsertionTarget();
+  const documentState = controller.getDocumentState();
+  if (target === null || documentState === null) return;
+  const inserted = insertMarkdownTable(documentState.currentText, target.range.start, target.range.end);
+  controller.applySourceEdit({ ...target, replacement: inserted.replacement });
+});
+const runTableOperation = (operation: TableOperation): void => {
+  const target = activeTableTarget;
+  const documentState = controller.getDocumentState();
+  if (target === null || !ownsCurrentTableTarget(target, documentState)) return;
+  const replacement = transformMarkdownTable(target.table, target.cell.rowKind, target.cell.rowIndex, target.cell.columnIndex, operation);
+  if (replacement === null) return;
+  controller.applySourceEdit({ documentId: target.documentId, revision: target.revision, range: { start: target.table.start, end: target.table.end }, replacement });
+  activeTableTarget = null;
+  updateCommandContext();
+};
+for (const [id, operation, title] of [
+  ["maginalia.table.addRowAbove", "addRowAbove", "Add Table Row Above"],
+  ["maginalia.table.addRowBelow", "addRowBelow", "Add Table Row Below"],
+  ["maginalia.table.deleteRow", "deleteRow", "Delete Table Row"],
+  ["maginalia.table.addColumnBefore", "addColumnBefore", "Add Table Column Before"],
+  ["maginalia.table.addColumnAfter", "addColumnAfter", "Add Table Column After"],
+  ["maginalia.table.deleteColumn", "deleteColumn", "Delete Table Column"]
+] as const) commandRegistry.register({
+  id,
+  title,
+  category: "Table",
+  keywords: ["table", "row", "column"],
+  when: operation === "addRowAbove" ? "table.bodyCell"
+    : operation === "deleteRow" ? "table.canDeleteRow"
+      : operation === "deleteColumn" ? "table.canDeleteColumn"
+        : "table.active"
+}, () => runTableOperation(operation));
 commandRegistry.register({
   id: "maginalia.renderer.showEdit",
   title: "Show Markdown Edit",
@@ -773,6 +838,8 @@ commandRegistry.register({
 }, () => {
   // Raw Edit immediately returns selection ownership to Monaco.
   controller.setExternalSelection(null);
+  activeTableTarget = null;
+  updateCommandContext();
   previewController.setMode("edit");
 });
 commandRegistry.register({
@@ -1127,6 +1194,7 @@ for (const contribution of [
   { id: "core.utility.quote", command: "maginalia.editor.toggleBlockquote", group: "lists", label: ">", title: "Toggle blockquote" },
   { id: "core.utility.internal-link", command: "maginalia.editor.insertInternalLink", group: "insert", label: "Internal Link", title: "Insert internal link" },
   { id: "core.utility.external-link", command: "maginalia.editor.insertExternalLink", group: "insert", label: "External Link", title: "Insert external link" },
+  { id: "core.utility.table", command: "maginalia.editor.insertTable", group: "insert", label: "Table", title: "Insert Markdown table" },
   { id: "core.utility.image", command: "maginalia.editor.importImage", group: "insert", label: "Image", title: "Import image asset" },
   { id: "core.utility.horizontal", command: "maginalia.renderer.setHorizontal", group: "presentation", label: "Horizontal", title: "Set horizontal writing" },
   { id: "core.utility.vertical", command: "maginalia.renderer.setVertical", group: "presentation", label: "Vertical", title: "Set vertical writing" },
