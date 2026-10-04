@@ -1,3 +1,5 @@
+import { isMarkdownFenceClosing, openingMarkdownFence } from "./markdown-fence";
+
 export type TableAlignment = "left" | "center" | "right" | "none";
 export type TableRowKind = "header" | "body";
 
@@ -123,7 +125,15 @@ function rowCells(line: SourceLine): readonly { readonly value: string; readonly
 export function collectMarkdownTables(text: string, sourceOffset = 0): readonly MarkdownTableTarget[] {
   const lines = linesOf(text, sourceOffset);
   const tables: MarkdownTableTarget[] = [];
-  for (let index = 0; index + 1 < lines.length;) {
+  for (let index = 0; index < lines.length;) {
+    const fence = openingMarkdownFence(lines[index]!.text);
+    if (fence !== null) {
+      index += 1;
+      while (index < lines.length && !isMarkdownFenceClosing(lines[index]!.text, fence)) index += 1;
+      if (index < lines.length) index += 1;
+      continue;
+    }
+    if (index + 1 >= lines.length) break;
     const header = rowCells(lines[index]!);
     const divider = rowCells(lines[index + 1]!);
     const alignments = header === null || divider === null || header.length === 0 || header.length !== divider.length

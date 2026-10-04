@@ -5,6 +5,7 @@ import { internalLinkDisplayName, parseInternalLinkAt } from "../project-links";
 import { PreviewCompositionGate } from "./preview-editing";
 import { collectMarkdownTables, escapeTableCell, isMarkdownTableTerminator, type MarkdownTableCellTarget, type MarkdownTableTarget } from "./markdown-table-commands";
 import { projectMarkdownBody } from "./document-properties";
+import { isMarkdownFenceClosing, openingMarkdownFence } from "./markdown-fence";
 
 /** Safe, typed inline nodes.  Raw HTML is always plain text. */
 export type MarkdownInline =
@@ -98,15 +99,6 @@ function parseTableRow(line: string): readonly string[] | null {
   cells.push(trimTableWhitespace(cell));
   if (hasTrailingPipe) cells.pop();
   return cells.length > 0 ? cells : null;
-}
-
-function fenceOpening(line: string): RegExpExecArray | null {
-  return /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
-}
-
-function isFenceClosing(line: string, character: string, minimumLength: number): boolean {
-  const match = /^ {0,3}(`+|~+)[ \t]*$/u.exec(line);
-  return match !== null && match[1][0] === character && match[1].length >= minimumLength;
 }
 
 function tableAlignment(value: string): MarkdownTableAlignment | null {
@@ -298,13 +290,11 @@ export function parseMarkdownBlocks(
   while (index < lines.length) {
     const line = lines[index];
     if (line.trim().length === 0) { index += 1; continue; }
-    const fence = fenceOpening(line);
+    const fence = openingMarkdownFence(line);
     if (fence !== null) {
       const code: string[] = [];
-      const fenceCharacter = fence[1][0];
-      const fenceLength = fence[1].length;
       index += 1;
-      while (index < lines.length && !isFenceClosing(lines[index], fenceCharacter, fenceLength)) code.push(lines[index++]);
+      while (index < lines.length && !isMarkdownFenceClosing(lines[index], fence)) code.push(lines[index++]);
       if (index < lines.length) index += 1;
       blocks.push({ kind: "code", text: code.join("\n") });
       continue;
@@ -362,7 +352,7 @@ export function parseMarkdownBlocks(
     const paragraph: string[] = [line];
     index += 1;
     while (index < lines.length && lines[index].trim().length > 0
-      && fenceOpening(lines[index]) === null
+      && openingMarkdownFence(lines[index]) === null
       && !/^(#{1,6})\s+/u.test(lines[index])
       && !lines[index].startsWith(">")
       && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index])
@@ -506,11 +496,10 @@ export function collectEditablePreviewRanges(text: string, sourceOffset = 0): re
   while (index < lines.length) {
     const line = lines[index]!;
     if (line.text.trim().length === 0) { index += 1; continue; }
-    const fence = fenceOpening(line.text);
+    const fence = openingMarkdownFence(line.text);
     if (fence !== null) {
-      const character = fence[1][0]; const minimum = fence[1].length;
       index += 1;
-      while (index < lines.length && !isFenceClosing(lines[index]!.text, character, minimum)) index += 1;
+      while (index < lines.length && !isMarkdownFenceClosing(lines[index]!.text, fence)) index += 1;
       if (index < lines.length) index += 1;
       blocks.push(Object.freeze([]));
       continue;
@@ -562,7 +551,7 @@ export function collectEditablePreviewRanges(text: string, sourceOffset = 0): re
     const paragraph: SourceLine[] = [line];
     index += 1;
     while (index < lines.length && lines[index]!.text.trim().length > 0
-      && fenceOpening(lines[index]!.text) === null
+      && openingMarkdownFence(lines[index]!.text) === null
       && !/^(#{1,6})\s+/u.test(lines[index]!.text)
       && !lines[index]!.text.startsWith(">")
       && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index]!.text)
