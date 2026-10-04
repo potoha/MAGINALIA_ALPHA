@@ -48,8 +48,23 @@ function alignment(value: string): TableAlignment | null {
   return "none";
 }
 
-function logicalCell(raw: string): string {
-  return raw.replace(/\\([|\\])/gu, "$1").trim();
+function trimTableWhitespace(value: string): string {
+  return value.replace(/^[\t ]+|[\t ]+$/gu, "");
+}
+
+function trailingPipeIsDelimiter(text: string, index: number): boolean {
+  let slashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor -= 1) slashes += 1;
+  return slashes % 2 === 0;
+}
+
+/** Shared table-block boundary rule for rendering and authoring source maps. */
+export function isMarkdownTableTerminator(line: string): boolean {
+  return line.trim().length === 0
+    || /^ {0,3}(`{3,}|~{3,})/u.test(line)
+    || /^(#{1,6})\s+/u.test(line)
+    || line.startsWith(">")
+    || /^(?:[-*+]\s+|\d+\.\s+)/u.test(line);
 }
 
 function rowCells(line: SourceLine): readonly { readonly value: string; readonly start: number; readonly end: number }[] | null {
@@ -59,23 +74,49 @@ function rowCells(line: SourceLine): readonly { readonly value: string; readonly
   let end = line.text.length;
   while (end > start && /[ \t]/u.test(line.text[end - 1]!)) end -= 1;
   if (line.text[start] === "|") start += 1;
-  if (line.text[end - 1] === "|") end -= 1;
   const cells: Array<{ value: string; start: number; end: number }> = [];
   let cellStart = start;
-  let escaped = false;
-  for (let index = start; index <= end; index += 1) {
-    const boundary = index === end || (line.text[index] === "|" && !escaped);
-    if (boundary) {
-      let contentStart = cellStart;
-      let contentEnd = index;
-      while (contentStart < contentEnd && /[ \t]/u.test(line.text[contentStart]!)) contentStart += 1;
-      while (contentEnd > contentStart && /[ \t]/u.test(line.text[contentEnd - 1]!)) contentEnd -= 1;
-      cells.push({ value: logicalCell(line.text.slice(contentStart, contentEnd)), start: line.start + contentStart, end: line.start + contentEnd });
-      cellStart = index + 1;
+  let value = "";
+  const pushCell = (cellEnd: number): void => {
+    let contentStart = cellStart;
+    let contentEnd = cellEnd;
+    while (contentStart < contentEnd && /[ \t]/u.test(line.text[contentStart]!)) contentStart += 1;
+    while (contentEnd > contentStart && /[ \t]/u.test(line.text[contentEnd - 1]!)) contentEnd -= 1;
+    cells.push({ value: trimTableWhitespace(value), start: line.start + contentStart, end: line.start + contentEnd });
+    value = "";
+  };
+  for (let index = start; index < end;) {
+    if (line.text[index] === "\\") {
+      let runEnd = index + 1;
+      while (runEnd < end && line.text[runEnd] === "\\") runEnd += 1;
+      const slashCount = runEnd - index;
+      if (runEnd < end && line.text[runEnd] === "|") {
+        value += "\\".repeat(Math.floor(slashCount / 2));
+        if (slashCount % 2 === 1) {
+          value += "|";
+          index = runEnd + 1;
+        } else {
+          pushCell(runEnd);
+          cellStart = runEnd + 1;
+          index = runEnd + 1;
+        }
+      } else {
+        value += "\\".repeat(slashCount);
+        index = runEnd;
+      }
+      continue;
     }
-    if (index < end && line.text[index] === "\\") escaped = !escaped;
-    else escaped = false;
+    if (line.text[index] === "|") {
+      pushCell(index);
+      cellStart = index + 1;
+      index += 1;
+      continue;
+    }
+    value += line.text[index]!;
+    index += 1;
   }
+  pushCell(end);
+  if (end > start && line.text[end - 1] === "|" && trailingPipeIsDelimiter(line.text, end - 1)) cells.pop();
   return cells;
 }
 
@@ -91,6 +132,7 @@ export function collectMarkdownTables(text: string): readonly MarkdownTableTarge
     const rows: Array<readonly { readonly value: string; readonly start: number; readonly end: number }[]> = [];
     let endIndex = index + 2;
     while (endIndex < lines.length) {
+      if (isMarkdownTableTerminator(lines[endIndex]!.text)) break;
       const row = rowCells(lines[endIndex]!);
       if (row === null || row.length < header.length) break;
       rows.push(row.slice(0, header.length));
@@ -112,7 +154,27 @@ export function collectMarkdownTables(text: string): readonly MarkdownTableTarge
 }
 
 export function escapeTableCell(value: string): string {
-  return value.replace(/\\/gu, "\\\\").replace(/\|/gu, "\\|");
+  let encoded = "";
+  for (let index = 0; index < value.length;) {
+    if (value[index] !== "\\") {
+      encoded += value[index] === "|" ? "\\|" : value[index];
+      index += 1;
+      continue;
+    }
+    let runEnd = index + 1;
+    while (runEnd < value.length && value[runEnd] === "\\") runEnd += 1;
+    const slashCount = runEnd - index;
+    if (value[runEnd] === "|") {
+      // A literal pipe after n literal backslashes needs 2n + 1 source
+      // backslashes: n escaped literals plus the table-delimiter escape.
+      encoded += "\\".repeat(slashCount * 2 + 1) + "|";
+      index = runEnd + 1;
+    } else {
+      encoded += "\\".repeat(slashCount);
+      index = runEnd;
+    }
+  }
+  return encoded;
 }
 
 function divider(alignment: TableAlignment): string {

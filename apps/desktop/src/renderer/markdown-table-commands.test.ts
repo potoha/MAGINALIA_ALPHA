@@ -42,6 +42,37 @@ describe("Markdown table authoring transforms", () => {
   it("rejects final-column deletion and safely escapes direct cell values", () => {
     const single = collectMarkdownTables("| A |\n| --- |\n| B |")[0]!;
     expect(transformMarkdownTable(single, "body", 0, 0, "deleteColumn")).toBeNull();
-    expect(escapeTableCell("A | B\\C")).toBe("A \\| B\\\\C");
+    expect(escapeTableCell("A | B\\C")).toBe("A \\| B\\C");
+    expect(escapeTableCell("A\\|B")).toBe("A\\\\\\|B");
+  });
+
+  it.each([
+    ["heading", "# Heading | text"],
+    ["blockquote", "> quote | text"],
+    ["bullet list", "- item | text"],
+    ["ordered list", "1. item | text"],
+    ["fenced code", "```txt\nfenced | content\n```"]
+  ])("stops source mapping before a following %s block", (_name, following) => {
+    const tableSource = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+    const source = `${tableSource}\n${following}`;
+    const table = collectMarkdownTables(source)[0]!;
+    const suffix = source.slice(tableSource.length + 1);
+    expect(table.end).toBe(tableSource.length);
+    const replacement = transformMarkdownTable(table, "body", 0, 0, "addColumnAfter")!;
+    const next = `${source.slice(0, table.start)}${replacement}${source.slice(table.end)}`;
+    expect(next.slice(next.indexOf("\n", replacement.length) + 1)).toBe(suffix);
+  });
+
+  it("round-trips unchanged logical values without multiplying ordinary backslashes", () => {
+    const paths = ["C:\\Users", "regex\\d+", "foo\\bar", "\\leading", "trailing\\", "日本\\語", "A \\| B", "A\\\\\\|B"];
+    const source = ["| Value |", "| --- |", ...paths.map((value) => `| ${value} |`)].join("\n");
+    const table = collectMarkdownTables(source)[0]!;
+    expect(table.rows.map(([value]) => value)).toEqual(["C:\\Users", "regex\\d+", "foo\\bar", "\\leading", "trailing\\", "日本\\語", "A | B", "A\\|B"]);
+
+    const replacement = transformMarkdownTable(table, "body", 0, 0, "addColumnAfter")!;
+    const rewritten = collectMarkdownTables(replacement)[0]!;
+    expect(rewritten.rows.map(([value]) => value)).toEqual(table.rows.map(([value]) => value));
+    expect(replacement).toContain("| C:\\Users |  |");
+    expect(replacement).toContain("| A \\| B |  |");
   });
 });

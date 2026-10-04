@@ -3,7 +3,7 @@ import type { WritingDirection } from "./renderer-preferences";
 import { describeEmbed, parseSafeExternalUrl, type EmbedDescriptor } from "./embed-providers";
 import { internalLinkDisplayName, parseInternalLinkAt } from "../project-links";
 import { PreviewCompositionGate } from "./preview-editing";
-import { collectMarkdownTables, escapeTableCell, type MarkdownTableCellTarget, type MarkdownTableTarget } from "./markdown-table-commands";
+import { collectMarkdownTables, escapeTableCell, isMarkdownTableTerminator, type MarkdownTableCellTarget, type MarkdownTableTarget } from "./markdown-table-commands";
 
 /** Safe, typed inline nodes.  Raw HTML is always plain text. */
 export type MarkdownInline =
@@ -142,13 +142,6 @@ function isStructuralInline(node: MarkdownInline): boolean {
 function isStructuralParagraph(nodes: readonly MarkdownInline[]): boolean {
   return nodes.some((node) => isStructuralInline(node) && node.kind !== "text")
     && nodes.every(isStructuralInline);
-}
-
-function isTableTerminator(line: string): boolean {
-  return fenceOpening(line) !== null
-    || /^(#{1,6})\s+/u.test(line)
-    || line.startsWith(">")
-    || /^(?:[-*+]\s+|\d+\.\s+)/u.test(line);
 }
 
 function safeExternalHref(value: string): string | null {
@@ -327,7 +320,7 @@ export function parseMarkdownBlocks(
       const rows: (readonly (readonly MarkdownInline[])[])[] = [];
       index += 2;
       while (index < lines.length) {
-        if (isTableTerminator(lines[index])) break;
+        if (isMarkdownTableTerminator(lines[index])) break;
         const row = parseTableRow(lines[index]);
         if (row === null) break;
         const cells = row.slice(0, columnCount);
@@ -532,7 +525,7 @@ export function collectEditablePreviewRanges(text: string): readonly (readonly P
       const count = table.header.length;
       index += 2;
       while (index < lines.length) {
-        if (isTableTerminator(lines[index]!.text)) break;
+        if (isMarkdownTableTerminator(lines[index]!.text)) break;
         const row = parseTableRow(lines[index]!.text);
         if (row === null) break;
         index += 1;
@@ -679,6 +672,17 @@ function appendTableControls(parent: HTMLElement, target: MarkdownTableTarget, c
   const controls = document.createElement("div");
   controls.className = "markdown-table-controls";
   controls.setAttribute("aria-label", "Table controls");
+  const buttons = new Map<string, HTMLButtonElement>();
+  const refreshAvailability = (): void => {
+    const cell = currentCell();
+    const headerCell = cell?.rowKind === "header";
+    buttons.get("maginalia.table.addRowAbove")!.disabled = headerCell || cell === undefined;
+    buttons.get("maginalia.table.addRowBelow")!.disabled = cell === undefined;
+    buttons.get("maginalia.table.deleteRow")!.disabled = !cell || headerCell;
+    buttons.get("maginalia.table.addColumnBefore")!.disabled = cell === undefined;
+    buttons.get("maginalia.table.addColumnAfter")!.disabled = cell === undefined;
+    buttons.get("maginalia.table.deleteColumn")!.disabled = cell === undefined || target.header.length <= 1;
+  };
   for (const [id, label] of [
     ["maginalia.table.addRowAbove", "Add row above"],
     ["maginalia.table.addRowBelow", "Add row below"],
@@ -693,8 +697,12 @@ function appendTableControls(parent: HTMLElement, target: MarkdownTableTarget, c
       const cell = currentCell();
       if (cell !== undefined) options.onTableCommand?.(id, target, cell);
     });
+    buttons.set(id, button);
     controls.append(button);
   }
+  parent.addEventListener("mouseover", refreshAvailability);
+  controls.addEventListener("focusin", refreshAvailability);
+  refreshAvailability();
   parent.append(controls);
 }
 

@@ -1509,6 +1509,11 @@ button:focus-visible {
   font-size: 0.78rem;
 }
 
+.markdown-table-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .markdown-table [data-alignment="left"] { text-align: left; }
 .markdown-table [data-alignment="center"] { text-align: center; }
 .markdown-table [data-alignment="right"] { text-align: right; }

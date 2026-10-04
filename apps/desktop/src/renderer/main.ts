@@ -16,7 +16,8 @@ import {
 } from "./shelf-controller";
 import { MonacoMarkdownSurface } from "./monaco-surface";
 import { renderMarkdownPreview } from "./markdown-renderer";
-import { collectMarkdownTables, insertMarkdownTable, transformMarkdownTable, type MarkdownTableCellTarget, type MarkdownTableTarget, type TableOperation } from "./markdown-table-commands";
+import { insertMarkdownTable, transformMarkdownTable, type MarkdownTableCellTarget, type MarkdownTableTarget, type TableOperation } from "./markdown-table-commands";
+import { mayDispatchTableTarget, ownsCurrentTableTarget, type ActiveTableTarget } from "./table-target";
 import { PreviewController } from "./preview-controller";
 import { createLocalStorageRendererPreferenceStore } from "./renderer-preferences";
 import { resolvePreviewMedia } from "./project-media";
@@ -631,7 +632,8 @@ controller.setAutosaveCoordinator(autosaveCoordinator);
 let projectController: ProjectNavigationController | undefined;
 const rendererPreferences = createLocalStorageRendererPreferenceStore();
 let previewMediaGeneration = 0;
-let activeTableTarget: { readonly documentId: string; readonly revision: number; readonly table: MarkdownTableTarget; readonly cell: MarkdownTableCellTarget } | null = null;
+let activeTableTarget: ActiveTableTarget | null = null;
+let commandContextReady = false;
 let pendingInternalLinkOpen: { readonly fileId: string } | null = null;
 
 const previewApi = typeof window.maginalia.resolveReferences === "function"
@@ -644,6 +646,11 @@ const previewController = new PreviewController({
   view: {
     setPreviewState(state): void {
       const previewing = state.mode === "preview";
+      // Every rendered projection owns fresh ephemeral table targets.
+      if (activeTableTarget !== null) {
+        activeTableTarget = null;
+        if (commandContextReady) updateCommandContext();
+      }
       editorContainer.hidden = previewing;
       previewContainer.hidden = !previewing;
       editModeButton.setAttribute("aria-pressed", String(!previewing));
@@ -686,19 +693,13 @@ const previewController = new PreviewController({
       const previewOptions = {
         editable,
         onTableTarget: (table: MarkdownTableTarget, cell: MarkdownTableCellTarget) => {
+          const current = controller.getDocumentState();
+          if (current === null || current.documentId !== state.document!.documentId || current.revision !== state.document!.revision) return;
           activeTableTarget = { documentId: state.document!.documentId, revision: state.document!.revision!, table, cell };
           updateCommandContext();
         },
         onTableCommand: (commandId: string, table: MarkdownTableTarget, cell: MarkdownTableCellTarget) => {
-          const current = controller.getDocumentState();
-          const currentTable = current === null ? undefined : collectMarkdownTables(current.currentText)
-            .find((candidate) => candidate.start === table.start && candidate.end === table.end);
-          if (current === null || currentTable === undefined) return;
-          const currentCell = currentTable.cells.find((candidate) => candidate.rowKind === cell.rowKind && candidate.rowIndex === cell.rowIndex && candidate.columnIndex === cell.columnIndex);
-          if (currentCell === undefined) return;
-          activeTableTarget = { documentId: current.documentId, revision: current.revision, table: currentTable, cell: currentCell };
-          updateCommandContext();
-          void executeCommand(commandId);
+          if (mayDispatchTableTarget(activeTableTarget, controller.getDocumentState(), table, cell)) void executeCommand(commandId);
         },
         onOpenInternal: ({ fileId }: { readonly target: string; readonly fileId: string }) => {
           pendingInternalLinkOpen = { fileId };
@@ -754,9 +755,7 @@ const updateCommandContext = (): void => {
   const mediaType = mediaMatch === null
     ? "none"
     : /\.(?:mp4|webm|ogg)(?:[?#].*)?$/iu.test(mediaMatch[1] ?? line) ? "video" : "image";
-  const tableCurrent = activeTableTarget !== null
-    && activeTableTarget.documentId === current?.documentId
-    && activeTableTarget.revision === current?.revision;
+  const tableCurrent = ownsCurrentTableTarget(activeTableTarget, current);
   commandContext.patch({
     "editor.hasDocument": current !== null,
     "editor.hasSelection": selection.start !== selection.end,
@@ -776,7 +775,14 @@ const updateCommandContext = (): void => {
     "workdesk.active": activeWorkdesk !== null
   });
 };
-controller.onDocumentChange(() => updateCommandContext());
+commandContextReady = true;
+controller.onDocumentChange(() => {
+  const current = controller.getDocumentState();
+  if (!ownsCurrentTableTarget(activeTableTarget, current)) {
+    activeTableTarget = null;
+  }
+  updateCommandContext();
+});
 controller.onSelectionChange(() => updateCommandContext());
 registerWorkbenchCommands(commandRegistry, workbench, WORKBENCH_VIEW_MANIFEST);
 registerCoreCommands(commandRegistry, {
@@ -800,7 +806,7 @@ commandRegistry.register({ id: "maginalia.editor.insertTable", title: "Insert Ta
 const runTableOperation = (operation: TableOperation): void => {
   const target = activeTableTarget;
   const documentState = controller.getDocumentState();
-  if (target === null || documentState === null || target.documentId !== documentState.documentId || target.revision !== documentState.revision) return;
+  if (target === null || !ownsCurrentTableTarget(target, documentState)) return;
   const replacement = transformMarkdownTable(target.table, target.cell.rowKind, target.cell.rowIndex, target.cell.columnIndex, operation);
   if (replacement === null) return;
   controller.applySourceEdit({ documentId: target.documentId, revision: target.revision, range: { start: target.table.start, end: target.table.end }, replacement });
@@ -814,7 +820,16 @@ for (const [id, operation, title] of [
   ["maginalia.table.addColumnBefore", "addColumnBefore", "Add Table Column Before"],
   ["maginalia.table.addColumnAfter", "addColumnAfter", "Add Table Column After"],
   ["maginalia.table.deleteColumn", "deleteColumn", "Delete Table Column"]
-] as const) commandRegistry.register({ id, title, category: "Table", keywords: ["table", "row", "column"] }, () => runTableOperation(operation));
+] as const) commandRegistry.register({
+  id,
+  title,
+  category: "Table",
+  keywords: ["table", "row", "column"],
+  when: operation === "addRowAbove" ? "table.bodyCell"
+    : operation === "deleteRow" ? "table.canDeleteRow"
+      : operation === "deleteColumn" ? "table.canDeleteColumn"
+        : "table.active"
+}, () => runTableOperation(operation));
 commandRegistry.register({
   id: "maginalia.renderer.showEdit",
   title: "Show Markdown Edit",
@@ -823,6 +838,8 @@ commandRegistry.register({
 }, () => {
   // Raw Edit immediately returns selection ownership to Monaco.
   controller.setExternalSelection(null);
+  activeTableTarget = null;
+  updateCommandContext();
   previewController.setMode("edit");
 });
 commandRegistry.register({
