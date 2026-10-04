@@ -67,13 +67,16 @@ class FakeWriting implements ReferencesWritingPort {
 
 function createController(
   writing: FakeWriting,
-  result: ResolveReferencesResult | (() => ResolveReferencesResult | Promise<ResolveReferencesResult>)
+  result: ResolveReferencesResult | (() => ResolveReferencesResult | Promise<ResolveReferencesResult>),
+  compose?: (document: { readonly documentId: string; readonly currentText: string }) => Promise<
+    { readonly kind: "composed"; readonly text: string } | { readonly kind: "blocked"; readonly message: string }
+  >
 ) {
   const view = { setReferencesState: vi.fn<(state: ReferencesViewState) => void>() };
   const api: ReferencesControllerApi = {
     resolveReferences: vi.fn(async () => typeof result === "function" ? result() : result)
   };
-  const controller = new ReferencesController({ writing, api, view });
+  const controller = new ReferencesController({ writing, api, view, compose });
   return { controller, api, view };
 }
 
@@ -118,6 +121,52 @@ describe("ReferencesController", () => {
     resolve?.(resolved("# Draft\n"));
     await refreshing;
     expect(writing.replaceTextCalls).toEqual(["# Changed\n"]);
+    expect(view.setReferencesState).toHaveBeenLastCalledWith(expect.objectContaining({ status: "needs-refresh" }));
+  });
+
+  it("resolves citations from a composed snapshot but applies the derived list only to parent source", async () => {
+    const writing = new FakeWriting("# Parent\n<!-- maginalia:synced-block v1 {\"target\":\"child.md\"} -->\n");
+    const composed = "# Parent\nChild with a nested QuoteRef\n";
+    const { controller, api } = createController(writing, resolved(composed), async () => ({ kind: "composed", text: composed }));
+
+    await controller.refresh();
+
+    expect(api.resolveReferences).toHaveBeenCalledWith({ text: composed });
+    expect(writing.getDocumentState()?.currentText).toContain("<!-- maginalia:synced-block v1");
+    expect(writing.getDocumentState()?.currentText).toContain("開かれた作品");
+    expect(writing.getDocumentState()?.currentText).not.toContain("Child with a nested QuoteRef");
+  });
+
+  it("fails closed before reference resolution when composition cannot be linearized", async () => {
+    const writing = new FakeWriting("# Parent\n");
+    const { controller, api, view } = createController(writing, resolved("# Parent\n"), async () => ({
+      kind: "blocked",
+      message: "Synced document unavailable."
+    }));
+
+    await controller.refresh();
+
+    expect(api.resolveReferences).not.toHaveBeenCalled();
+    expect(writing.replaceTextCalls).toEqual([]);
+    expect(view.setReferencesState).toHaveBeenLastCalledWith(expect.objectContaining({ status: "error", message: "Synced document unavailable." }));
+  });
+
+  it("fails closed when a captured Synced Block source changes during reference resolution", async () => {
+    let current = true;
+    const writing = new FakeWriting("# Parent\n");
+    const { controller, api, view } = createController(
+      writing,
+      async () => {
+        current = false;
+        return resolved("# Parent\nChild QuoteRef\n");
+      },
+      async () => ({ kind: "composed", text: "# Parent\nChild QuoteRef\n", isCurrent: () => current })
+    );
+
+    await controller.refresh();
+
+    expect(api.resolveReferences).toHaveBeenCalledTimes(1);
+    expect(writing.replaceTextCalls).toEqual([]);
     expect(view.setReferencesState).toHaveBeenLastCalledWith(expect.objectContaining({ status: "needs-refresh" }));
   });
 });
