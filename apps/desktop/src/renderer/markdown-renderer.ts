@@ -6,6 +6,7 @@ import { PreviewCompositionGate } from "./preview-editing";
 import { collectMarkdownTables, escapeTableCell, isMarkdownTableTerminator, type MarkdownTableCellTarget, type MarkdownTableTarget } from "./markdown-table-commands";
 import { projectMarkdownBody } from "./document-properties";
 import { isMarkdownFenceClosing, openingMarkdownFence } from "./markdown-fence";
+import { isMarkdownBlockquoteLine, parseMarkdownHeading, parseMarkdownListItem } from "./markdown-structure";
 import { isSyncedBlockStructuralLine, parseSyncedBlockMarker, type ComposedSyncedBlock } from "./synced-block";
 
 /** Safe, typed inline nodes.  Raw HTML is always plain text. */
@@ -301,9 +302,9 @@ export function parseMarkdownBlocks(
       blocks.push({ kind: "code", text: code.join("\n") });
       continue;
     }
-    const heading = /^(#{1,6})\s+(.+)$/u.exec(line);
+    const heading = parseMarkdownHeading(line);
     if (heading !== null) {
-      blocks.push({ kind: "heading", depth: heading[1].length, content: parseMarkdownInlines(heading[2], quotes, internalLinks, media) });
+      blocks.push({ kind: "heading", depth: heading.level, content: parseMarkdownInlines(heading.content, quotes, internalLinks, media) });
       index += 1;
       continue;
     }
@@ -335,23 +336,23 @@ export function parseMarkdownBlocks(
       });
       continue;
     }
-    if (line.startsWith(">")) {
+    if (isMarkdownBlockquoteLine(line)) {
       const quoteLines: string[] = [];
-      while (index < lines.length && lines[index].startsWith(">")) {
+      while (index < lines.length && isMarkdownBlockquoteLine(lines[index])) {
         quoteLines.push(lines[index].replace(/^>\s?/u, ""));
         index += 1;
       }
       blocks.push({ kind: "blockquote", content: parseMarkdownInlines(quoteLines.join("\n"), quotes, internalLinks, media) });
       continue;
     }
-    const list = /^(?:([-*+])\s+|(\d+)\.\s+)(.+)$/u.exec(line);
+    const list = parseMarkdownListItem(line);
     if (list !== null) {
-      const ordered = list[2] !== undefined;
+      const ordered = list.ordered;
       const items: (readonly MarkdownInline[])[] = [];
       while (index < lines.length) {
-        const item = /^(?:([-*+])\s+|(\d+)\.\s+)(.+)$/u.exec(lines[index]);
-        if (item === null || (item[2] !== undefined) !== ordered) break;
-        items.push(parseMarkdownInlines(item[3], quotes, internalLinks, media));
+        const item = parseMarkdownListItem(lines[index]);
+        if (item === null || item.ordered !== ordered) break;
+        items.push(parseMarkdownInlines(item.content, quotes, internalLinks, media));
         index += 1;
       }
       blocks.push({ kind: "list", ordered, items });
@@ -361,10 +362,10 @@ export function parseMarkdownBlocks(
     index += 1;
     while (index < lines.length && lines[index].trim().length > 0
       && openingMarkdownFence(lines[index]) === null
-      && !/^(#{1,6})\s+/u.test(lines[index])
+      && parseMarkdownHeading(lines[index]) === null
       && !isSyncedBlockStructuralLine(lines[index])
-      && !lines[index].startsWith(">")
-      && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index])
+      && !isMarkdownBlockquoteLine(lines[index])
+      && parseMarkdownListItem(lines[index]) === null
       && tableStart(lines, index) === null) {
       paragraph.push(lines[index++]);
     }
@@ -534,9 +535,9 @@ export function collectEditablePreviewRanges(text: string, sourceOffset = 0): re
       blocks.push(Object.freeze([]));
       continue;
     }
-    const heading = /^(#{1,6})\s+(.+)$/u.exec(line.text);
+    const heading = parseMarkdownHeading(line.text);
     if (heading !== null) {
-      blocks.push(editableInlineRanges(heading[2], line.start + heading[0].length - heading[2].length));
+      blocks.push(editableInlineRanges(heading.content, line.start + heading.contentStart));
       index += 1;
       continue;
     }

@@ -7,6 +7,11 @@
  * Synced Blocks, QuoteRefs, or Shelf identities.
  */
 
+import { scanFrontMatter } from "./document-properties";
+import { isMarkdownFenceClosing, openingMarkdownFence } from "./markdown-fence";
+import { collectMarkdownTables } from "./markdown-table-commands";
+import { isMarkdownBlockquoteLine, parseMarkdownHeading, parseMarkdownListItem } from "./markdown-structure";
+
 export type ExportDocumentBlockKind =
   | "metadata"
   | "heading"
@@ -32,6 +37,7 @@ export interface ExportDocumentModel {
 
 interface SourceLine {
   readonly start: number;
+  readonly contentStart: number;
   readonly contentEnd: number;
   readonly end: number;
   readonly content: string;
@@ -46,7 +52,8 @@ function sourceLines(source: string): readonly SourceLine[] {
     let end = contentEnd;
     if (source[end] === "\r" && source[end + 1] === "\n") end += 2;
     else if (source[end] === "\r" || source[end] === "\n") end += 1;
-    lines.push({ start, contentEnd, end, content: source.slice(start, contentEnd) });
+    const bom = start === 0 && source.startsWith("\uFEFF") ? 1 : 0;
+    lines.push({ start, contentStart: start + bom, contentEnd, end, content: source.slice(start + bom, contentEnd) });
     start = end;
   }
   return lines;
@@ -54,67 +61,6 @@ function sourceLines(source: string): readonly SourceLine[] {
 
 function isBlank(line: SourceLine): boolean {
   return line.content.trim().length === 0;
-}
-
-function heading(line: SourceLine): number | null {
-  const match = /^ {0,3}(#{1,6})(?:\s+|$)/u.exec(line.content);
-  return match === null ? null : match[1].length;
-}
-
-function list(line: SourceLine): boolean | null {
-  const match = /^ {0,3}(?:([-+*])\s+|(\d+)\.\s+)/u.exec(line.content);
-  if (match === null) return null;
-  return match[2] !== undefined;
-}
-
-function isBlockquote(line: SourceLine): boolean {
-  return /^ {0,3}>/u.test(line.content);
-}
-
-interface Fence {
-  readonly marker: "`" | "~";
-  readonly length: number;
-}
-
-function openingFence(line: SourceLine): Fence | null {
-  const match = /^( {0,3})(`{3,}|~{3,})/u.exec(line.content);
-  return match === null ? null : { marker: match[2][0] as "`" | "~", length: match[2].length };
-}
-
-function closingFence(line: SourceLine, fence: Fence): boolean {
-  const match = new RegExp(`^ {0,3}${fence.marker}{${fence.length},}\\s*$`, "u").exec(line.content);
-  return match !== null;
-}
-
-function tableDelimiter(line: SourceLine): boolean {
-  const value = line.content.trim().replace(/^\|/u, "").replace(/\|$/u, "");
-  const cells = value.split("|");
-  return cells.length > 0 && cells.every((cell) => /^\s*:?-{3,}:?\s*$/u.test(cell));
-}
-
-function tableStart(lines: readonly SourceLine[], index: number): boolean {
-  const line = lines[index];
-  const next = lines[index + 1];
-  return line !== undefined && next !== undefined && line.content.includes("|") && tableDelimiter(next);
-}
-
-function structuralStart(lines: readonly SourceLine[], index: number): boolean {
-  const line = lines[index];
-  if (line === undefined) return false;
-  return openingFence(line) !== null
-    || heading(line) !== null
-    || isBlockquote(line)
-    || list(line) !== null
-    || tableStart(lines, index);
-}
-
-function metadataEnd(lines: readonly SourceLine[]): number | null {
-  const first = lines[0];
-  if (first === undefined || first.content.replace(/^\uFEFF/u, "").trim() !== "---") return null;
-  for (let index = 1; index < lines.length; index += 1) {
-    if (lines[index].content.trim() === "---" || lines[index].content.trim() === "...") return index;
-  }
-  return null;
 }
 
 function block(
@@ -135,6 +81,10 @@ function block(
 /** Build a lossless semantic block view over final resolved Markdown. */
 export function createExportDocumentModel(markdown: string): ExportDocumentModel {
   const lines = sourceLines(markdown);
+  const tables = collectMarkdownTables(markdown);
+  const tableByStart = new Map(tables.map((table) => [table.start, table] as const));
+  const frontMatter = scanFrontMatter(markdown);
+  const boundedMetadataEnd = frontMatter.kind === "bounded" ? frontMatter.boundary.closingEnd : null;
   const blocks: ExportDocumentBlock[] = [];
   let index = 0;
   while (index < lines.length) {
@@ -145,58 +95,72 @@ export function createExportDocumentModel(markdown: string): ExportDocumentModel
       continue;
     }
 
-    if (index === 0) {
-      const end = metadataEnd(lines);
-      if (end !== null) {
+    if (index === 0 && boundedMetadataEnd !== null) {
+      let end = 0;
+      while (end < lines.length && lines[end]!.end < boundedMetadataEnd) end += 1;
+      if (end < lines.length) {
         blocks.push(block(markdown, lines, 0, end + 1, "metadata"));
         index = end + 1;
         continue;
       }
     }
 
-    const fence = openingFence(lines[index]);
+    const fence = openingMarkdownFence(lines[index]!.content);
     if (fence !== null) {
       const start = index;
       index += 1;
-      while (index < lines.length && !closingFence(lines[index], fence)) index += 1;
+      while (index < lines.length && !isMarkdownFenceClosing(lines[index]!.content, fence)) index += 1;
       if (index < lines.length) index += 1;
       blocks.push(block(markdown, lines, start, index, "code"));
       continue;
     }
 
-    const level = heading(lines[index]);
-    if (level !== null) {
-      blocks.push(block(markdown, lines, index, index + 1, "heading", { level }));
+    const heading = parseMarkdownHeading(lines[index]!.content);
+    if (heading !== null) {
+      blocks.push(block(markdown, lines, index, index + 1, "heading", { level: heading.level }));
       index += 1;
       continue;
     }
 
-    if (tableStart(lines, index)) {
+    const table = tableByStart.get(lines[index]!.contentStart);
+    if (table !== undefined) {
       const start = index;
-      index += 2;
-      while (index < lines.length && !isBlank(lines[index]) && lines[index].content.includes("|") && !structuralStart(lines, index)) index += 1;
+      while (index < lines.length && lines[index]!.end < table.end) index += 1;
+      if (index < lines.length) index += 1;
       blocks.push(block(markdown, lines, start, index, "table"));
       continue;
     }
 
-    if (isBlockquote(lines[index])) {
+    if (isMarkdownBlockquoteLine(lines[index]!.content)) {
       const start = index;
-      while (index < lines.length && isBlockquote(lines[index])) index += 1;
+      while (index < lines.length && isMarkdownBlockquoteLine(lines[index]!.content)) index += 1;
       blocks.push(block(markdown, lines, start, index, "blockquote"));
       continue;
     }
 
-    const ordered = list(lines[index]);
-    if (ordered !== null) {
+    const list = parseMarkdownListItem(lines[index]!.content);
+    if (list !== null) {
       const start = index;
-      while (index < lines.length && list(lines[index]) === ordered) index += 1;
-      blocks.push(block(markdown, lines, start, index, "list", { ordered }));
+      while (index < lines.length) {
+        const item = parseMarkdownListItem(lines[index]!.content);
+        if (item === null || item.ordered !== list.ordered) break;
+        index += 1;
+      }
+      blocks.push(block(markdown, lines, start, index, "list", { ordered: list.ordered }));
       continue;
     }
 
     const start = index;
     index += 1;
-    while (index < lines.length && !isBlank(lines[index]) && !structuralStart(lines, index)) index += 1;
+    while (index < lines.length && !isBlank(lines[index]!)) {
+      const next = lines[index]!;
+      if (openingMarkdownFence(next.content) !== null
+        || parseMarkdownHeading(next.content) !== null
+        || isMarkdownBlockquoteLine(next.content)
+        || parseMarkdownListItem(next.content) !== null
+        || tableByStart.has(next.contentStart)) break;
+      index += 1;
+    }
     blocks.push(block(markdown, lines, start, index, "paragraph"));
   }
 
