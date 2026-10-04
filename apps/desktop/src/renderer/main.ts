@@ -654,7 +654,41 @@ const previewController = new PreviewController({
       const text = state.document?.currentText ?? "";
       const generation = ++previewMediaGeneration;
       const projectId = projectController?.getState().project?.projectId ?? null;
-      renderMarkdownPreview(previewContainer, text, state.quoteMap, state.direction);
+      const editable = state.document !== null && typeof state.document.revision === "number"
+        ? {
+          revision: state.document.revision,
+          onEdit: (request: { readonly revision: number; readonly range: { readonly start: number; readonly end: number }; readonly replacement: string }) =>
+            controller.applySourceEdit({
+              documentId: state.document!.documentId,
+              revision: request.revision,
+              range: request.range,
+              replacement: request.replacement
+            }),
+          onEditingChange: (editing: boolean) => {
+            if (editing) {
+              previewController.setInlineEditing(state.document!.documentId);
+              return;
+            }
+            queueMicrotask(() => {
+              if (!(document.activeElement instanceof HTMLElement) || !document.activeElement.classList.contains("markdown-preview-editable-text")) {
+                previewController.setInlineEditing(null);
+              }
+            });
+          },
+          onSelectionChange: (range: { readonly start: number; readonly end: number } | null) => {
+            controller.setExternalSelection(range);
+            updateCommandContext();
+          }
+        }
+        : undefined;
+      const previewOptions = {
+        editable,
+        onOpenInternal: ({ fileId }: { readonly target: string; readonly fileId: string }) => {
+          pendingInternalLinkOpen = { fileId };
+          void executeCommand("maginalia.link.openInTab");
+        }
+      };
+      renderMarkdownPreview(previewContainer, text, state.quoteMap, state.direction, previewOptions);
       const linkApi = typeof window.maginalia.resolveInternalLink === "function"
         ? { resolveInternalLink: (request: { readonly projectId: string; readonly target: string }) => window.maginalia.resolveInternalLink(request) }
         : null;
@@ -665,25 +699,15 @@ const previewController = new PreviewController({
         resolvePreviewInternalLinks(linkApi, projectId, text),
         resolvePreviewMedia(mediaApi, projectId, text)
       ]).then(([internalLinks, media]) => {
-        if (generation !== previewMediaGeneration || previewController.getMode() !== "preview") return;
+        if (generation !== previewMediaGeneration || previewController.getMode() !== "preview" || previewController.isInlineEditing()) return;
         const current = controller.getDocumentState();
         if (current?.currentText !== text) return;
-        renderMarkdownPreview(previewContainer, text, state.quoteMap, state.direction, {
-          onOpenInternal: ({ fileId }) => {
-            // The renderer only receives an opaque resolved file ID. Routing
-            // through the command keeps the gesture equivalent to Palette and
-            // future context-menu actions.
-            pendingInternalLinkOpen = { fileId };
-            void executeCommand("maginalia.link.openInTab");
-          }
-        }, internalLinks, media);
+        renderMarkdownPreview(previewContainer, text, state.quoteMap, state.direction, previewOptions, internalLinks, media);
       }).catch(() => undefined);
     }
   }
 });
 
-editModeButton.addEventListener("click", () => previewController.setMode("edit"));
-previewModeButton.addEventListener("click", () => previewController.setMode("preview"));
 horizontalDirectionButton.addEventListener("click", () => void executeCommand("maginalia.renderer.setHorizontal"));
 verticalDirectionButton.addEventListener("click", () => void executeCommand("maginalia.renderer.setVertical"));
 
@@ -741,6 +765,20 @@ registerCoreCommands(commandRegistry, {
   saveDocument: () => controller.save(),
   contextKeys: commandContext
 });
+commandRegistry.register({
+  id: "maginalia.renderer.showEdit",
+  title: "Show Markdown Edit",
+  category: "Renderer",
+  keywords: ["edit", "markdown", "source"]
+}, () => previewController.setMode("edit"));
+commandRegistry.register({
+  id: "maginalia.renderer.showPreview",
+  title: "Show Editable Preview",
+  category: "Renderer",
+  keywords: ["preview", "render", "edit"]
+}, () => previewController.setMode("preview"));
+editModeButton.addEventListener("click", () => void executeCommand("maginalia.renderer.showEdit"));
+previewModeButton.addEventListener("click", () => void executeCommand("maginalia.renderer.showPreview"));
 commandRegistry.register({
   id: "maginalia.shelf.openReviewer",
   title: "取り込む・確認する",
@@ -2994,6 +3032,12 @@ newFileForm.addEventListener("submit", (event) => {
 saveButton.addEventListener("click", () => void executeCommand("maginalia.document.save"));
 
 window.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "b"
+    && previewController.getMode() === "preview") {
+    event.preventDefault();
+    void executeCommand("maginalia.editor.toggleBold");
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "p") {
     event.preventDefault();
     void executeCommand("maginalia.workbench.showCommandPalette");

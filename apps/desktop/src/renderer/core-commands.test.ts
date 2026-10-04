@@ -28,6 +28,30 @@ function register(actions: {
 }
 
 describe("Core command adapters", () => {
+  it("uses the existing bold command for a mapped Preview source selection", async () => {
+    const commands = new CommandRegistry();
+    const contextKeys = new ContextKeyService();
+    const replaceText = vi.fn(() => true);
+    registerCoreCommands(commands, {
+      writing: {
+        getDocumentState: () => ({ documentId: "doc", displayName: "doc.md", currentText: "important text", savedText: "important text" }),
+        getSelection: () => ({ start: 0, end: 9 }),
+        replaceText,
+        undo: () => undefined,
+        redo: () => undefined,
+      } as never,
+      setPreviewDirection: () => undefined,
+      refreshReferences: () => undefined,
+      exportMarkdown: () => undefined,
+      saveDocument: () => undefined,
+      contextKeys,
+    });
+    await expect(commands.execute("maginalia.editor.toggleBold", { "editor.hasDocument": true, "editor.hasSelection": true }))
+      .resolves.toEqual({ kind: "executed" });
+    expect(replaceText).toHaveBeenCalledWith("**important** text");
+    expect(commands.get("maginalia.preview.toggleBold")).toBeNull();
+  });
+
   it("gives Save, Export, and References one stable command handler each", async () => {
     const saveDocument = vi.fn(async () => undefined);
     const exportMarkdown = vi.fn(async () => undefined);

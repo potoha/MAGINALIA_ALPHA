@@ -13,7 +13,7 @@ import {
 export type PreviewMode = "edit" | "preview";
 
 export interface PreviewWritingPort {
-  getDocumentState(): DocumentState | null;
+  getDocumentState(): (DocumentState & { readonly revision?: number }) | null;
   onDocumentChange(listener: (document: DocumentState | null) => void): () => void;
 }
 
@@ -25,20 +25,21 @@ export interface PreviewView {
   setPreviewState(state: {
     readonly mode: PreviewMode;
     readonly direction: WritingDirection;
-    readonly document: DocumentState | null;
+    readonly document: (DocumentState & { readonly revision?: number }) | null;
     readonly quoteMap: PreviewQuoteMap;
   }): void;
 }
 
 /**
  * Keeps preview presentation and quotation lookup out of WritingController.
- * It only reads a DocumentSession; it never calls replaceText/save or updates
- * revisions, so viewing cannot become authoring.
+ * It reads the DocumentSession and coordinates only disposable presentation.
+ * Preview authoring still enters through WritingController, never this class.
  */
 export class PreviewController {
   private mode: PreviewMode = "edit";
   private direction: WritingDirection;
   private generation = 0;
+  private inlineEditingDocumentId: string | null = null;
   private readonly removeDocumentListener: () => void;
 
   public constructor(private readonly options: {
@@ -54,10 +55,19 @@ export class PreviewController {
 
   public getMode(): PreviewMode { return this.mode; }
   public getDirection(): WritingDirection { return this.direction; }
+  public isInlineEditing(): boolean { return this.inlineEditingDocumentId !== null; }
+
+  /** Keep a focused editable island stable until blur/composition completes. */
+  public setInlineEditing(documentId: string | null): void {
+    if (this.inlineEditingDocumentId === documentId) return;
+    this.inlineEditingDocumentId = documentId;
+    if (documentId === null) this.refresh();
+  }
 
   public setMode(mode: PreviewMode): void {
     if (this.mode === mode) return;
     this.mode = mode;
+    this.inlineEditingDocumentId = null;
     this.refresh();
   }
 
@@ -73,6 +83,8 @@ export class PreviewController {
 
   private refresh(): void {
     const document = this.options.writing.getDocumentState();
+    if (this.mode === "preview" && document !== null && document.documentId === this.inlineEditingDocumentId) return;
+    if (document === null || document.documentId !== this.inlineEditingDocumentId) this.inlineEditingDocumentId = null;
     const generation = ++this.generation;
     this.options.view.setPreviewState({ mode: this.mode, direction: this.direction, document, quoteMap: new Map() });
     if (this.mode !== "preview" || document === null) return;

@@ -2,12 +2,42 @@ import { describe, expect, it } from "vitest";
 import {
   parseMarkdownBlocks,
   parseMarkdownInlines,
+  collectEditablePreviewRanges,
   scanLocalMediaTargets,
   scanQuoteMarkersFromText
 } from "./markdown-renderer";
 import { restoreRendererPreferences } from "./renderer-preferences";
 
 describe("Markdown preview parser", () => {
+  it("maps safe rendered text to exact original UTF-16 ranges without searching repeated text", () => {
+    const source = "\uFEFF# 春🌸\r\n\r\nMoon.\r\n\r\nMoon.\r\n\r\n> 引用\r\n\r\n- **強い** [label](https://example.test)";
+    const blocks = collectEditablePreviewRanges(source);
+    const ranges = blocks.flat();
+    expect(ranges.map((range) => range.text)).toEqual(["春🌸", "Moon.", "Moon.", "引用", "強い", " ", "label"]);
+    expect(ranges.map((range) => source.slice(range.start, range.end))).toEqual(ranges.map((range) => range.text));
+    expect(ranges[1]?.start).not.toBe(ranges[2]?.start);
+    expect(ranges[1]?.start).toBe(source.indexOf("Moon."));
+    expect(ranges[2]?.start).toBe(source.lastIndexOf("Moon."));
+    expect(ranges[0]).toMatchObject({ start: 3, end: 6 });
+  });
+
+  it("leaves protected tables, fenced code, raw HTML and hard-wrapped paragraphs unmapped", () => {
+    const source = [
+      "before",
+      "after",
+      "",
+      "| A | B |",
+      "| --- | --- |",
+      "| 1 | 2 |",
+      "",
+      "```",
+      "code",
+      "```",
+      "",
+      "<!-- protected -->"
+    ].join("\n");
+    expect(collectEditablePreviewRanges(source).map((ranges) => ranges.length)).toEqual([0, 0, 0, 0]);
+  });
   it("keeps raw HTML and scripts as text rather than executable nodes", () => {
     const nodes = parseMarkdownInlines("before <script>alert(1)</script> <img src=x>");
     expect(nodes).toEqual([{ kind: "text", text: "before <script>alert(1)</script> <img src=x>" }]);
