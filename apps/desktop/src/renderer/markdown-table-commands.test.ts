@@ -75,4 +75,33 @@ describe("Markdown table authoring transforms", () => {
     expect(replacement).toContain("| C:\\Users |  |");
     expect(replacement).toContain("| A \\| B |  |");
   });
+
+  it("ignores table-looking code fences so a real table keeps the first authoring target", () => {
+    const fake = ["```md", "| Fake | Table |", "| --- | --- |", "| A | B |", "```"].join("\n");
+    const real = ["| Real | Table |", "| --- | --- |", "| C | D |"].join("\n");
+    const source = `${fake}\n\n${real}`;
+    const tables = collectMarkdownTables(source);
+
+    expect(tables).toHaveLength(1);
+    expect(tables[0]?.start).toBe(source.indexOf(real));
+    expect(tables[0]?.header).toEqual(["Real", "Table"]);
+
+    const replacement = transformMarkdownTable(tables[0]!, "body", 0, 1, "addColumnAfter")!;
+    const next = `${source.slice(0, tables[0]!.start)}${replacement}${source.slice(tables[0]!.end)}`;
+    expect(next.slice(0, fake.length)).toBe(fake);
+    expect(next).toContain("| Real | Table |  |");
+  });
+
+  it.each([
+    ["tilde fence", "~~~\n| fake | table |\n| --- | --- |\n~~~"],
+    ["longer fence with a shorter non-closing run", "````\n| fake | table |\n| --- | --- |\n```\nstill code\n````"],
+    ["unterminated fence", "```md\n| fake | table |\n| --- | --- |\n\n| also | still-code |\n| --- | --- |"]
+  ])("does not collect table syntax inside a %s", (_name, fenced) => {
+    expect(collectMarkdownTables(fenced)).toEqual([]);
+  });
+
+  it("resumes collection after a closed fence", () => {
+    const source = "~~~~\n| fake | table |\n| --- | --- |\n~~~~\n\n| real | table |\n| --- | --- |";
+    expect(collectMarkdownTables(source).map((table) => table.header)).toEqual([["real", "table"]]);
+  });
 });
