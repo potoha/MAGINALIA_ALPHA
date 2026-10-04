@@ -418,6 +418,8 @@ export interface MarkdownPreviewRenderOptions {
 export interface PreviewSyncedBlock extends ComposedSyncedBlock {
   readonly internalLinks?: PreviewInternalLinkMap;
   readonly media?: PreviewMediaMap;
+  /** Child QuoteRefs resolve against child source, never parent offsets. */
+  readonly quotes?: PreviewQuoteMap;
 }
 
 export interface PreviewEditableTextRange {
@@ -891,7 +893,7 @@ export function renderMarkdownPreview(
           // Child projections are deliberately read-only in their parent. They
           // receive ordinary rendering callbacks but never parent source maps
           // or table targets.
-          renderMarkdownPreview(content, resolved.markdown, quotes, direction, {
+          renderMarkdownPreview(content, resolved.markdown, resolved.quotes ?? quotes, direction, {
             sourceMode: "already-projected",
             onOpenExternal: options.onOpenExternal,
             onOpenInternal: options.onOpenInternal,

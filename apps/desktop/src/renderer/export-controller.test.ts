@@ -75,6 +75,9 @@ function createHarness(options: {
   writing?: FakeWriting;
   resolve?: (request: ResolveExportRequest) => Promise<ResolveExportResult>;
   write?: (request: WriteExportRequest) => Promise<WriteExportResult>;
+  compose?: (request: ResolveExportRequest) => Promise<
+    { readonly kind: "composed"; readonly text: string } | { readonly kind: "blocked"; readonly message: string }
+  >;
 } = {}) {
   const writing = options.writing ?? new FakeWriting({ documentId: "a", text: "# A\n" });
   const states: ExportViewState[] = [];
@@ -83,7 +86,7 @@ function createHarness(options: {
     resolveExport: options.resolve === undefined ? vi.fn(async () => success()) : vi.fn(options.resolve),
     writeExport: options.write === undefined ? vi.fn(async () => exported()) : vi.fn(options.write)
   };
-  const controller = new ExportController({ api, writing, view });
+  const controller = new ExportController({ api, writing, view, compose: options.compose });
   return { controller, api, writing, states };
 }
 
@@ -176,5 +179,66 @@ describe("ExportController", () => {
     await writeError.controller.exportMarkdown();
     expect(writeError.states.at(-1)).toMatchObject({ status: "error", message: "Destination failed." });
     expect(writing.getDocumentState()?.currentText).toBe("# A\n");
+  });
+
+  it("resolves and renders one composed snapshot while retaining the parent export transaction identity", async () => {
+    const parent = `# Parent\n<!-- maginalia:synced-block v1 {\"target\":\"child.md\"} -->\n`;
+    const composed = "# Parent\nChild prose\n";
+    const resolve = vi.fn(async (request: ResolveExportRequest) => {
+      expect(request).toEqual({ documentId: "a", revision: 1, currentText: composed });
+      return success();
+    });
+    const write = vi.fn(async (request: WriteExportRequest) => {
+      expect(request).toMatchObject({ documentId: "a", revision: 1, text: composed });
+      return exported();
+    });
+    const { controller, writing } = createHarness({
+      writing: new FakeWriting({ documentId: "a", text: parent }),
+      resolve,
+      write,
+      compose: async () => ({ kind: "composed", text: composed })
+    });
+
+    await controller.exportMarkdown();
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(writing.getDocumentState()?.currentText).toBe(parent);
+  });
+
+  it("does not resolve or write when composition is blocked", async () => {
+    const resolve = vi.fn(async () => success());
+    const write = vi.fn(async () => exported());
+    const { controller, states } = createHarness({
+      resolve,
+      write,
+      compose: async () => ({ kind: "blocked", message: "Synced Block cannot be composed because it creates a cycle." })
+    });
+
+    await controller.exportMarkdown();
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(states.at(-1)).toMatchObject({ status: "error", message: expect.stringContaining("cycle") });
+  });
+
+  it("fails closed when a captured Synced Block source changes during export", async () => {
+    let current = true;
+    const resolve = vi.fn(async () => {
+      current = false;
+      return success();
+    });
+    const write = vi.fn(async () => exported());
+    const { controller, states } = createHarness({
+      resolve,
+      write,
+      compose: async () => ({ kind: "composed", text: "# Parent\nChild prose\n", isCurrent: () => current })
+    });
+
+    await controller.exportMarkdown();
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(write).not.toHaveBeenCalled();
+    expect(states.at(-1)).toMatchObject({ status: "error", message: expect.stringContaining("Synced Block sources changed") });
   });
 });

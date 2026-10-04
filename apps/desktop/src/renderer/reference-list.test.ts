@@ -4,7 +4,8 @@ import {
   REFERENCE_LIST_MARKER_END,
   REFERENCE_LIST_MARKER_START,
   formatReferenceSource,
-  refreshReferenceList
+  refreshReferenceList,
+  stripDerivedReferenceList
 } from "./reference-list";
 
 const sourceA = adaptBookSource({
@@ -84,6 +85,15 @@ describe("reference-list derived region", () => {
     expect(second.kind).toBe("unchanged");
     expect(second.text).toBe(first.text);
     expect(first.text).toContain("\r\n");
+  });
+
+  it("strips only a nested generated region for a composed projection", () => {
+    const text = `Child prose\n\n## 参考文献\n\n${pair("- generated")}\n\nAfter`;
+    expect(stripDerivedReferenceList(text)).toEqual({
+      kind: "stripped",
+      text: "Child prose\n\n\nAfter",
+    });
+    expect(stripDerivedReferenceList(`${REFERENCE_LIST_MARKER_START}\nbroken`)).toMatchObject({ kind: "conflict" });
   });
 
   it("normalizes and escapes external metadata without placeholders", () => {

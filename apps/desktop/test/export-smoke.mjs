@@ -7,22 +7,29 @@ import { assertElectronSmokeMarker, runElectronSmoke } from "./electron-smoke-la
 
 const marker = "MAGINALIA_ELECTRON_EXPORT_SMOKE_OK";
 const annotationId = "e5c6d7a8-9012-4b3c-8d7e-6f5a4b3c2d1e";
+const dirtyChildAnnotationId = "f6d7e8a9-0123-4c5d-9e8f-7a6b5c4d3e2f";
 const isbn13 = "9780000000002";
 const quote = "これはExport smokeの解決済み引用です。";
+const dirtyChildQuote = "これはExport smokeの未保存子引用です。";
 const title = "Export Smoke Book";
 const author = "Export Smoke Author";
 const captureId = "capture-export-smoke";
 const canonicalAnnotationId = "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const dirtyChildCanonicalAnnotationId = "ann:01ARZ3NDEKTSV4RRFFQ69G5FB0";
 const quoteMarker = `<!-- maginalia:quote-ref v1 {"quoteId":"${annotationId}","mode":"normal"} -->`;
 const referenceStart = "<!-- maginalia:reference-list-start v1 -->";
 const referenceEnd = "<!-- maginalia:reference-list-end v1 -->";
-const initialA = `\uFEFF# Export A\r\n\r\n日本語の本文です。全角記号（「」）と Latin text を混在させます。\r\n\r\nこれは通常の文章です。[参考リンク](https://example.com) を参照します。\r\n\r\n本文 [YouTube](https://youtu.be/dQw4w9WgXcQ) を参照します。\r\n\r\n## 第二章\r\n\r\n### 第三級\r\n\r\n#### 第四級\r\n\r\n##### 第五級\r\n\r\n###### 第六級\r\n\r\n- リスト項目\r\n\r\n> 引用ブロックです。\r\n\r\n${quoteMarker}\r\n\r\n[[b.md|Second document]] [[missing.md]]\r\n[Generic](https://example.com/article) [YouTube](https://youtu.be/dQw4w9WgXcQ) [X](https://x.com/example/status/123456)\r\n![Figure](assets/figure.png) ![[assets/図版 資料.png]] ![[assets/movie.mp4]]\r\n![[assets/missing.png]]\r\n\r\n| 列一 | 列二 | 列三 | 列四 | 列五 | 列六 | 列七 | 列八 |\r\n| --- | --- | --- | --- | --- | --- | --- | --- |\r\n| 日本語 | Latin | 全角！ | 研究 | 表 | 横幅 | 確認 | 完了 |\r\n\r\n<script>window.MAGINALIA_F_SMOKE_XSS = true</script>\r\n\r\n## 参考文献\r\n\r\n${referenceStart}\r\n- old generated entry\r\n${referenceEnd}\r\n\r\n手書きの参考メモです。\r\n`;
+const syncedChildMarker = "<!-- maginalia:synced-block v1 {\"target\":\"child.md\"} -->";
+const syncedNestedMarker = "<!-- maginalia:synced-block v1 {\"target\":\"nested.md\"} -->";
+const initialA = `\uFEFF# Export A\r\n\r\n日本語の本文です。全角記号（「」）と Latin text を混在させます。\r\n\r\nこれは通常の文章です。[参考リンク](https://example.com) を参照します。\r\n\r\n本文 [YouTube](https://youtu.be/dQw4w9WgXcQ) を参照します。\r\n\r\n## 第二章\r\n\r\n### 第三級\r\n\r\n#### 第四級\r\n\r\n##### 第五級\r\n\r\n###### 第六級\r\n\r\n- リスト項目\r\n\r\n> 引用ブロックです。\r\n\r\n${quoteMarker}\r\n\r\n${syncedChildMarker}\r\n\r\n[[b.md|Second document]] [[missing.md]]\r\n[Generic](https://example.com/article) [YouTube](https://youtu.be/dQw4w9WgXcQ) [X](https://x.com/example/status/123456)\r\n![Figure](assets/figure.png) ![[assets/図版 資料.png]] ![[assets/movie.mp4]]\r\n![[assets/missing.png]]\r\n\r\n| 列一 | 列二 | 列三 | 列四 | 列五 | 列六 | 列七 | 列八 |\r\n| --- | --- | --- | --- | --- | --- | --- | --- |\r\n| 日本語 | Latin | 全角！ | 研究 | 表 | 横幅 | 確認 | 完了 |\r\n\r\n<script>window.MAGINALIA_F_SMOKE_XSS = true</script>\r\n\r\n## 参考文献\r\n\r\n${referenceStart}\r\n- old generated entry\r\n${referenceEnd}\r\n\r\n手書きの参考メモです。\r\n`;
 const wideTableCell = "研究資料 Latin 全角！ ".repeat(32);
 const smokeInitialA = initialA.replace(
   "| 日本語 | Latin | 全角！ | 研究 | 表 | 横幅 | 確認 | 完了 |",
   `| 日本語 | Latin | 全角！ | ![[assets/図版 資料.png]] | 表 | 横幅 | 確認 | ${wideTableCell} |`
 );
 const initialB = "\uFEFF# Export B\r\n\r\nB-only document.\r\n";
+const initialChild = `---\r\ntitle: Child local title\r\n---\r\n# Child local title\r\nSynced child prose\r\n\r\n${quoteMarker}\r\n\r\n${syncedNestedMarker}\r\n\r\n## 参考文献\r\n\r\n${referenceStart}\r\n- stale child reference\r\n${referenceEnd}\r\n`;
+const initialNested = `# Nested local title\r\nNested synced prose\r\n\r\n${quoteMarker}\r\n`;
 
 function startReviewerFixture() {
   const server = createServer((request, response) => {
@@ -155,6 +162,21 @@ try {
       }
     }
   }), "utf8");
+  await writeFile(path.join(shelfRoot, "annotations", "export-smoke-dirty-child-annotation.json"), JSON.stringify({
+    type: "annotation",
+    version: "0.1",
+    id: dirtyChildCanonicalAnnotationId,
+    source: `isbn:${isbn13}`,
+    location: { page: 43 },
+    quote: dirtyChildQuote,
+    deviceMetadata: {
+      maginaliaReviewer: {
+        version: 1,
+        annotationId: dirtyChildAnnotationId,
+        digest: "export-smoke-dirty-child-canonical-alias"
+      }
+    }
+  }), "utf8");
   await mkdir(userDataRoot, { recursive: true });
   await writeFile(path.join(userDataRoot, "shelf_location.yml"), [
     "version: 1",
@@ -176,6 +198,8 @@ try {
   ].join("\n"), "utf8");
   await writeFile(path.join(projectRoot, "a.md"), Buffer.from(smokeInitialA, "utf8"));
   await writeFile(path.join(projectRoot, "b.md"), Buffer.from(initialB, "utf8"));
+  await writeFile(path.join(projectRoot, "child.md"), Buffer.from(initialChild, "utf8"));
+  await writeFile(path.join(projectRoot, "nested.md"), Buffer.from(initialNested, "utf8"));
   // Valid signatures are enough for the bounded Project-media resolver; the
   // smoke verifies renderer element creation rather than media playback.
   await writeFile(path.join(projectRoot, "assets", "figure.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Jf5sAAAAASUVORK5CYII=", "base64"));
@@ -194,6 +218,8 @@ try {
 
   const authoringA = await readFile(path.join(projectRoot, "a.md"), "utf8");
   const authoringB = await readFile(path.join(projectRoot, "b.md"));
+  const authoringChild = await readFile(path.join(projectRoot, "child.md"));
+  const authoringNested = await readFile(path.join(projectRoot, "nested.md"));
   // The export projection itself never mutates authoring text. The process
   // exits through the normal before-quit autosave handshake, so the dirty
   // active-session edit is expected to reach the ordinary source file before
@@ -204,13 +230,20 @@ try {
   if (!authoringB.equals(Buffer.from(initialB, "utf8"))) {
     throw new Error("Export smoke changed authoring B bytes.");
   }
+  if (!authoringChild.toString("utf8").startsWith(initialChild) || !authoringNested.equals(Buffer.from(initialNested, "utf8"))) {
+    throw new Error("Export smoke changed a Synced Block source file.");
+  }
 
   const outputA = await readFile(path.join(projectRoot, "export-1.resolved.md"), "utf8");
   if (!outputA.includes(`> ${quote}`)
     || !outputA.includes(`（${author}『${title}』、p.42）`)
     || !outputA.includes(`- ${author}『${title}』 Export Smoke Publisher、2024。`)
     || !outputA.includes("Unsaved export-only edit.")
+    || !outputA.includes("Synced child prose")
+    || !outputA.includes("Nested synced prose")
+    || outputA.includes("stale child reference")
     || outputA.includes(quoteMarker)
+    || outputA.includes("maginalia:synced-block")
     || outputA.includes(referenceStart)
     || outputA.includes(referenceEnd)
     || outputA.includes(annotationId)

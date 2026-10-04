@@ -25,6 +25,16 @@ export type ReferenceListRefreshResult =
       readonly reason: ReferenceListConflictReason;
     };
 
+/**
+ * Removes only a document's existing derived reference region from a
+ * disposable composition/export projection.  It never touches authoring
+ * source.  A malformed marker pair cannot be safely distinguished from
+ * user-authored text, so callers must fail closed.
+ */
+export type ReferenceListStripResult =
+  | { readonly kind: "stripped" | "unchanged"; readonly text: string }
+  | { readonly kind: "conflict"; readonly text: string; readonly reason: ReferenceListConflictReason };
+
 interface Line {
   readonly content: string;
   readonly start: number;
@@ -89,6 +99,34 @@ function markerPair(text: string): MarkerPair | MarkerConflict | null {
     interiorStart: start.end + start.eol.length,
     interiorEnd: end.start
   };
+}
+
+/**
+ * Drop a nested document's generated References section before it is inserted
+ * into a larger linear composition.  The parent composition receives one
+ * final derived list from its actual QuoteRef occurrences.  The heading is
+ * removed only when it has the exact generated placement immediately before
+ * the markers; user-authored headings remain untouched.
+ */
+export function stripDerivedReferenceList(text: string): ReferenceListStripResult {
+  const current = typeof text === "string" ? text : "";
+  const pair = markerPair(current);
+  if (pair === null) return Object.freeze({ kind: "unchanged", text: current });
+  if (isMarkerConflict(pair)) return Object.freeze({ kind: "conflict", text: current, reason: pair.reason });
+
+  const lines = linesOf(current);
+  const startIndex = lines.findIndex((line) => line.start === pair.start.start);
+  const headingIndex = startIndex >= 2
+    && lines[startIndex - 1]?.content === ""
+    && lines[startIndex - 2]?.content === REFERENCE_LIST_HEADING
+    ? startIndex - 2
+    : -1;
+  const removeStart = headingIndex >= 0 ? lines[headingIndex]!.start : pair.start.start;
+  const removeEnd = pair.end.end + pair.end.eol.length;
+  return Object.freeze({
+    kind: "stripped",
+    text: current.slice(0, removeStart) + current.slice(removeEnd)
+  });
 }
 
 function isMarkerConflict(value: MarkerPair | MarkerConflict): value is MarkerConflict {
