@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Dirent } from "node:fs";
-import { lstat, readdir, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 
 export interface DocumentSummary {
@@ -12,6 +12,27 @@ export interface ManuscriptSummary {
   readonly manuscriptId: string;
   readonly displayName: string;
 }
+
+/** Safe presentation metadata. Filesystem paths remain in the main process. */
+export interface ExplorerEntry {
+  readonly entryId: string;
+  readonly parentId: string | null;
+  readonly displayName: string;
+  readonly relativeName: string;
+  readonly kind: "folder" | "markdown" | "file";
+}
+
+export interface ExplorerListed {
+  readonly kind: "listed";
+  readonly document: DocumentSummary;
+  readonly entries: readonly ExplorerEntry[];
+}
+
+export type ExplorerListResult = ExplorerListed | DocumentWorkspaceFailure;
+export type CreateFolderResult = { readonly kind: "created"; readonly entry: ExplorerEntry } | DocumentWorkspaceFailure;
+export type ResolveExplorerFileResult =
+  | { readonly kind: "resolved"; readonly entry: ExplorerEntry; readonly canonicalPath: string }
+  | DocumentWorkspaceFailure;
 
 export interface DocumentWorkspaceOpened {
   readonly kind: "opened";
@@ -32,7 +53,11 @@ export type DocumentWorkspaceFailureCode =
   | "manuscript-create-failed"
   | "invalid-manuscript-id"
   | "manuscript-not-owned"
-  | "manuscript-unavailable";
+  | "manuscript-unavailable"
+  | "invalid-folder-name"
+  | "folder-exists"
+  | "folder-create-failed"
+  | "explorer-entry-unavailable";
 
 export interface DocumentWorkspaceFailure {
   readonly kind: "error";
@@ -119,6 +144,15 @@ function documentIdForRoot(canonicalRoot: string): string {
 function manuscriptIdForPath(canonicalRoot: string, displayName: string): string {
   return stableOpaqueUuid(`maginalia:manuscript:${stablePathSeed(path.join(canonicalRoot, displayName))}`);
 }
+
+function explorerIdForPath(canonicalRoot: string, relativeName: string, kind: ExplorerEntry["kind"]): string {
+  return kind === "markdown" ? manuscriptIdForPath(canonicalRoot, relativeName)
+    : stableOpaqueUuid(`maginalia:explorer:${kind}:${stablePathSeed(path.join(canonicalRoot, relativeName))}`);
+}
+
+const EXPLORER_ENTRY_UNAVAILABLE: DocumentWorkspaceFailure = {
+  kind: "error", code: "explorer-entry-unavailable", message: "The selected Explorer entry is no longer available."
+};
 
 const INVALID_OWNER: DocumentWorkspaceFailure = {
   kind: "error",
@@ -222,15 +256,20 @@ function isMarkdownName(name: string): boolean {
   return extension === ".md" || extension === ".markdown";
 }
 
-function isSafeManuscriptName(value: unknown): value is string {
+export function isSafeExplorerName(value: unknown): value is string {
   if (typeof value !== "string") return false;
   const name = value.trim();
   return name.length > 0
-    && name !== "."
-    && name !== ".."
+    && !name.startsWith(".")
+    && !path.isAbsolute(name)
+    && !path.win32.isAbsolute(name)
     && !/[<>:"/\\|?*\u0000-\u001f]/u.test(name)
     && !/[. ]$/u.test(name)
-    && /\.(?:md|markdown)$/iu.test(name);
+    && !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])$/iu.test(name.split(".")[0].trimEnd());
+}
+
+function isSafeManuscriptName(value: unknown): value is string {
+  return isSafeExplorerName(value) && /\.(?:md|markdown)$/iu.test(value.trim());
 }
 
 function compareNames(left: string, right: string): number {
@@ -305,9 +344,99 @@ async function listManuscriptEntries(canonicalRoot: string): Promise<Dirent[]> {
     .sort(compareManuscripts);
 }
 
+interface ExplorerRecord extends ExplorerEntry {
+  readonly canonicalPath: string;
+}
+
+async function listExplorerEntries(canonicalRoot: string, excludedRelativeRoots: readonly string[] = []): Promise<ExplorerRecord[]> {
+  const found: ExplorerRecord[] = [];
+  const visit = async (directory: string, parentId: string | null): Promise<void> => {
+    const directoryStats = await lstat(directory);
+    if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink() || await realpath(directory) !== directory) return;
+    const entries = await readdir(directory, { withFileTypes: true, encoding: "utf8" });
+    entries.sort((left, right) => compareNames(left.name, right.name));
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const candidate = path.join(directory, entry.name);
+      const stats = await lstat(candidate);
+      if (stats.isSymbolicLink() || (!stats.isFile() && !stats.isDirectory())) continue;
+      if (stats.isDirectory() && entry.name.startsWith("'")) continue;
+      const canonicalPath = await realpath(candidate);
+      const relativeName = projectRelativeName(canonicalRoot, canonicalPath);
+      if (canonicalPath !== candidate || relativeName === null) continue;
+      if (excludedRelativeRoots.some((excluded) => relativeName === excluded || relativeName.startsWith(`${excluded}/`))) continue;
+      const kind = stats.isDirectory() ? "folder" : isMarkdownName(entry.name) ? "markdown" : "file";
+      const record: ExplorerRecord = {
+        entryId: explorerIdForPath(canonicalRoot, relativeName, kind), parentId,
+        displayName: entry.name, relativeName, kind, canonicalPath
+      };
+      found.push(record);
+      if (kind === "folder") await visit(canonicalPath, record.entryId);
+    }
+  };
+  await visit(canonicalRoot, null);
+  return found;
+}
+
+function explorerSummary({ canonicalPath: _canonicalPath, ...entry }: ExplorerRecord): ExplorerEntry {
+  return entry;
+}
+
 export class DocumentWorkspaceService {
   private readonly documents = new Map<string, DocumentRecord>();
   private readonly owners = new Map<object, DocumentRecord>();
+
+  /** Explorer-only visibility rules never change the physical tree or Project search. */
+  public async listExplorerForOwner(
+    owner: unknown, documentId: unknown, excludedRelativeRoots: readonly string[] = []
+  ): Promise<ExplorerListResult> {
+    const document = this.findDocument(owner, documentId);
+    if ("kind" in document) return document;
+    const root = await this.resolveDocumentRoot(owner, documentId);
+    if (root.kind !== "resolved") return root;
+    try {
+      const entries = await listExplorerEntries(root.canonicalRoot, excludedRelativeRoots);
+      return { kind: "listed", document: { documentId: document.documentId, displayName: document.displayName }, entries: entries.map(explorerSummary) };
+    } catch (_error: unknown) { return ROOT_UNREADABLE; }
+  }
+
+  public async createFolderForOwner(
+    owner: unknown, documentId: unknown, parentEntryId: unknown, name: unknown
+  ): Promise<CreateFolderResult> {
+    if (!isSafeExplorerName(name)) {
+      return { kind: "error", code: "invalid-folder-name", message: "Use a folder name without a leading dot, path separators, or reserved characters." };
+    }
+    const parent = await this.resolveExplorerParent(owner, documentId, parentEntryId);
+    if (parent.kind !== "resolved") return parent;
+    const normalizedName = name.trim();
+    const candidate = path.join(parent.canonicalPath, normalizedName);
+    if (!isDirectChild(parent.canonicalPath, candidate)) return EXPLORER_ENTRY_UNAVAILABLE;
+    try {
+      if (await this.hasNameCollision(parent.canonicalPath, normalizedName)) {
+        return { kind: "error", code: "folder-exists", message: "An entry with that name already exists. Choose another name." };
+      }
+      await mkdir(candidate);
+    } catch (error: unknown) {
+      return { kind: "error", code: errorCode(error) === "EEXIST" ? "folder-exists" : "folder-create-failed", message: "The folder could not be created. Choose another name or check its permissions." };
+    }
+    const relativeName = projectRelativeName(parent.canonicalRoot, candidate);
+    if (relativeName === null) return EXPLORER_ENTRY_UNAVAILABLE;
+    return { kind: "created", entry: { entryId: explorerIdForPath(parent.canonicalRoot, relativeName, "folder"), parentId: parentEntryId as string | null, displayName: normalizedName, relativeName, kind: "folder" } };
+  }
+
+  /** Main-process-only resolution for the host Trash coordinator. Directories are never accepted. */
+  public async resolveExplorerFilePath(
+    owner: unknown, documentId: unknown, entryId: unknown, excludedRelativeRoots: readonly string[] = []
+  ): Promise<ResolveExplorerFileResult> {
+    const root = await this.resolveDocumentRoot(owner, documentId);
+    if (root.kind !== "resolved") return root;
+    if (!isOpaqueId(entryId)) return EXPLORER_ENTRY_UNAVAILABLE;
+    try {
+      const record = (await listExplorerEntries(root.canonicalRoot, excludedRelativeRoots)).find((entry) => entry.entryId === entryId && entry.kind !== "folder");
+      if (!record || !await this.revalidateExplorerPath(root.canonicalRoot, record.canonicalPath, false)) return EXPLORER_ENTRY_UNAVAILABLE;
+      return { kind: "resolved", entry: explorerSummary(record), canonicalPath: record.canonicalPath };
+    } catch (_error: unknown) { return EXPLORER_ENTRY_UNAVAILABLE; }
+  }
 
   /**
    * Canonicalize and retain one selected Document root for this owner. The
@@ -516,21 +645,23 @@ export class DocumentWorkspaceService {
     };
   }
 
-  /** Create a root-level Markdown file with exclusive creation and refresh. */
+  /** Exclusively create Markdown in the root or a revalidated Explorer folder. */
   public async createManuscriptForOwner(
     owner: unknown,
     documentId: unknown,
     fileName: unknown,
-    contents: unknown
+    contents: unknown,
+    parentEntryId: unknown = null
   ): Promise<CreateManuscriptResult> {
     if (!isSafeManuscriptName(fileName) || typeof contents !== "string") return INVALID_MANUSCRIPT_NAME;
-    const root = await this.resolveDocumentRoot(owner, documentId);
-    if (root.kind !== "resolved") return root;
+    const parent = await this.resolveExplorerParent(owner, documentId, parentEntryId);
+    if (parent.kind !== "resolved") return parent;
     const normalizedName = fileName.trim();
-    const candidatePath = path.join(root.canonicalRoot, normalizedName);
-    if (!isDirectChild(root.canonicalRoot, candidatePath)) return INVALID_MANUSCRIPT_NAME;
+    const candidatePath = path.join(parent.canonicalPath, normalizedName);
+    if (!isDirectChild(parent.canonicalPath, candidatePath)) return INVALID_MANUSCRIPT_NAME;
 
     try {
+      if (await this.hasNameCollision(parent.canonicalPath, normalizedName)) return MANUSCRIPT_EXISTS;
       await writeFile(candidatePath, contents, { encoding: "utf8", flag: "wx" });
     } catch (error: unknown) {
       if (errorCode(error) === "EEXIST") return MANUSCRIPT_EXISTS;
@@ -539,7 +670,10 @@ export class DocumentWorkspaceService {
 
     const refreshed = await this.refreshForOwner(owner, documentId);
     if (refreshed.kind !== "opened") return refreshed;
-    const manuscript = refreshed.manuscripts.find((candidate) => candidate.displayName === normalizedName);
+    const relativeName = projectRelativeName(parent.canonicalRoot, candidatePath);
+    const manuscript = parentEntryId === null
+      ? refreshed.manuscripts.find((candidate) => candidate.displayName === normalizedName)
+      : relativeName === null ? undefined : { manuscriptId: manuscriptIdForPath(parent.canonicalRoot, relativeName), displayName: relativeName };
     if (!manuscript) return MANUSCRIPT_CREATE_FAILED;
     return {
       kind: "created",
@@ -589,6 +723,38 @@ export class DocumentWorkspaceService {
   public dispose(): void {
     this.documents.clear();
     this.owners.clear();
+  }
+
+  private async hasNameCollision(directory: string, name: string): Promise<boolean> {
+    return (await readdir(directory)).some((entry) => entry.toLowerCase() === name.toLowerCase());
+  }
+
+  private async revalidateExplorerPath(root: string, candidate: string, directory: boolean): Promise<boolean> {
+    const relativeName = projectRelativeName(root, candidate);
+    if (relativeName === null) return false;
+    const components = relativeName.split("/");
+    let current = root;
+    for (let index = 0; index < components.length; index += 1) {
+      current = path.join(current, components[index]);
+      const stats = await lstat(current);
+      const needsDirectory = index < components.length - 1 || directory;
+      if (stats.isSymbolicLink() || (needsDirectory ? !stats.isDirectory() : !stats.isFile()) || await realpath(current) !== current) return false;
+    }
+    return true;
+  }
+
+  private async resolveExplorerParent(owner: unknown, documentId: unknown, parentEntryId: unknown): Promise<
+    { readonly kind: "resolved"; readonly canonicalRoot: string; readonly canonicalPath: string } | DocumentWorkspaceFailure
+  > {
+    const root = await this.resolveDocumentRoot(owner, documentId);
+    if (root.kind !== "resolved") return root;
+    if (parentEntryId === null) return { kind: "resolved", canonicalRoot: root.canonicalRoot, canonicalPath: root.canonicalRoot };
+    if (!isOpaqueId(parentEntryId)) return EXPLORER_ENTRY_UNAVAILABLE;
+    try {
+      const parent = (await listExplorerEntries(root.canonicalRoot)).find((entry) => entry.entryId === parentEntryId && entry.kind === "folder");
+      if (!parent || !await this.revalidateExplorerPath(root.canonicalRoot, parent.canonicalPath, true)) return EXPLORER_ENTRY_UNAVAILABLE;
+      return { kind: "resolved", canonicalRoot: root.canonicalRoot, canonicalPath: parent.canonicalPath };
+    } catch (_error: unknown) { return EXPLORER_ENTRY_UNAVAILABLE; }
   }
 
   private findDocument(owner: unknown, documentId: unknown): DocumentRecord | DocumentWorkspaceFailure {

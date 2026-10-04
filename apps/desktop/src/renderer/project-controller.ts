@@ -123,6 +123,20 @@ export class ProjectNavigationController {
       .find(([, sessionId]) => sessionId === documentId)?.[0] ?? null;
   }
 
+  /** Main editor session associated with a Project-relative opaque file ID. */
+  public getSessionIdForFile(fileId: string): string | null {
+    return this.fileSessionIds.get(fileId) ?? null;
+  }
+
+  /** Remove a file only after main process Trash confirmation and session close. */
+  public removeDeletedFile(fileId: string): void {
+    this.openedFileIds.delete(fileId);
+    this.fileSessionIds.delete(fileId);
+    const files = this.state.files.filter((file) => file.fileId !== fileId);
+    const activeFileId = this.state.activeFileId === fileId ? null : this.state.activeFileId;
+    this.replaceState({ ...this.state, files, activeFileId });
+  }
+
   public syncOpenDocuments(documentIds: readonly string[]): void {
     const orderedFileIds = documentIds.flatMap((sessionId) => {
       const fileId = [...this.fileSessionIds.entries()]

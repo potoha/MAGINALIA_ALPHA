@@ -4,6 +4,9 @@ import {
   OPEN_DOCUMENT_CHANNEL,
   OPEN_MARKDOWN_CHANNEL,
   OPEN_MANUSCRIPT_CHANNEL,
+  LIST_EXPLORER_CHANNEL,
+  CREATE_EXPLORER_FOLDER_CHANNEL,
+  DELETE_EXPLORER_FILE_CHANNEL,
   OPEN_PROJECT_CHANNEL,
   CREATE_PROJECT_CHANNEL,
   RESTORE_PROJECT_CHANNEL,
@@ -15,6 +18,7 @@ import {
   CREATE_WORKDESK_FILE_CHANNEL,
   CREATE_WORKDESK_PROJECT_CHANNEL,
   REGISTER_WORKDESK_PROJECT_CHANNEL,
+  REMOVE_WORKDESK_PROJECT_CHANNEL,
   OPEN_WORKDESK_PROJECT_CHANNEL,
   COPY_WORKDESK_FILE_TO_PROJECT_CHANNEL,
   SAVE_MARKDOWN_CHANNEL,
@@ -67,6 +71,9 @@ describe("preload boundary", () => {
       "saveMarkdown",
       "openDocument",
       "openManuscript",
+      "listExplorer",
+      "createExplorerFolder",
+      "deleteExplorerFile",
       "openProject",
       "createProject",
       "restoreProject",
@@ -78,6 +85,7 @@ describe("preload boundary", () => {
       "createWorkdeskFile",
       "createWorkdeskProject",
       "registerWorkdeskProject",
+      "removeWorkdeskProject",
       "openWorkdeskProject",
       "copyWorkdeskFileToProject",
       "openLibrary",
@@ -123,6 +131,9 @@ describe("preload boundary", () => {
       documentId: "00000000-0000-4000-8000-000000000000",
       manuscriptId: "11111111-1111-4111-8111-111111111111"
     });
+    await api.listExplorer({ documentId: "00000000-0000-4000-8000-000000000000" });
+    await api.createExplorerFolder({ documentId: "00000000-0000-4000-8000-000000000000", parentEntryId: null, name: "資料" });
+    await api.deleteExplorerFile({ documentId: "00000000-0000-4000-8000-000000000000", entryId: "11111111-1111-4111-8111-111111111111" });
     await api.openProject();
     await api.createProject({ title: "Coffee" });
     await api.restoreProject();
@@ -147,6 +158,10 @@ describe("preload boundary", () => {
     });
     await api.createWorkdeskProject({ workdeskIdentityId: "11111111-1111-4111-8111-111111111111", title: "Child" });
     await api.registerWorkdeskProject({ workdeskIdentityId: "11111111-1111-4111-8111-111111111111" });
+    await api.removeWorkdeskProject({
+      workdeskIdentityId: "11111111-1111-4111-8111-111111111111",
+      projectIdentityId: "22222222-2222-4222-8222-222222222222"
+    });
     await api.openWorkdeskProject({
       workdeskIdentityId: "11111111-1111-4111-8111-111111111111",
       projectIdentityId: "22222222-2222-4222-8222-222222222222"
@@ -224,6 +239,9 @@ describe("preload boundary", () => {
           manuscriptId: "11111111-1111-4111-8111-111111111111"
         }]
       },
+      { channel: LIST_EXPLORER_CHANNEL, args: [{ documentId: "00000000-0000-4000-8000-000000000000" }] },
+      { channel: CREATE_EXPLORER_FOLDER_CHANNEL, args: [{ documentId: "00000000-0000-4000-8000-000000000000", parentEntryId: null, name: "資料" }] },
+      { channel: DELETE_EXPLORER_FILE_CHANNEL, args: [{ documentId: "00000000-0000-4000-8000-000000000000", entryId: "11111111-1111-4111-8111-111111111111" }] },
       { channel: OPEN_PROJECT_CHANNEL, args: [] },
       { channel: CREATE_PROJECT_CHANNEL, args: [{ title: "Coffee" }] },
       { channel: RESTORE_PROJECT_CHANNEL, args: [] },
@@ -262,6 +280,13 @@ describe("preload boundary", () => {
       {
         channel: REGISTER_WORKDESK_PROJECT_CHANNEL,
         args: [{ workdeskIdentityId: "11111111-1111-4111-8111-111111111111" }]
+      },
+      {
+        channel: REMOVE_WORKDESK_PROJECT_CHANNEL,
+        args: [{
+          workdeskIdentityId: "11111111-1111-4111-8111-111111111111",
+          projectIdentityId: "22222222-2222-4222-8222-222222222222"
+        }]
       },
       {
         channel: OPEN_WORKDESK_PROJECT_CHANNEL,

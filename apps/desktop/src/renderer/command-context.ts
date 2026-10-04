@@ -16,6 +16,8 @@ export const COMMAND_CONTEXT_KEYS = [
   "renderer.orientation",
   "document.type",
   "view.id",
+  // Current Project/Workdesk document scope, without exposing a filesystem path.
+  "project.active",
   // Portable parent navigation state; still a scalar, never a path or a
   // Workdesk service object. It scopes Workdesk-only creation commands.
   "workdesk.active"

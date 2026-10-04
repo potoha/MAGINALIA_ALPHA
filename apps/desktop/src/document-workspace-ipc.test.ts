@@ -4,6 +4,10 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createDocumentWorkspaceHandlers,
+  createExplorerHandlers,
+  isExplorerCreateFolderRequest,
+  isExplorerDeleteFileRequest,
+  isExplorerListRequest,
   isOpenManuscriptRequest,
   type DocumentWorkspaceHandlers
 } from "./document-workspace-ipc";
@@ -33,6 +37,58 @@ function openedMarkdown(result: Awaited<ReturnType<DocumentWorkspaceHandlers["op
 }
 
 describe("Document workspace IPC boundary", () => {
+  it("accepts only owner-bound Explorer IDs and rejects paths, extra arguments and extra fields", async () => {
+    const documentId = "00000000-0000-4000-8000-000000000000";
+    const request = { documentId, parentEntryId: null, name: "資料" };
+    expect(isExplorerListRequest({ documentId })).toBe(true);
+    expect(isExplorerListRequest({ documentId, absolutePath: "C:\\outside" })).toBe(false);
+    expect(isExplorerCreateFolderRequest(request)).toBe(true);
+    expect(isExplorerCreateFolderRequest({ ...request, parentEntryId: "../../outside" })).toBe(false);
+    expect(isExplorerCreateFolderRequest({ ...request, path: "C:\\outside" })).toBe(false);
+    const calls: unknown[][] = [];
+    const handlers = createExplorerHandlers({
+      listExplorer: async (...args) => { calls.push(args); return { kind: "error", code: "document-not-owned", message: "unavailable" }; },
+      createFolder: async (...args) => { calls.push(args); return { kind: "error", code: "invalid-folder-name", message: "invalid" }; },
+      deleteFile: async (...args) => { calls.push(args); return { kind: "deleted", entryId: args[2] as string }; }
+    });
+    const sender = {};
+    await handlers.createFolder({ sender }, request);
+    await handlers.listExplorer({ sender }, { documentId });
+    const deleteRequest = { documentId, entryId: "11111111-1111-4111-8111-111111111111" };
+    expect(isExplorerDeleteFileRequest(deleteRequest)).toBe(true);
+    expect(isExplorerDeleteFileRequest({ ...deleteRequest, path: "C:\\outside" })).toBe(false);
+    expect(isExplorerDeleteFileRequest({ ...deleteRequest, entryId: "../../outside" })).toBe(false);
+    await expect(handlers.deleteFile({ sender }, deleteRequest)).resolves.toEqual({ kind: "deleted", entryId: deleteRequest.entryId });
+    expect(calls).toEqual([[sender, documentId, null, "資料"], [sender, documentId], [sender, documentId, deleteRequest.entryId]]);
+    expect(await handlers.createFolder({ sender }, { ...request, path: "outside" })).toMatchObject({ kind: "error", code: "invalid-request" });
+    expect(await handlers.listExplorer({ sender }, { documentId }, "extra")).toMatchObject({ kind: "error", code: "invalid-request" });
+    expect(await handlers.deleteFile({ sender }, { ...deleteRequest, path: "outside" })).toMatchObject({ kind: "error", code: "invalid-request" });
+    expect(calls).toHaveLength(3);
+  });
+
+  it("keeps dot-name rejection in the filesystem authority and bounds unexpected Explorer failures", async () => {
+    await withTempDirectory(async (root) => {
+      const sender = {};
+      const workspace = new DocumentWorkspaceService();
+      const document = await workspace.openForOwner(sender, root);
+      if (document.kind !== "opened") throw new Error("Document unavailable");
+      const handlers = createExplorerHandlers({
+        listExplorer: (owner, id) => workspace.listExplorerForOwner(owner, id),
+        createFolder: (owner, id, parent, name) => workspace.createFolderForOwner(owner, id, parent, name),
+        deleteFile: async () => ({ kind: "error", code: "explorer-entry-unavailable", message: "unavailable" })
+      });
+      expect(await handlers.createFolder({ sender }, { documentId: document.document.documentId, parentEntryId: null, name: ".codex" })).toMatchObject({ kind: "error", code: "invalid-folder-name" });
+      const failing = createExplorerHandlers({
+        listExplorer: async () => { throw new Error("C:\\secret-path"); },
+        createFolder: async () => { throw new Error("C:\\secret-path"); },
+        deleteFile: async () => { throw new Error("C:\\secret-path"); }
+      });
+      const result = await failing.listExplorer({ sender }, { documentId: document.document.documentId });
+      expect(result).toMatchObject({ kind: "error" });
+      expect(JSON.stringify(result)).not.toContain("secret-path");
+    });
+  });
+
   it("accepts only two opaque IDs and rejects paths or extra request fields", () => {
     const valid = {
       documentId: "00000000-0000-4000-8000-000000000000",

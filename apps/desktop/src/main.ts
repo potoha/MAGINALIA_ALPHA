@@ -14,6 +14,10 @@ import * as path from "node:path";
 import { DocumentWorkspaceService } from "./document-workspace";
 import {
   createDocumentWorkspaceHandlers,
+  createExplorerHandlers,
+  CREATE_EXPLORER_FOLDER_CHANNEL,
+  DELETE_EXPLORER_FILE_CHANNEL,
+  LIST_EXPLORER_CHANNEL,
   OPEN_DOCUMENT_CHANNEL,
   OPEN_MANUSCRIPT_CHANNEL
 } from "./document-workspace-ipc";
@@ -35,6 +39,7 @@ import {
   CREATE_WORKDESK_PROJECT_CHANNEL,
   OPEN_WORKDESK_CHANNEL,
   OPEN_WORKDESK_PROJECT_CHANNEL,
+  REMOVE_WORKDESK_PROJECT_CHANNEL,
   REGISTER_WORKDESK_PROJECT_CHANNEL,
   RESTORE_WORKDESK_CHANNEL,
   createWorkdeskHandlers
@@ -375,6 +380,53 @@ const documentWorkspaceHandlers = createDocumentWorkspaceHandlers({
     documentWorkspaceService.resolveManuscriptPath(owner, documentId, manuscriptId),
   openMarkdown: (owner, filePath) => markdownFileService.openForOwner(owner, filePath)
 });
+/** Workdesk child Projects are independent authorities, never loose Explorer entries. */
+async function explorerExcludedRelativeRoots(owner: object, documentId: string): Promise<readonly string[]> {
+  const root = await documentWorkspaceService.resolveDocumentRoot(owner, documentId);
+  if (root.kind !== "resolved") return [];
+  try {
+    await workdeskService.open(root.canonicalRoot);
+    return ["projects"];
+  } catch {
+    return [];
+  }
+}
+
+async function isPermittedExplorerFolder(owner: object, documentId: string, parentEntryId: string | null): Promise<boolean> {
+  if (parentEntryId === null) return true;
+  const listed = await documentWorkspaceService.listExplorerForOwner(
+    owner,
+    documentId,
+    await explorerExcludedRelativeRoots(owner, documentId)
+  );
+  return listed.kind === "listed" && listed.entries.some((entry) => entry.entryId === parentEntryId && entry.kind === "folder");
+}
+
+const explorerHandlers = createExplorerHandlers({
+  listExplorer: async (owner, documentId) =>
+    documentWorkspaceService.listExplorerForOwner(owner, documentId, await explorerExcludedRelativeRoots(owner, documentId)),
+  createFolder: async (owner, documentId, parentEntryId, name) => {
+    if (!await isPermittedExplorerFolder(owner, documentId, parentEntryId)) {
+      return { kind: "error" as const, code: "explorer-entry-unavailable" as const, message: "Choose a folder in the Explorer." };
+    }
+    return documentWorkspaceService.createFolderForOwner(owner, documentId, parentEntryId, name);
+  },
+  deleteFile: async (owner, documentId, entryId) => {
+    const resolved = await documentWorkspaceService.resolveExplorerFilePath(
+      owner,
+      documentId,
+      entryId,
+      await explorerExcludedRelativeRoots(owner, documentId)
+    );
+    if (resolved.kind !== "resolved") return resolved;
+    try {
+      await shell.trashItem(resolved.canonicalPath);
+      return { kind: "deleted" as const, entryId };
+    } catch {
+      return { kind: "error" as const, code: "explorer-entry-unavailable" as const, message: "The file could not be moved to the Recycle Bin. It was not deleted." };
+    }
+  }
+});
 const projectHandlers = createProjectHandlers({
   pickProjectFolder: () => ((projectSmoke.requested && !projectSmoke.restore)
       || shelfSmoke.requested
@@ -412,7 +464,8 @@ const projectHandlers = createProjectHandlers({
     request.projectId,
     request.fileName,
     request.title,
-    request.documentType
+    request.documentType,
+    request.parentEntryId ?? null
   )
 });
 const workdeskHandlers = createWorkdeskHandlers({
@@ -434,7 +487,8 @@ const workdeskHandlers = createWorkdeskHandlers({
   }),
   service: workdeskService,
   repositories: repositoryService,
-  projects: projectService
+  projects: projectService,
+  isPermittedWorkdeskFolder: isPermittedExplorerFolder
 });
 const projectLinkHandlers = createProjectLinkHandlers({
   resolveInternalLink: (owner, projectId, target) => projectService.resolveInternalLinkForOwner(owner, projectId, target),
@@ -1001,6 +1055,9 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(SAVE_MARKDOWN_CHANNEL, handleSaveMarkdown);
   ipcMain.handle(OPEN_DOCUMENT_CHANNEL, documentWorkspaceHandlers.openDocument);
   ipcMain.handle(OPEN_MANUSCRIPT_CHANNEL, documentWorkspaceHandlers.openManuscript);
+  ipcMain.handle(LIST_EXPLORER_CHANNEL, explorerHandlers.listExplorer);
+  ipcMain.handle(CREATE_EXPLORER_FOLDER_CHANNEL, explorerHandlers.createFolder);
+  ipcMain.handle(DELETE_EXPLORER_FILE_CHANNEL, explorerHandlers.deleteFile);
   ipcMain.handle(OPEN_PROJECT_CHANNEL, projectHandlers.openProject);
   ipcMain.handle(CREATE_PROJECT_CHANNEL, projectHandlers.createProject);
   ipcMain.handle(RESTORE_PROJECT_CHANNEL, projectHandlers.restoreProject);
@@ -1018,6 +1075,7 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(CREATE_WORKDESK_FILE_CHANNEL, workdeskIpc(workdeskHandlers.createWorkdeskFile));
   ipcMain.handle(CREATE_WORKDESK_PROJECT_CHANNEL, workdeskIpc(workdeskHandlers.createWorkdeskProject));
   ipcMain.handle(REGISTER_WORKDESK_PROJECT_CHANNEL, workdeskIpc(workdeskHandlers.registerWorkdeskProject));
+  ipcMain.handle(REMOVE_WORKDESK_PROJECT_CHANNEL, workdeskIpc(workdeskHandlers.removeWorkdeskProject));
   ipcMain.handle(OPEN_WORKDESK_PROJECT_CHANNEL, workdeskIpc(workdeskHandlers.openWorkdeskProject));
   ipcMain.handle(COPY_WORKDESK_FILE_TO_PROJECT_CHANNEL, workdeskIpc(workdeskHandlers.copyWorkdeskFileToProject));
   ipcMain.handle(RESOLVE_INTERNAL_LINK_CHANNEL, projectLinkHandlers.resolveInternalLink);

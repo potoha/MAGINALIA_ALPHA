@@ -223,6 +223,8 @@ export function withCopiedDocumentType(source: string, type: ProjectDocumentType
 }
 
 export class ProjectService {
+  private readonly validationOwner = Object.freeze({});
+
   public constructor(
     private readonly workspace: DocumentWorkspaceService,
     private readonly markdown: MarkdownFileService,
@@ -235,6 +237,17 @@ export class ProjectService {
     const result = await this.enrich(owner, opened);
     if (result.kind === "opened") await this.remember(owner, opened.document.documentId);
     return result;
+  }
+
+  /**
+   * Check a Project root without replacing a renderer owner's active Project
+   * or changing its remembered restore location. Workdesk uses this before it
+   * commits an external membership.
+   */
+  public async validateProjectRoot(rootPath: string): Promise<ProjectResult> {
+    const opened = await this.workspace.openForOwner(this.validationOwner, rootPath);
+    if (opened.kind !== "opened") return opened;
+    return this.enrich(this.validationOwner, opened);
   }
 
   public async createForOwner(owner: object, parentPath: string, title: string): Promise<ProjectCreateResult> {
@@ -280,7 +293,7 @@ export class ProjectService {
     projectId: string,
     fileId: string,
   ): Promise<OpenMarkdownResult | DocumentWorkspaceFailure> {
-    const resolved = await this.workspace.resolveManuscriptPath(owner, projectId, fileId);
+    const resolved = await this.workspace.resolveProjectManuscriptPath(owner, projectId, fileId);
     if (resolved.kind !== "resolved") return resolved;
     return this.markdown.openForOwner(owner, resolved.canonicalPath);
   }
@@ -353,6 +366,7 @@ export class ProjectService {
     fileName: string,
     title: string,
     documentType: ProjectDocumentType,
+    parentEntryId: string | null = null,
   ): Promise<ProjectFileCreateResult> {
     const normalizedName = normalizeProjectFileName(fileName);
     const normalizedTitle = normalizeDocumentTitle(title);
@@ -363,6 +377,7 @@ export class ProjectService {
       projectId,
       normalizedName,
       createProjectMarkdown(normalizedTitle, documentType),
+      parentEntryId,
     );
     if (created.kind !== "created") {
       return isRootError(created) ? created : PROJECT_FILE_CREATE_FAILED;
@@ -372,7 +387,7 @@ export class ProjectService {
     if (refreshed.kind !== "opened") return refreshed;
     const project = await this.enrich(owner, refreshed);
     if (project.kind !== "opened") return project;
-    const file = project.files.find((candidate) => candidate.displayName === normalizedName);
+    const file = project.files.find((candidate) => candidate.fileId === created.manuscript.manuscriptId);
     if (!file) return PROJECT_FILE_CREATE_FAILED;
     return { kind: "created", project: project.project, files: project.files, file };
   }
@@ -383,7 +398,7 @@ export class ProjectService {
     projectId: string,
     fileId: string,
   ): Promise<ProjectFileCopySource | DocumentWorkspaceFailure | ProjectFailure> {
-    const resolved = await this.workspace.resolveManuscriptPath(owner, projectId, fileId);
+    const resolved = await this.workspace.resolveProjectManuscriptPath(owner, projectId, fileId);
     if (resolved.kind !== "resolved") return resolved;
     try {
       const text = await readFile(resolved.canonicalPath, "utf8");
@@ -430,8 +445,10 @@ export class ProjectService {
 
   private async enrich(owner: object, opened: DocumentWorkspaceOpened): Promise<ProjectOpened | DocumentWorkspaceFailure> {
     const files: ProjectFileSummary[] = [];
-    for (const manuscript of opened.manuscripts) {
-      const resolved = await this.workspace.resolveManuscriptPath(owner, opened.document.documentId, manuscript.manuscriptId);
+    const records = await this.workspace.listProjectMarkdownForOwner(owner, opened.document.documentId);
+    if (!Array.isArray(records)) return records as DocumentWorkspaceFailure;
+    for (const manuscript of records) {
+      const resolved = await this.workspace.resolveProjectManuscriptPath(owner, opened.document.documentId, manuscript.manuscriptId);
       if (resolved.kind !== "resolved") {
         files.push({
           fileId: manuscript.manuscriptId,

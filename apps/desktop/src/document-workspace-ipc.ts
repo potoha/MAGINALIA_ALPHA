@@ -2,12 +2,38 @@ import type {
   DocumentWorkspaceFailure,
   DocumentWorkspaceOpened,
   DocumentWorkspaceResult,
+  ExplorerListResult,
+  CreateFolderResult,
   ResolveManuscriptPathResult
 } from "./document-workspace";
 import type { OpenMarkdownResult } from "./markdown-ipc";
 
 export const OPEN_DOCUMENT_CHANNEL = "maginalia:open-document";
 export const OPEN_MANUSCRIPT_CHANNEL = "maginalia:open-manuscript";
+export const LIST_EXPLORER_CHANNEL = "maginalia:explorer-list";
+export const CREATE_EXPLORER_FOLDER_CHANNEL = "maginalia:explorer-create-folder";
+export const DELETE_EXPLORER_FILE_CHANNEL = "maginalia:explorer-delete-file";
+
+export interface ExplorerListRequest {
+  readonly documentId: string;
+}
+
+export interface ExplorerCreateFolderRequest extends ExplorerListRequest {
+  readonly parentEntryId: string | null;
+  readonly name: string;
+}
+
+export interface ExplorerDeleteFileRequest extends ExplorerListRequest {
+  readonly entryId: string;
+}
+
+export type ExplorerDeleteFileResult = { readonly kind: "deleted"; readonly entryId: string } | DocumentWorkspaceFailure;
+
+export interface ExplorerHandlerDependencies {
+  readonly listExplorer: (owner: object, documentId: string) => Promise<ExplorerListResult>;
+  readonly createFolder: (owner: object, documentId: string, parentEntryId: string | null, name: string) => Promise<CreateFolderResult>;
+  readonly deleteFile: (owner: object, documentId: string, entryId: string) => Promise<ExplorerDeleteFileResult>;
+}
 
 export interface DocumentWorkspaceCancelled {
   readonly kind: "cancelled";
@@ -105,6 +131,43 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isOpaqueId(value: unknown): value is string {
   return typeof value === "string" && OPAQUE_ID.test(value);
+}
+
+export function isExplorerListRequest(value: unknown): value is ExplorerListRequest {
+  return isRecord(value) && Reflect.ownKeys(value).length === 1 && isOpaqueId(value.documentId);
+}
+
+export function isExplorerCreateFolderRequest(value: unknown): value is ExplorerCreateFolderRequest {
+  if (!isRecord(value)) return false;
+  const keys = Reflect.ownKeys(value);
+  return keys.length === 3 && keys.includes("documentId") && keys.includes("parentEntryId") && keys.includes("name")
+    && isOpaqueId(value.documentId) && (value.parentEntryId === null || isOpaqueId(value.parentEntryId)) && typeof value.name === "string";
+}
+
+export function isExplorerDeleteFileRequest(value: unknown): value is ExplorerDeleteFileRequest {
+  return isRecord(value) && Reflect.ownKeys(value).length === 2
+    && isOpaqueId(value.documentId) && isOpaqueId(value.entryId);
+}
+
+export function createExplorerHandlers(dependencies: ExplorerHandlerDependencies) {
+  const failed: DocumentWorkspaceIpcFailure = { kind: "error", code: "document-open-failed", message: "The Explorer operation could not be completed. Try again." };
+  return {
+    listExplorer: async (event: DocumentWorkspaceInvokeEvent, request: unknown, ...args: readonly unknown[]): Promise<ExplorerListResult | DocumentWorkspaceIpcFailure> => {
+      if (args.length !== 0 || !isExplorerListRequest(request)) return INVALID_REQUEST;
+      try { return await dependencies.listExplorer(event.sender, request.documentId); }
+      catch (_error: unknown) { return failed; }
+    },
+    createFolder: async (event: DocumentWorkspaceInvokeEvent, request: unknown, ...args: readonly unknown[]): Promise<CreateFolderResult | DocumentWorkspaceIpcFailure> => {
+      if (args.length !== 0 || !isExplorerCreateFolderRequest(request)) return INVALID_REQUEST;
+      try { return await dependencies.createFolder(event.sender, request.documentId, request.parentEntryId, request.name); }
+      catch (_error: unknown) { return failed; }
+    },
+    deleteFile: async (event: DocumentWorkspaceInvokeEvent, request: unknown, ...args: readonly unknown[]): Promise<ExplorerDeleteFileResult | DocumentWorkspaceIpcFailure> => {
+      if (args.length !== 0 || !isExplorerDeleteFileRequest(request)) return INVALID_REQUEST;
+      try { return await dependencies.deleteFile(event.sender, request.documentId, request.entryId); }
+      catch (_error: unknown) { return failed; }
+    }
+  };
 }
 
 function isFolderSelection(value: unknown): value is DocumentFolderSelection {
