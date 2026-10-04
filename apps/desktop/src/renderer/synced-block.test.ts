@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  linearizeProjectComposition,
   projectSyncedDocument,
   resolveProjectComposition,
   scanSyncedBlockMarkers,
@@ -130,6 +131,37 @@ describe("Synced Block source projection", () => {
 });
 
 describe("Synced Block composition", () => {
+  it("linearizes resolved children recursively without retaining their derived reference lists", async () => {
+    const childReferences = "## 参考文献\n\n<!-- maginalia:reference-list-start v1 -->\n- stale child reference\n<!-- maginalia:reference-list-end v1 -->\n";
+    const sources = new Map<string, string>([
+      ["parent.md", `Parent A\n${marker("child.md")}\nParent B\n`],
+      ["child.md", `---\ntitle: Child\n---\n# Child\nChild prose\n${marker("nested.md")}\n${childReferences}`],
+      ["nested.md", "# Nested\nNested prose\n"],
+    ]);
+    const composition = await resolveProjectComposition(sources.get("parent.md")!, {
+      rootTarget: "parent.md",
+      resolve: async (target) => ({ kind: "resolved", target, fileId: target, displayName: target, text: sources.get(target)! }),
+    });
+    expect(linearizeProjectComposition(sources.get("parent.md")!, composition)).toEqual({
+      kind: "linear",
+      markdown: "Parent A\nChild prose\nNested prose\n\n\nParent B\n",
+    });
+    expect(sources.get("parent.md")).toContain(marker("child.md"));
+    expect(sources.get("child.md")).toContain("stale child reference");
+  });
+
+  it("fails closed rather than omitting an unresolved child from a linear projection", async () => {
+    const source = `Before\n${marker("missing.md")}\nAfter\n`;
+    const composition = await resolveProjectComposition(source, {
+      rootTarget: "parent.md",
+      resolve: async () => ({ kind: "missing", message: "Synced document unavailable." }),
+    });
+    expect(linearizeProjectComposition(source, composition)).toMatchObject({
+      kind: "blocked",
+      message: "Synced document unavailable.",
+    });
+  });
+
   it("recursively composes sources and rejects cycles without recursing", async () => {
     const sources = new Map<string, string>([
       ["a.md", `A\n${marker("b.md")}`],

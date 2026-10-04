@@ -6,6 +6,7 @@ import type {
   WriteExportResult
 } from "../export-ipc";
 import { renderResolvedMarkdown } from "./export-renderer";
+import type { ComposedMarkdownProjection } from "./synced-block";
 
 export interface ExportControllerApi {
   resolveExport(request: ResolveExportRequest): Promise<ResolveExportResult>;
@@ -33,6 +34,7 @@ export interface ExportControllerOptions {
   readonly api: ExportControllerApi;
   readonly writing: ExportWritingPort;
   readonly view: ExportControllerView;
+  readonly compose?: (document: ResolveExportRequest) => Promise<ComposedMarkdownProjection>;
 }
 
 const EMPTY_STATE: ExportViewState = Object.freeze({
@@ -56,6 +58,7 @@ const EXPORTING_STATE: ExportViewState = Object.freeze({
 const RESOLUTION_FAILED = "Export failed. The authoring document was not changed.";
 const RENDER_FAILED = "Export could not render the Markdown. The authoring document was not changed.";
 const WRITE_FAILED = "Export failed. The authoring document was not changed.";
+const COMPOSITION_STALE = "Synced Block sources changed during export. Start Export Markdown again.";
 
 function copyState(state: ExportViewState): ExportViewState {
   return Object.freeze({ ...state });
@@ -71,6 +74,7 @@ export class ExportController {
   private readonly api: ExportControllerApi;
   private readonly writing: ExportWritingPort;
   private readonly view: ExportControllerView;
+  private readonly compose: ((document: ResolveExportRequest) => Promise<ComposedMarkdownProjection>) | null;
   private readonly removeDocumentListener: () => void;
   private state: ExportViewState;
   private exporting = false;
@@ -79,6 +83,7 @@ export class ExportController {
     this.api = options.api;
     this.writing = options.writing;
     this.view = options.view;
+    this.compose = options.compose ?? null;
     this.state = this.writing.getDocumentState() === null ? EMPTY_STATE : READY_STATE;
     this.removeDocumentListener = this.writing.onDocumentChange((document) => {
       // The in-flight operation intentionally keeps its original snapshot and
@@ -113,9 +118,32 @@ export class ExportController {
     this.exporting = true;
     this.setState(EXPORTING_STATE);
 
+    let composedText = snapshot.currentText;
+    let compositionCurrent = (): boolean => true;
+    if (this.compose !== null) {
+      let projection: ComposedMarkdownProjection;
+      try {
+        projection = await this.compose(snapshot);
+      } catch {
+        this.finish({ status: "error", message: RESOLUTION_FAILED, enabled: true });
+        return;
+      }
+      if (projection.kind === "blocked") {
+        this.finish({ status: "error", message: projection.message, enabled: true });
+        return;
+      }
+      composedText = projection.text;
+      compositionCurrent = projection.isCurrent ?? compositionCurrent;
+      if (!compositionCurrent()) {
+        this.finish({ status: "error", message: COMPOSITION_STALE, enabled: true });
+        return;
+      }
+    }
+    const composedSnapshot: ResolveExportRequest = Object.freeze({ ...snapshot, currentText: composedText });
+
     let resolved: ResolveExportResult;
     try {
-      resolved = await this.api.resolveExport(snapshot);
+      resolved = await this.api.resolveExport(composedSnapshot);
     } catch {
       this.finish({
         status: "error",
@@ -133,10 +161,14 @@ export class ExportController {
       });
       return;
     }
+    if (!compositionCurrent()) {
+      this.finish({ status: "error", message: COMPOSITION_STALE, enabled: true });
+      return;
+    }
 
     let rendered;
     try {
-      rendered = renderResolvedMarkdown(snapshot, resolved.resolution);
+      rendered = renderResolvedMarkdown(composedSnapshot, resolved.resolution);
     } catch {
       this.finish({
         status: "error",
@@ -152,6 +184,10 @@ export class ExportController {
         message: rendered.message,
         enabled: true
       });
+      return;
+    }
+    if (!compositionCurrent()) {
+      this.finish({ status: "error", message: COMPOSITION_STALE, enabled: true });
       return;
     }
 

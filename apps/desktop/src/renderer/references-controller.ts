@@ -6,6 +6,7 @@ import {
   refreshReferenceList,
   type ReferenceListRefreshResult
 } from "./reference-list";
+import type { ComposedMarkdownProjection } from "./synced-block";
 
 export type ReferencesViewState =
   | { readonly status: "empty"; readonly message: string; readonly unresolvedCount: number }
@@ -27,6 +28,11 @@ export interface ReferencesControllerApi {
 export interface ReferencesControllerView {
   setReferencesState(state: ReferencesViewState): void;
 }
+
+export type ReferencesCompositionPort = (document: Readonly<{
+  documentId: string;
+  currentText: string;
+}>) => Promise<ComposedMarkdownProjection>;
 
 function conflictMessage(result: Extract<ReferenceListRefreshResult, { readonly kind: "conflict" }>): string {
   switch (result.reason) {
@@ -57,6 +63,7 @@ export class ReferencesController {
   private readonly api: ReferencesControllerApi;
   private readonly writing: ReferencesWritingPort;
   private readonly view: ReferencesControllerView;
+  private readonly compose: ReferencesCompositionPort | null;
   private readonly removeDocumentListener: () => void;
   private state: ReferencesViewState;
   private refreshing = false;
@@ -66,10 +73,12 @@ export class ReferencesController {
     readonly api: ReferencesControllerApi;
     readonly writing: ReferencesWritingPort;
     readonly view: ReferencesControllerView;
+    readonly compose?: ReferencesCompositionPort;
   }) {
     this.api = options.api;
     this.writing = options.writing;
     this.view = options.view;
+    this.compose = options.compose ?? null;
     this.state = this.writing.getDocumentState() === null
       ? { status: "empty", message: "Open a document to refresh References.", unresolvedCount: 0 }
       : { status: "needs-refresh", message: "References need refresh.", unresolvedCount: 0 };
@@ -110,9 +119,34 @@ export class ReferencesController {
       unresolvedCount: this.unresolvedCount
     });
 
+    let composedText = snapshot.text;
+    let compositionCurrent = (): boolean => true;
+    if (this.compose !== null) {
+      let projection: ComposedMarkdownProjection;
+      try {
+        projection = await this.compose({ documentId: snapshot.documentId, currentText: snapshot.text });
+      } catch {
+        this.refreshing = false;
+        this.setState({ status: "error", message: "Synced Blocks could not be composed. Reference list was not changed.", unresolvedCount: this.unresolvedCount });
+        return;
+      }
+      if (projection.kind === "blocked") {
+        this.refreshing = false;
+        this.setState({ status: "error", message: projection.message, unresolvedCount: this.unresolvedCount });
+        return;
+      }
+      composedText = projection.text;
+      compositionCurrent = projection.isCurrent ?? compositionCurrent;
+      if (!compositionCurrent()) {
+        this.refreshing = false;
+        this.setState({ status: "needs-refresh", message: "Synced Block sources changed while refreshing.", unresolvedCount: this.unresolvedCount });
+        return;
+      }
+    }
+
     let result: ResolveReferencesResult;
     try {
-      result = await this.api.resolveReferences({ text: snapshot.text });
+      result = await this.api.resolveReferences({ text: composedText });
     } catch (_error: unknown) {
       this.refreshing = false;
       this.setState({
@@ -124,7 +158,7 @@ export class ReferencesController {
     }
 
     const current = this.writing.getDocumentState();
-    if (current === null || current.documentId !== snapshot.documentId || current.currentText !== snapshot.text) {
+    if (current === null || current.documentId !== snapshot.documentId || current.currentText !== snapshot.text || !compositionCurrent()) {
       this.refreshing = false;
       if (current === null) {
         this.unresolvedCount = 0;
