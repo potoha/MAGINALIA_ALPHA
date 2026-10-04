@@ -156,6 +156,14 @@ export class ProjectNavigationController {
     this.replaceState({ ...this.state, activeFileId: fileId });
   }
 
+  /** Refreshes the existing Project view state after a source-owned metadata edit. */
+  public updateActiveFileMetadata(documentId: string, metadata: Pick<ProjectFileSummary, "title" | "documentType">): void {
+    const fileId = this.getFileIdForSession(documentId);
+    if (fileId === null) return;
+    const files = this.state.files.map((file) => file.fileId === fileId ? { ...file, ...metadata } : file);
+    this.replaceState({ ...this.state, files });
+  }
+
   public restoreProject(): Promise<void> {
     return this.run(async () => {
       if (!(await this.canSwitch({ kind: "document" }))) return;

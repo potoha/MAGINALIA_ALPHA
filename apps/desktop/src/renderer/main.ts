@@ -17,6 +17,8 @@ import {
 import { MonacoMarkdownSurface } from "./monaco-surface";
 import { renderMarkdownPreview } from "./markdown-renderer";
 import { insertMarkdownTable, transformMarkdownTable, type MarkdownTableCellTarget, type MarkdownTableTarget, type TableOperation } from "./markdown-table-commands";
+import { applyDocumentProperties, readDocumentProperties, type DocumentProperties, type DocumentPropertiesState } from "./document-properties";
+import { ownsCurrentPropertiesTarget, type PropertiesTarget } from "./properties-target";
 import { mayDispatchTableTarget, ownsCurrentTableTarget, type ActiveTableTarget } from "./table-target";
 import { PreviewController } from "./preview-controller";
 import { createLocalStorageRendererPreferenceStore } from "./renderer-preferences";
@@ -298,6 +300,33 @@ app.innerHTML = `
             <p id="references-unresolved" class="references-unresolved">Unresolved: 0</p>
             <ul id="library-results" class="library-results" aria-label="Private Shelf quotations"></ul>
           </section>
+          <section id="properties-panel" class="properties-panel view-panel" aria-labelledby="properties-heading">
+            <div class="properties-heading-row">
+              <h2 id="properties-heading">Properties</h2>
+              <span id="properties-document-name" class="properties-document-name">No document open</span>
+            </div>
+            <form id="properties-form" class="properties-form">
+              <label>Title<input id="properties-title" type="text" maxlength="240" required autocomplete="off"></label>
+              <label>Author<input id="properties-author" type="text" autocomplete="off"></label>
+              <label>Tags<textarea id="properties-tags" rows="3" placeholder="One tag per line"></textarea></label>
+              <label>Document type
+                <select id="properties-type">
+                  <option value="memo">Memo</option>
+                  <option value="draft">Draft</option>
+                  <option value="body">Body</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>Created<input id="properties-created" type="date"></label>
+              <button id="properties-apply" data-command-id="maginalia.document.applyProperties" type="submit" disabled>Apply</button>
+            </form>
+            <p id="properties-status" class="properties-status" role="status" aria-live="polite">Open a document to edit its properties.</p>
+            <p id="properties-error" class="properties-error" role="alert" hidden></p>
+            <div class="properties-advanced">
+              <strong>Advanced</strong>
+              <button id="properties-open-source" data-command-id="maginalia.renderer.showEdit" type="button">Open raw source</button>
+            </div>
+          </section>
           <section id="mod-contributions" class="mod-contributions" aria-label="Mod contributions">
             <div id="mod-view-host"></div>
             <div id="mod-command-host"></div>
@@ -390,6 +419,17 @@ const libraryError = requiredElement<HTMLElement>("#library-error");
 const referencesStatus = requiredElement<HTMLElement>("#references-status");
 const referencesUnresolved = requiredElement<HTMLElement>("#references-unresolved");
 const libraryResults = requiredElement<HTMLUListElement>("#library-results");
+const propertiesForm = requiredElement<HTMLFormElement>("#properties-form");
+const propertiesDocumentName = requiredElement<HTMLElement>("#properties-document-name");
+const propertiesTitle = requiredElement<HTMLInputElement>("#properties-title");
+const propertiesAuthor = requiredElement<HTMLInputElement>("#properties-author");
+const propertiesTags = requiredElement<HTMLTextAreaElement>("#properties-tags");
+const propertiesType = requiredElement<HTMLSelectElement>("#properties-type");
+const propertiesCreated = requiredElement<HTMLInputElement>("#properties-created");
+const propertiesApply = requiredElement<HTMLButtonElement>("#properties-apply");
+const propertiesStatus = requiredElement<HTMLElement>("#properties-status");
+const propertiesError = requiredElement<HTMLElement>("#properties-error");
+const propertiesOpenSource = requiredElement<HTMLButtonElement>("#properties-open-source");
 const unifiedSearchModeButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-unified-search-mode]"));
 const shelfSearchFieldset = requiredElement<HTMLFieldSetElement>("#shelf-search-fields");
 const shelfSearchFieldInputs = Array.from(document.querySelectorAll<HTMLInputElement>("[data-shelf-search-field]"));
@@ -627,6 +667,107 @@ const controller = new WritingController({
 const autosaveCoordinator = new AutosaveCoordinator({ writing: controller });
 controller.setAutosaveCoordinator(autosaveCoordinator);
 
+type PropertiesFormTarget = PropertiesTarget & {
+  readonly fileName: string;
+  readonly state: DocumentPropertiesState;
+  readonly initial: DocumentProperties;
+};
+
+let propertiesFormTarget: PropertiesFormTarget | null = null;
+
+function activeProperties(): DocumentProperties {
+  return {
+    title: propertiesTitle.value,
+    author: propertiesAuthor.value,
+    tags: propertiesTags.value.split(/\r\n|\r|\n/gu),
+    type: propertiesType.value as ProjectDocumentType,
+    created: propertiesCreated.value
+  };
+}
+
+function propertiesFormIsDirty(): boolean {
+  const target = propertiesFormTarget;
+  if (target === null || target.state.kind !== "ready") return false;
+  const current = activeProperties();
+  return current.title !== target.initial.title
+    || current.author !== target.initial.author
+    || current.type !== target.initial.type
+    || current.created !== target.initial.created
+    || current.tags.join("\n") !== target.initial.tags.join("\n");
+}
+
+function isLooseWorkdeskDocument(): boolean {
+  const desk = activeWorkdesk;
+  const project = projectController?.getState().project;
+  return desk !== null && project?.projectId === desk.project.projectId;
+}
+
+function propertiesFormIsValid(): boolean {
+  const target = propertiesFormTarget;
+  if (target === null || target.state.kind !== "ready") return false;
+  if (isLooseWorkdeskDocument() && propertiesType.value === "body") return false;
+  return propertiesForm.checkValidity() && propertiesTitle.value.trim().length > 0 && propertiesTitle.value.trim().length <= 240;
+}
+
+function updatePropertiesFormAvailability(): void {
+  const target = propertiesFormTarget;
+  const editable = target?.state.kind === "ready";
+  for (const element of [propertiesTitle, propertiesAuthor, propertiesTags, propertiesType, propertiesCreated]) element.disabled = !editable;
+  const bodyOption = propertiesType.querySelector<HTMLOptionElement>('option[value="body"]');
+  if (bodyOption) bodyOption.disabled = !editable || isLooseWorkdeskDocument();
+  propertiesApply.disabled = !editable || !propertiesFormIsValid() || !propertiesFormIsDirty();
+}
+
+function refreshPropertiesPanel(): void {
+  const current = controller.getDocumentState();
+  if (current === null) {
+    propertiesFormTarget = null;
+    propertiesDocumentName.textContent = "No document open";
+    propertiesTitle.value = "";
+    propertiesAuthor.value = "";
+    propertiesTags.value = "";
+    propertiesType.value = "other";
+    propertiesCreated.value = "";
+    propertiesStatus.textContent = "Open a document to edit its properties.";
+    propertiesError.hidden = true;
+    updatePropertiesFormAvailability();
+    return;
+  }
+  const previous = propertiesFormTarget;
+  const replacingDirtyForm = previous !== null && propertiesFormIsDirty()
+    && (previous.documentId !== current.documentId || previous.revision !== current.revision);
+  const state = readDocumentProperties(current.currentText, current.displayName);
+  propertiesFormTarget = {
+    documentId: current.documentId,
+    revision: current.revision,
+    fileName: current.displayName,
+    state,
+    initial: state.kind === "ready" ? state.properties : { title: "", author: "", tags: [], type: "other", created: "" }
+  };
+  propertiesDocumentName.textContent = current.displayName;
+  if (state.kind === "ready") {
+    propertiesTitle.value = state.properties.title;
+    propertiesAuthor.value = state.properties.author;
+    propertiesTags.value = state.properties.tags.join("\n");
+    propertiesType.value = state.properties.type;
+    propertiesCreated.value = state.properties.created;
+    propertiesStatus.textContent = replacingDirtyForm
+      ? "Unapplied property changes were discarded after the document changed."
+      : "Edit supported document properties, then apply them to this Markdown file.";
+    propertiesError.hidden = true;
+  } else {
+    propertiesTitle.value = "";
+    propertiesAuthor.value = "";
+    propertiesTags.value = "";
+    propertiesType.value = "other";
+    propertiesCreated.value = "";
+    propertiesStatus.textContent = "Structured properties are unavailable for this document.";
+    propertiesError.textContent = state.message;
+    propertiesError.hidden = false;
+  }
+  updatePropertiesFormAvailability();
+}
+
 // Declared before PreviewController's immediate initial render. Project
 // activation fills it later; previews without a Project show safe fallbacks.
 let projectController: ProjectNavigationController | undefined;
@@ -756,6 +897,7 @@ const updateCommandContext = (): void => {
     ? "none"
     : /\.(?:mp4|webm|ogg)(?:[?#].*)?$/iu.test(mediaMatch[1] ?? line) ? "video" : "image";
   const tableCurrent = ownsCurrentTableTarget(activeTableTarget, current);
+  const propertiesCurrent = ownsCurrentPropertiesTarget(propertiesFormTarget, current);
   commandContext.patch({
     "editor.hasDocument": current !== null,
     "editor.hasSelection": selection.start !== selection.end,
@@ -768,6 +910,9 @@ const updateCommandContext = (): void => {
     "table.bodyCell": tableCurrent && activeTableTarget?.cell.rowKind === "body",
     "table.canDeleteRow": tableCurrent && activeTableTarget?.cell.rowKind === "body",
     "table.canDeleteColumn": tableCurrent && (activeTableTarget?.table.header.length ?? 0) > 1,
+    "properties.available": propertiesCurrent,
+    "properties.valid": propertiesCurrent && propertiesFormIsValid(),
+    "properties.dirty": propertiesCurrent && propertiesFormIsDirty(),
     "renderer.orientation": previewController.getDirection(),
     "document.type": "markdown",
     "view.id": previewController.getMode(),
@@ -781,6 +926,7 @@ controller.onDocumentChange(() => {
   if (!ownsCurrentTableTarget(activeTableTarget, current)) {
     activeTableTarget = null;
   }
+  refreshPropertiesPanel();
   updateCommandContext();
 });
 controller.onSelectionChange(() => updateCommandContext());
@@ -795,6 +941,43 @@ registerCoreCommands(commandRegistry, {
   exportMarkdown: () => exportController?.exportMarkdown(),
   saveDocument: () => controller.save(),
   contextKeys: commandContext
+});
+commandRegistry.register({
+  id: "maginalia.document.applyProperties",
+  title: "Apply Properties",
+  description: "Apply supported document properties to Markdown front matter.",
+  category: "Document",
+  keywords: ["properties", "title", "author", "tags", "metadata"],
+  when: "properties.available && properties.valid && properties.dirty"
+}, () => {
+  const target = propertiesFormTarget;
+  const current = controller.getDocumentState();
+  if (!ownsCurrentPropertiesTarget(target, current) || target === null || current === null || target.state.kind !== "ready") {
+    refreshPropertiesPanel();
+    return;
+  }
+  const result = applyDocumentProperties(current.currentText, target.fileName, activeProperties(), { allowBody: !isLooseWorkdeskDocument() });
+  if (result.kind === "invalid") {
+    propertiesError.textContent = result.message;
+    propertiesError.hidden = false;
+    updatePropertiesFormAvailability();
+    updateCommandContext();
+    return;
+  }
+  if (result.kind === "unchanged") return;
+  const applied = controller.applySourceEdit({
+    documentId: target.documentId,
+    revision: target.revision,
+    range: { start: result.edit.start, end: result.edit.end },
+    replacement: result.edit.replacement
+  });
+  if (applied.kind !== "applied") {
+    refreshPropertiesPanel();
+    propertiesError.textContent = "The document changed before Properties could be applied. Review the current properties and try again.";
+    propertiesError.hidden = false;
+    return;
+  }
+  projectController?.updateActiveFileMetadata(target.documentId, { title: result.properties.title, documentType: result.properties.type });
 });
 commandRegistry.register({ id: "maginalia.editor.insertTable", title: "Insert Table", category: "Editor", keywords: ["table", "insert", "markdown"], when: "editor.hasDocument" }, () => {
   const target = controller.captureInsertionTarget();
@@ -850,6 +1033,22 @@ commandRegistry.register({
 }, () => previewController.setMode("preview"));
 editModeButton.addEventListener("click", () => void executeCommand("maginalia.renderer.showEdit"));
 previewModeButton.addEventListener("click", () => void executeCommand("maginalia.renderer.showPreview"));
+propertiesForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void executeCommand("maginalia.document.applyProperties");
+});
+for (const field of [propertiesTitle, propertiesAuthor, propertiesTags, propertiesType, propertiesCreated]) {
+  field.addEventListener("input", () => {
+    propertiesError.hidden = true;
+    updatePropertiesFormAvailability();
+    updateCommandContext();
+  });
+  field.addEventListener("change", () => {
+    updatePropertiesFormAvailability();
+    updateCommandContext();
+  });
+}
+propertiesOpenSource.addEventListener("click", () => void executeCommand("maginalia.renderer.showEdit"));
 commandRegistry.register({
   id: "maginalia.shelf.openReviewer",
   title: "取り込む・確認する",
@@ -1509,6 +1708,13 @@ type ActiveWorkdesk = Extract<WorkdeskOpenResult, { readonly kind: "opened" }>;
 let activeWorkdesk: ActiveWorkdesk | null = null;
 let pendingWorkdeskProjectIdentityId: string | null = null;
 
+// The document controller can be empty during module construction. Hydrate the
+// panel after all navigation ownership state exists, without mutating source.
+queueMicrotask(() => {
+  refreshPropertiesPanel();
+  updateCommandContext();
+});
+
 function renderWorkdeskProjectNodes(state: ActiveWorkdesk): void {
   workdeskProjectList.replaceChildren();
   workdeskProjects.hidden = false;
@@ -1902,6 +2108,7 @@ const workspaceView: WorkspaceNavigationView = {
 const projectView: ProjectNavigationView = {
   setProjectState(state: ProjectNavigationState): void {
     renderProjectState(state);
+    refreshPropertiesPanel();
     updateCommandContext();
     void persistWorkspaceState();
     bindProjectFileKeyboard();

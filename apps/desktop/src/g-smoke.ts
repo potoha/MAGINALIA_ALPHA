@@ -73,6 +73,36 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
   await script(window, `(() => { const save = document.querySelector('#save-markdown[data-command-id="maginalia.document.save"]'); if (!(save instanceof HTMLButtonElement) || save.disabled) return false; save.click(); return true; })()`, "Save button command");
   await waitFor(window, (value) => value.status === "saved", "Save button completes");
 
+  await script(window, `(() => {
+    const show = document.querySelector('#activity-view-properties');
+    const panel = document.querySelector('#properties-panel');
+    const form = document.querySelector('#properties-form');
+    const title = document.querySelector('#properties-title');
+    const author = document.querySelector('#properties-author');
+    const tags = document.querySelector('#properties-tags');
+    const type = document.querySelector('#properties-type');
+    const created = document.querySelector('#properties-created');
+    if (!(show instanceof HTMLButtonElement) || !(panel instanceof HTMLElement) || !(form instanceof HTMLFormElement)
+      || !(title instanceof HTMLInputElement) || !(author instanceof HTMLInputElement) || !(tags instanceof HTMLTextAreaElement)
+      || !(type instanceof HTMLSelectElement) || !(created instanceof HTMLInputElement)) return false;
+    show.click();
+    title.value = 'A Metadata Title'; title.dispatchEvent(new Event('input', { bubbles: true }));
+    author.value = '未田3字'; author.dispatchEvent(new Event('input', { bubbles: true }));
+    tags.value = '俳句\\n受容美学'; tags.dispatchEvent(new Event('input', { bubbles: true }));
+    type.value = 'draft'; type.dispatchEvent(new Event('change', { bubbles: true }));
+    created.value = '2026-10-04'; created.dispatchEvent(new Event('input', { bubbles: true }));
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    return panel.classList.contains('view-panel-active');
+  })()`, "apply Properties through its canonical command");
+  await waitFor(window, (value) => value.text.includes('title: A Metadata Title') && value.text.includes('author: 未田3字') && value.text.includes('  - 俳句'), "Properties reaches the active Markdown session");
+  await script(window, `(() => { const preview = document.querySelector('#document-preview-mode'); if (!(preview instanceof HTMLButtonElement)) return false; preview.click(); return true; })()`, "open Preview after Properties apply");
+  await waitFor(window, (value) => value.preview, "Properties Preview");
+  await waitForScript(window, `(() => {
+    const preview = document.querySelector('.markdown-preview-document');
+    return preview instanceof HTMLElement && !preview.textContent?.includes('type: draft') && preview.textContent?.includes('A document.');
+  })()`, "Preview hides front matter while retaining prose");
+  await script(window, `(() => { const edit = document.querySelector('#document-edit-mode'); if (!(edit instanceof HTMLButtonElement)) return false; edit.click(); return true; })()`, "return to Edit after Properties Preview");
+
   await script(window, `(() => { const preview = document.querySelector("#document-preview-mode"); if (!(preview instanceof HTMLButtonElement)) return false; preview.click(); return true; })()`, "open horizontal editable Preview");
   await waitFor(window, (value) => value.preview && value.direction === "horizontal", "horizontal Preview");
   await script(window, `(() => { const editable = [...document.querySelectorAll(".markdown-preview-editable-text")].find((item) => item.textContent === "A document."); if (!(editable instanceof HTMLElement)) return false; editable.focus(); editable.textContent = "A Preview document!"; editable.dispatchEvent(new Event("input", { bubbles: true })); editable.textContent = "A Preview document."; editable.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`, "continuously edit horizontal Preview text");
@@ -104,6 +134,7 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
 
   await script(window, `(() => { const link = document.querySelector(".rendered-internal-link.resolved"); if (!(link instanceof HTMLElement)) return false; link.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true })); return true; })()`, "open internal link");
   await waitFor(window, (value) => value.active === "b.md" && value.tabs.length === 2, "B opens once in a tab");
+  await waitForScript(window, "document.querySelector('#properties-document-name')?.textContent === 'b.md'", "Properties follows the active document tab");
   await script(window, `(() => { const tab = [...document.querySelectorAll("#document-tabs .document-tab")].find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("a.md")); const button = tab?.querySelector(".document-tab-label"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`, "return to A");
   await waitFor(window, (value) => value.active === "a.md", "A active again");
   await script(window, `(() => { const preview = document.querySelector("#document-preview-mode"); if (!(preview instanceof HTMLButtonElement)) return false; preview.click(); return true; })()`, "reopen A Preview");

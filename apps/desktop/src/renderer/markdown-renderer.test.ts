@@ -7,6 +7,8 @@ import {
   scanQuoteMarkersFromText
 } from "./markdown-renderer";
 import { restoreRendererPreferences } from "./renderer-preferences";
+import { collectMarkdownTables } from "./markdown-table-commands";
+import { projectMarkdownBody } from "./document-properties";
 
 describe("Markdown preview parser", () => {
   it("maps safe rendered text to exact original UTF-16 ranges without searching repeated text", () => {
@@ -19,6 +21,16 @@ describe("Markdown preview parser", () => {
     expect(ranges[1]?.start).toBe(source.indexOf("Moon."));
     expect(ranges[2]?.start).toBe(source.lastIndexOf("Moon."));
     expect(ranges[0]).toMatchObject({ start: 3, end: 6 });
+  });
+
+  it("keeps front matter out of the prose projection while retaining original source offsets", () => {
+    const source = "\uFEFF---\r\ntype: draft\r\ntitle: 春\r\n---\r\n\r\n# 春\r\n本文\r\n\r\n| A | B |\r\n| --- | --- |\r\n| 1 | 2 |\r\n";
+    const projection = projectMarkdownBody(source);
+    expect(parseMarkdownBlocks(projection.body).map((block) => block.kind)).toEqual(["heading", "paragraph", "table"]);
+    const proseRange = collectEditablePreviewRanges(projection.body, projection.start).flat().find((range) => range.text === "本文");
+    expect(proseRange).toMatchObject({ start: source.indexOf("本文") });
+    const table = collectMarkdownTables(projection.body, projection.start)[0];
+    expect(table?.start).toBe(source.indexOf("| A | B |"));
   });
 
   it("leaves protected tables, fenced code, raw HTML and hard-wrapped paragraphs unmapped", () => {

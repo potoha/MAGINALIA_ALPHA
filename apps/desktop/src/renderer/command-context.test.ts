@@ -24,4 +24,21 @@ describe("ContextKeyService", () => {
     expect(await registry.execute("maginalia.table.deleteColumn", { "table.canDeleteColumn": false })).toEqual({ kind: "disabled" });
     expect(run).toHaveBeenCalledOnce();
   });
+
+  it("keeps Properties Apply unavailable until an editable active document has a dirty valid form", async () => {
+    const registry = new CommandRegistry();
+    const apply = vi.fn();
+    registry.register({ id: "maginalia.document.applyProperties", title: "Apply Properties", when: "properties.available && properties.valid && properties.dirty" }, apply);
+    expect(registry.discover("properties", {
+      "properties.available": true,
+      "properties.valid": true,
+      "properties.dirty": false
+    })).toEqual([]);
+    expect(await registry.execute("maginalia.document.applyProperties", {
+      "properties.available": true,
+      "properties.valid": true,
+      "properties.dirty": true
+    })).toEqual({ kind: "executed" });
+    expect(apply).toHaveBeenCalledOnce();
+  });
 });

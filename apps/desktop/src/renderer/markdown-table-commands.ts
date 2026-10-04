@@ -24,15 +24,15 @@ export type TableOperation = "addRowAbove" | "addRowBelow" | "deleteRow" | "addC
 
 interface SourceLine { readonly text: string; readonly start: number; readonly end: number; }
 
-function linesOf(text: string): readonly SourceLine[] {
+function linesOf(text: string, sourceOffset: number): readonly SourceLine[] {
   const lines: SourceLine[] = [];
   let cursor = 0;
   while (cursor <= text.length) {
     const newline = text.indexOf("\n", cursor);
     const rawEnd = newline < 0 ? text.length : newline;
     const end = rawEnd > cursor && text[rawEnd - 1] === "\r" ? rawEnd - 1 : rawEnd;
-    const bom = cursor === 0 && text.startsWith("\uFEFF") ? 1 : 0;
-    lines.push({ text: text.slice(cursor + bom, end), start: cursor + bom, end });
+    const bom = sourceOffset === 0 && cursor === 0 && text.startsWith("\uFEFF") ? 1 : 0;
+    lines.push({ text: text.slice(cursor + bom, end), start: sourceOffset + cursor + bom, end: sourceOffset + end });
     if (newline < 0) break;
     cursor = newline + 1;
   }
@@ -120,8 +120,8 @@ function rowCells(line: SourceLine): readonly { readonly value: string; readonly
   return cells;
 }
 
-export function collectMarkdownTables(text: string): readonly MarkdownTableTarget[] {
-  const lines = linesOf(text);
+export function collectMarkdownTables(text: string, sourceOffset = 0): readonly MarkdownTableTarget[] {
+  const lines = linesOf(text, sourceOffset);
   const tables: MarkdownTableTarget[] = [];
   for (let index = 0; index + 1 < lines.length;) {
     const header = rowCells(lines[index]!);
