@@ -27,6 +27,7 @@ export function shouldPreserveUnappliedPropertiesForm(
   target: PropertiesTarget | null,
   document: PropertiesTargetDocument | null,
   dirty: boolean,
+  stale: boolean,
 ): boolean {
-  return dirty && target !== null && !ownsCurrentPropertiesTarget(target, document);
+  return dirty && target !== null && (stale || !ownsCurrentPropertiesTarget(target, document));
 }

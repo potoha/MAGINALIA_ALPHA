@@ -175,10 +175,26 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
       && reload instanceof HTMLButtonElement && !reload.disabled
       && name?.textContent?.includes('a.md');
   })()`, "dirty A Properties form does not attach to B");
-  await script(window, `(() => { const reload = document.querySelector('#properties-reload'); if (!(reload instanceof HTMLButtonElement) || reload.disabled) return false; reload.click(); return true; })()`, "discard stale A Properties before reading B");
-  await waitForScript(window, "document.querySelector('#properties-document-name')?.textContent === 'b.md'", "Properties follows the active document tab");
   await script(window, `(() => { const tab = [...document.querySelectorAll("#document-tabs .document-tab")].find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("a.md")); const button = tab?.querySelector(".document-tab-label"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`, "return to A");
   await waitFor(window, (value) => value.active === "a.md", "A active again");
+  await waitForScript(window, `(() => {
+    const title = document.querySelector('#properties-title');
+    const apply = document.querySelector('#properties-apply');
+    const reload = document.querySelector('#properties-reload');
+    const name = document.querySelector('#properties-document-name');
+    return title instanceof HTMLInputElement && title.value === 'Pending A Properties'
+      && apply instanceof HTMLButtonElement && apply.disabled
+      && reload instanceof HTMLButtonElement && !reload.disabled
+      && name?.textContent?.includes('a.md');
+  })()`, "returning to A preserves its stale Properties form");
+  await script(window, `(() => { const reload = document.querySelector('#properties-reload'); if (!(reload instanceof HTMLButtonElement) || reload.disabled) return false; reload.click(); return true; })()`, "discard stale A Properties only through Reload");
+  await waitForScript(window, `(() => {
+    const title = document.querySelector('#properties-title');
+    const reload = document.querySelector('#properties-reload');
+    return document.querySelector('#properties-document-name')?.textContent === 'a.md'
+      && title instanceof HTMLInputElement && title.value === 'A Metadata Title'
+      && reload instanceof HTMLButtonElement && reload.disabled;
+  })()`, "Reload binds clean Properties to A source");
   await script(window, `(() => { const preview = document.querySelector("#document-preview-mode"); if (!(preview instanceof HTMLButtonElement)) return false; preview.click(); return true; })()`, "reopen A Preview");
   await waitForScript(window, "document.querySelector('.rendered-internal-link.resolved') instanceof HTMLElement", "resolved A link after tab switch");
   await script(window, `(() => { const link = document.querySelector(".rendered-internal-link.resolved"); if (!(link instanceof HTMLElement)) return false; link.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true })); return true; })()`, "activate existing internal link target");

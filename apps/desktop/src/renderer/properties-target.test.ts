@@ -15,9 +15,15 @@ describe("Properties target ownership", () => {
   });
 
   it("preserves dirty user input as stale instead of rebinding it to newer source", () => {
-    expect(shouldPreserveUnappliedPropertiesForm(target, { documentId: "a.md", revision: 4 }, true)).toBe(true);
-    expect(shouldPreserveUnappliedPropertiesForm(target, { documentId: "b.md", revision: 3 }, true)).toBe(true);
-    expect(shouldPreserveUnappliedPropertiesForm(target, { documentId: "a.md", revision: 3 }, true)).toBe(false);
-    expect(shouldPreserveUnappliedPropertiesForm(target, { documentId: "a.md", revision: 4 }, false)).toBe(false);
+    expect(shouldPreserveUnappliedPropertiesForm(target, { documentId: "a.md", revision: 4 }, true, false)).toBe(true);
+    expect(shouldPreserveUnappliedPropertiesForm(target, { documentId: "b.md", revision: 3 }, true, false)).toBe(true);
+    expect(shouldPreserveUnappliedPropertiesForm(target, { documentId: "a.md", revision: 3 }, true, false)).toBe(false);
+    expect(shouldPreserveUnappliedPropertiesForm(target, { documentId: "a.md", revision: 4 }, false, false)).toBe(false);
+  });
+
+  it("keeps an already stale dirty form stale after returning to its original revision", () => {
+    expect(shouldPreserveUnappliedPropertiesForm(target, { documentId: "a.md", revision: 3 }, true, true)).toBe(true);
+    expect(shouldPreserveUnappliedPropertiesForm(target, { documentId: "a.md", revision: 4 }, true, true)).toBe(true);
+    expect(shouldPreserveUnappliedPropertiesForm(target, { documentId: "a.md", revision: 3 }, false, true)).toBe(false);
   });
 });

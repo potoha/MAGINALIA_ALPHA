@@ -726,7 +726,7 @@ function updatePropertiesFormAvailability(): void {
 function refreshPropertiesPanel(): void {
   const current = controller.getDocumentState();
   const previous = propertiesFormTarget;
-  if (previous !== null && !applyingProperties && shouldPreserveUnappliedPropertiesForm(previous, current, propertiesFormIsDirty())) {
+  if (previous !== null && !applyingProperties && shouldPreserveUnappliedPropertiesForm(previous, current, propertiesFormIsDirty(), previous.stale)) {
     propertiesFormTarget = { ...previous, stale: true };
     propertiesDocumentName.textContent = `${previous.fileName} (unapplied changes)`;
     propertiesStatus.textContent = "Your unapplied Properties changes are preserved, but the document changed. Reload Properties to discard them and read the current document.";
