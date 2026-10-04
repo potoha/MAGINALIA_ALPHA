@@ -9,6 +9,7 @@ import {
 import { restoreRendererPreferences } from "./renderer-preferences";
 import { collectMarkdownTables } from "./markdown-table-commands";
 import { projectMarkdownBody } from "./document-properties";
+import { serializeSyncedBlock } from "./synced-block";
 
 describe("Markdown preview parser", () => {
   it("maps safe rendered text to exact original UTF-16 ranges without searching repeated text", () => {
@@ -66,6 +67,13 @@ describe("Markdown preview parser", () => {
   it("parses ordinary headings, blockquotes, lists, and fenced code", () => {
     const blocks = parseMarkdownBlocks("# 見出し\n\n> quote\n\n- one\n- two\n\n```\nconst x = 1;\n```");
     expect(blocks.map((block) => block.kind)).toEqual(["heading", "blockquote", "list", "code"]);
+  });
+
+  it("keeps Synced Block source comments structural and never maps them as parent prose", () => {
+    const marker = serializeSyncedBlock("chapters/one.md");
+    const source = `before\n\n${marker}\n\nafter`;
+    expect(parseMarkdownBlocks(source).map((block) => block.kind)).toEqual(["paragraph", "synced-block", "paragraph"]);
+    expect(collectEditablePreviewRanges(source).flat().map((range) => range.text)).toEqual(["before", "after"]);
   });
 
   it("keeps all six heading levels distinct in the presentation AST", () => {

@@ -18,3 +18,14 @@ export function isMarkdownFenceClosing(line: string, fence: MarkdownFence): bool
   const match = /^ {0,3}(`+|~+)[ \t]*$/u.exec(line);
   return match !== null && match[1]![0] === fence.character && match[1]!.length >= fence.minimumLength;
 }
+
+/** Return the visible content offset for a Renderer-supported H1, if any. */
+export function markdownFirstLevelHeadingContentStart(line: string): number | null {
+  const match = /^#\s+(.+)$/u.exec(line);
+  return match === null ? null : match[0].length - match[1]!.length;
+}
+
+/** Match the Renderer-supported level-one ATX heading grammar. */
+export function isMarkdownFirstLevelHeading(line: string): boolean {
+  return markdownFirstLevelHeadingContentStart(line) !== null;
+}

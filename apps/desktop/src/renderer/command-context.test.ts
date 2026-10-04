@@ -50,4 +50,14 @@ describe("ContextKeyService", () => {
     expect(await registry.execute("maginalia.document.reloadProperties", { "properties.stale": true })).toEqual({ kind: "executed" });
     expect(reload).toHaveBeenCalledOnce();
   });
+
+  it("does not expose Synced Block insertion without a pending safe target", async () => {
+    const registry = new CommandRegistry();
+    const insert = vi.fn();
+    registry.register({ id: "maginalia.syncedBlock.insertDocument", title: "Insert as Synced Block", when: "syncedBlock.insertable" }, insert);
+    expect(registry.discover("synced", { "syncedBlock.available": true, "syncedBlock.insertable": false })).toEqual([]);
+    expect(await registry.execute("maginalia.syncedBlock.insertDocument", { "syncedBlock.insertable": false })).toEqual({ kind: "disabled" });
+    expect(await registry.execute("maginalia.syncedBlock.insertDocument", { "syncedBlock.insertable": true })).toEqual({ kind: "executed" });
+    expect(insert).toHaveBeenCalledOnce();
+  });
 });

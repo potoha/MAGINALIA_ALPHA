@@ -73,6 +73,11 @@ export type ProjectInternalLinkResult =
   | { readonly kind: "missing"; readonly message: string }
   | { readonly kind: "invalid"; readonly message: string };
 
+/** Renderer-safe composition source; canonical paths remain in main only. */
+export type ProjectSyncedDocumentResult =
+  | { readonly kind: "resolved"; readonly target: string; readonly fileId: string; readonly displayName: string; readonly text: string }
+  | { readonly kind: "missing" | "invalid" | "unavailable"; readonly message: string };
+
 export interface ProjectSearchMatch {
   readonly fileId: string;
   /** Project-relative display name; never an absolute filesystem path. */
@@ -347,6 +352,28 @@ export class ProjectService {
     const resolved = await this.workspace.resolveProjectManuscriptByRelativeName(owner, projectId, validation.target);
     if (resolved.kind !== "resolved") return { kind: "missing", message: "The linked Markdown document was not found in this Project." };
     return { kind: "resolved", fileId: resolved.manuscriptId, displayName: resolved.displayName };
+  }
+
+  /** Read a Project-local Markdown source without opening a document session. */
+  public async resolveSyncedDocumentForOwner(
+    owner: object,
+    projectId: string,
+    target: string,
+  ): Promise<ProjectSyncedDocumentResult> {
+    const validation = validateInternalLinkTarget(target);
+    if (validation.kind !== "valid" || !/\.(?:md|markdown)$/iu.test(validation.target)) {
+      return { kind: "invalid", message: "That Synced Block target is not a Project-relative Markdown path." };
+    }
+    const resolved = await this.workspace.resolveProjectManuscriptByRelativeName(owner, projectId, validation.target);
+    if (resolved.kind !== "resolved") {
+      return { kind: "missing", message: "The Synced Block document is unavailable in this Project." };
+    }
+    try {
+      const text = await readFile(resolved.canonicalPath, "utf8");
+      return { kind: "resolved", target: resolved.displayName, fileId: resolved.manuscriptId, displayName: resolved.displayName, text };
+    } catch {
+      return { kind: "unavailable", message: "The Synced Block document could not be read." };
+    }
   }
 
   /** Open a target which was previously represented by an opaque resolver ID. */

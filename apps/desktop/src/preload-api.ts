@@ -164,6 +164,11 @@ import {
   type ResolveInternalLinkResult
 } from "./project-link-ipc";
 import {
+  RESOLVE_SYNCED_BLOCK_DOCUMENT_CHANNEL,
+  type ResolveSyncedBlockDocumentRequest,
+  type ResolveSyncedBlockDocumentIpcResult
+} from "./synced-block-ipc";
+import {
   IMPORT_DROPPED_IMAGE_CHANNEL,
   RESOLVE_PROJECT_ASSET_CHANNEL,
   type ProjectAssetIpcResult,
@@ -216,6 +221,7 @@ export {
 export { RESOLVE_REFERENCES_CHANNEL } from "./reference-ipc";
 export { RESOLVE_EXPORT_CHANNEL, WRITE_EXPORT_CHANNEL } from "./export-contract";
 export { RESOLVE_INTERNAL_LINK_CHANNEL, OPEN_INTERNAL_LINK_CHANNEL, OPEN_EXTERNAL_LINK_CHANNEL } from "./project-link-ipc";
+export { RESOLVE_SYNCED_BLOCK_DOCUMENT_CHANNEL } from "./synced-block-ipc";
 export { RESOLVE_PROJECT_ASSET_CHANNEL, IMPORT_DROPPED_IMAGE_CHANNEL } from "./project-assets-ipc";
 export { SEARCH_PROJECT_MARKDOWN_CHANNEL } from "./project-search-ipc";
 export {
@@ -380,6 +386,7 @@ export interface MarkdownPreloadApi {
   resolveInternalLink?(request: ResolveInternalLinkRequest): Promise<ResolveInternalLinkResult>;
   openInternalLink?(request: OpenInternalLinkRequest): Promise<OpenInternalLinkResult>;
   openExternalLink?(request: OpenExternalLinkRequest): Promise<OpenExternalLinkResult>;
+  resolveSyncedBlockDocument?(request: ResolveSyncedBlockDocumentRequest): Promise<ResolveSyncedBlockDocumentIpcResult>;
   resolveProjectAsset?(request: ResolveProjectAssetRequest): Promise<ProjectAssetIpcResult>;
   /** Resolves an OS-dropped File inside preload, never in renderer code. */
   importDroppedImageFile?(request: { readonly projectId: string; readonly file: File; readonly optimize: boolean }): Promise<ProjectAssetIpcResult>;
@@ -438,6 +445,7 @@ export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   resolveInternalLink(request: ResolveInternalLinkRequest): Promise<ResolveInternalLinkResult>;
   openInternalLink(request: OpenInternalLinkRequest): Promise<OpenInternalLinkResult>;
   openExternalLink(request: OpenExternalLinkRequest): Promise<OpenExternalLinkResult>;
+  resolveSyncedBlockDocument(request: ResolveSyncedBlockDocumentRequest): Promise<ResolveSyncedBlockDocumentIpcResult>;
   resolveProjectAsset(request: ResolveProjectAssetRequest): Promise<ProjectAssetIpcResult>;
   importDroppedImageFile(request: { readonly projectId: string; readonly file: File; readonly optimize: boolean }): Promise<ProjectAssetIpcResult>;
   loadMods(): Promise<ModSnapshotResult>;
@@ -563,6 +571,8 @@ export function createMarkdownPreloadApi(
       invoke(OPEN_INTERNAL_LINK_CHANNEL, request) as Promise<OpenInternalLinkResult>,
     openExternalLink: (request) =>
       invoke(OPEN_EXTERNAL_LINK_CHANNEL, request) as Promise<OpenExternalLinkResult>,
+    resolveSyncedBlockDocument: (request) =>
+      invoke(RESOLVE_SYNCED_BLOCK_DOCUMENT_CHANNEL, request) as Promise<ResolveSyncedBlockDocumentIpcResult>,
     resolveProjectAsset: (request) =>
       invoke(RESOLVE_PROJECT_ASSET_CHANNEL, request) as Promise<ProjectAssetIpcResult>,
     importDroppedImageFile: (request) => {

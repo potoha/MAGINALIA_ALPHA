@@ -1,7 +1,7 @@
 import { parseDocument } from "yaml";
 
 import { PROJECT_DOCUMENT_TYPES, type ProjectDocumentType } from "../project-metadata";
-import { isMarkdownFenceClosing, openingMarkdownFence } from "./markdown-fence";
+import { isMarkdownFenceClosing, markdownFirstLevelHeadingContentStart, openingMarkdownFence } from "./markdown-fence";
 
 export interface FrontMatterBoundary {
   readonly openingStart: number;
@@ -269,9 +269,9 @@ function firstH1ContentRange(source: string, bodyStart: number): SourceEdit | un
       cursor = line.next;
       continue;
     }
-    const match = /^# ([^\r\n]*)$/u.exec(line.text);
-    if (match) {
-      return { start: line.start + 2, end: line.end, replacement: "" };
+    const contentStart = markdownFirstLevelHeadingContentStart(line.text);
+    if (contentStart !== null) {
+      return { start: line.start + contentStart, end: line.end, replacement: "" };
     }
     if (line.next === cursor) break;
     cursor = line.next;

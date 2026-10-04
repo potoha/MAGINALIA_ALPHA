@@ -61,6 +61,10 @@ import {
   createProjectLinkHandlers
 } from "./project-link-ipc";
 import {
+  RESOLVE_SYNCED_BLOCK_DOCUMENT_CHANNEL,
+  createSyncedBlockHandlers
+} from "./synced-block-ipc";
+import {
   OPEN_LIBRARY_CHANNEL,
   OPEN_MARKDOWN_CHANNEL,
   RESOLVE_QUOTATION_FOR_INSERT_CHANNEL,
@@ -496,6 +500,9 @@ const projectLinkHandlers = createProjectLinkHandlers({
   openExternal: async (url) => {
     await shell.openExternal(url, { activate: true });
   }
+});
+const syncedBlockHandlers = createSyncedBlockHandlers({
+  resolveSyncedBlockDocument: (owner, projectId, target) => projectService.resolveSyncedDocumentForOwner(owner, projectId, target),
 });
 const projectSearchHandlers = createProjectSearchHandlers({
   searchProjectMarkdown: (owner, projectId, query) => projectService.searchMarkdownForOwner(owner, projectId, query)
@@ -1081,6 +1088,7 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(RESOLVE_INTERNAL_LINK_CHANNEL, projectLinkHandlers.resolveInternalLink);
   ipcMain.handle(OPEN_INTERNAL_LINK_CHANNEL, projectLinkHandlers.openInternalLink);
   ipcMain.handle(OPEN_EXTERNAL_LINK_CHANNEL, projectLinkHandlers.openExternalLink);
+  ipcMain.handle(RESOLVE_SYNCED_BLOCK_DOCUMENT_CHANNEL, syncedBlockHandlers.resolveSyncedBlockDocument);
   ipcMain.handle(SEARCH_PROJECT_MARKDOWN_CHANNEL, projectSearchHandlers.searchProjectMarkdown);
   ipcMain.handle(RESOLVE_PROJECT_ASSET_CHANNEL, projectAssetHandlers.resolveAsset);
   ipcMain.handle(IMPORT_DROPPED_IMAGE_CHANNEL, projectAssetHandlers.importDroppedImage);

@@ -14,6 +14,8 @@ try {
   await writeFile(path.join(projectRoot, "a.md"), "A document.\n\n[[b.md|Open B]]\n", "utf8");
   await writeFile(path.join(projectRoot, "b.md"), "# B\n\nPROJECT_LITERAL_SENTINEL\n", "utf8");
   await writeFile(path.join(projectRoot, "c.md"), "# C\n\nThird document.\n", "utf8");
+  await writeFile(path.join(projectRoot, "chapter.md"), "---\ntitle: Chapter\n---\n\n# Chapter\n\nChapter prose.\n\n<!-- maginalia:synced-block v1 {\"target\":\"section.md\"} -->\n", "utf8");
+  await writeFile(path.join(projectRoot, "section.md"), "---\ntitle: Section\n---\n\n# Section\n\nSection prose.\n", "utf8");
   const result = await runElectronSmoke({ userDataRoot, appArgs: ["--smoke-g", projectRoot] });
   assertElectronSmokeMarker(result, marker, "Electron G smoke");
   const restored = await runElectronSmoke({ userDataRoot, appArgs: ["--smoke-g-restore", projectRoot] });

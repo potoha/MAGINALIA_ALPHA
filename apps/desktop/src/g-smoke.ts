@@ -200,10 +200,64 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
   await script(window, `(() => { const link = document.querySelector(".rendered-internal-link.resolved"); if (!(link instanceof HTMLElement)) return false; link.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true })); return true; })()`, "activate existing internal link target");
   await waitFor(window, (value) => value.active === "b.md" && value.tabs.length === 2, "existing B tab activated without duplicate");
 
+  await script(window, `(() => {
+    const edit = document.querySelector('#document-edit-mode');
+    const parent = [...document.querySelectorAll('#document-tabs .document-tab')].find((item) => item.querySelector('.document-tab-label')?.textContent?.startsWith('a.md'))?.querySelector('.document-tab-label');
+    const source = [...document.querySelectorAll('#manuscript-list button[data-manuscript-id]')].find((item) => item.dataset.manuscriptName === 'chapter.md');
+    const editor = document.querySelector('#editor');
+    if (!(edit instanceof HTMLButtonElement) || !(parent instanceof HTMLButtonElement) || !(source instanceof HTMLElement) || !(editor instanceof HTMLElement)
+      || typeof DataTransfer !== 'function' || typeof DragEvent !== 'function') return false;
+    parent.click(); edit.click();
+    const transfer = new DataTransfer();
+    source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    editor.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    editor.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    return true;
+  })()`, "drag Project document into authoring source as a Synced Block");
+  await waitFor(window, (value) => value.active === "a.md" && value.text.includes('maginalia:synced-block v1 {"target":"chapter.md"}'), "Synced Block marker remains durable parent source");
+  await script(window, `(() => {
+    const source = [...document.querySelectorAll('#document-tabs .document-tab')].find((item) => item.querySelector('.document-tab-label')?.textContent?.startsWith('b.md'));
+    const editor = document.querySelector('#editor');
+    if (!(source instanceof HTMLElement) || !(editor instanceof HTMLElement) || typeof DataTransfer !== 'function' || typeof DragEvent !== 'function') return false;
+    const transfer = new DataTransfer();
+    source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    if (transfer.getData('application/x-maginalia-project-document').includes('project-root')) return false;
+    editor.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    return true;
+  })()`, "drag a Project-backed tab into authoring source without an absolute-path payload");
+  await waitFor(window, (value) => value.text.includes('maginalia:synced-block v1 {"target":"b.md"}'), "Project-tab drag inserts only a durable marker");
+  await script(window, `(() => { const preview = document.querySelector('#document-preview-mode'); if (!(preview instanceof HTMLButtonElement)) return false; preview.click(); return true; })()`, "open composed Preview");
+  await waitForScript(window, `(() => {
+    const block = document.querySelector('.rendered-synced-block');
+    return block instanceof HTMLElement && block.textContent?.includes('Chapter prose.') && block.textContent?.includes('Section prose.')
+      && !block.textContent?.includes('title: Chapter') && !block.textContent?.includes('# Chapter');
+  })()`, "compose nested child Markdown without front matter or first H1");
+  await script(window, `(() => { const open = document.querySelector('.rendered-synced-block-open-source'); if (!(open instanceof HTMLButtonElement)) return false; open.click(); return true; })()`, "open Synced Block source through its command");
+  await waitFor(window, (value) => value.active === "chapter.md", "Synced Block source opens as a normal Project tab");
+  await script(window, `(() => { const edit = document.querySelector('#document-edit-mode'); const editor = document.querySelector('#editor'); if (!(edit instanceof HTMLButtonElement) || !(editor instanceof HTMLElement)) return false; edit.click(); editor.dispatchEvent(new CustomEvent('maginalia-smoke-append', { detail: '\\nDirty chapter update.' })); return true; })()`, "edit open child source without copying it into parent");
+  await waitFor(window, (value) => value.active === "chapter.md" && value.text.includes('Dirty chapter update.'), "child session updates");
+  await script(window, `(() => { const tab = [...document.querySelectorAll('#document-tabs .document-tab')].find((item) => item.querySelector('.document-tab-label')?.textContent?.startsWith('a.md')); const button = tab?.querySelector('.document-tab-label'); if (!(button instanceof HTMLButtonElement)) return false; button.click(); const preview = document.querySelector('#document-preview-mode'); if (!(preview instanceof HTMLButtonElement)) return false; preview.click(); return true; })()`, "return to parent composed Preview");
+  await waitForScript(window, "document.querySelector('.rendered-synced-block')?.textContent?.includes('Dirty chapter update.') === true", "dirty open child session overlays disk composition");
+  await script(window, `(() => {
+    const edit = document.querySelector('#document-edit-mode');
+    const chapter = [...document.querySelectorAll('#document-tabs .document-tab')].find((item) => item.querySelector('.document-tab-label')?.textContent?.startsWith('chapter.md'))?.querySelector('.document-tab-label');
+    if (!(edit instanceof HTMLButtonElement) || !(chapter instanceof HTMLButtonElement)) return false;
+    chapter.click(); edit.click();
+    const source = [...document.querySelectorAll('#manuscript-list button[data-manuscript-id]')].find((item) => item.dataset.manuscriptName === 'a.md');
+    const editor = document.querySelector('#editor');
+    if (!(source instanceof HTMLElement) || !(editor instanceof HTMLElement) || typeof DataTransfer !== 'function' || typeof DragEvent !== 'function') return false;
+    const transfer = new DataTransfer();
+    source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    editor.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    return true;
+  })()`, "reject a Synced Block cycle before mutation");
+  await delay(120);
+  await waitFor(window, (value) => value.active === "chapter.md" && !value.text.includes('"target":"a.md"'), "cycle attempt leaves child source unchanged");
+
   await script(window, `(() => { const c = [...document.querySelectorAll("#manuscript-list button[data-manuscript-id]")].find((item) => item.dataset.manuscriptName === "c.md"); if (!(c instanceof HTMLButtonElement)) return false; c.click(); return true; })()`, "open C tab");
-  await waitFor(window, (value) => value.active === "c.md" && value.tabs.length === 3, "C opens as a third tab");
+  await waitFor(window, (value) => value.active === "c.md" && value.tabs.length === 4, "C opens after the composed child source tab");
   await script(window, `(() => { const tabs = [...document.querySelectorAll("#document-tabs .document-tab")]; const source = tabs.find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("c.md")); const target = tabs.find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("a.md")); if (!(source instanceof HTMLElement) || !(target instanceof HTMLElement) || typeof DataTransfer !== "function" || typeof DragEvent !== "function") return false; const transfer = new DataTransfer(); source.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: transfer })); target.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: transfer })); target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer })); source.dispatchEvent(new DragEvent("dragend", { bubbles: true, cancelable: true, dataTransfer: transfer })); return true; })()`, "drag C before A");
-  await waitFor(window, (value) => value.active === "c.md" && value.status === "saved" && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md", "reordered tabs without source mutation");
+  await waitFor(window, (value) => value.active === "c.md" && value.status === "saved" && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md|chapter.md", "reordered tabs without source mutation");
   if (await readFile(path.join(fixtureRoot, "c.md"), "utf8") !== initialC) {
     throw new Error("Tab reordering rewrote c.md.");
   }
@@ -212,7 +266,7 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
   await script(window, `(() => { const tab = [...document.querySelectorAll("#document-tabs .document-tab")].find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("a.md")); const button = tab?.querySelector(".document-tab-label"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`, "switch to A after C edit");
   await waitFor(window, (value) => value.active === "a.md", "A activates without closing C");
   await script(window, `(() => { const tab = [...document.querySelectorAll("#document-tabs .document-tab")].find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("c.md")); const button = tab?.querySelector(".document-tab-label"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`, "return to dirty C");
-  await waitFor(window, (value) => value.active === "c.md" && value.text.includes("C tab draft") && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md", "C session text and tab order retained");
+  await waitFor(window, (value) => value.active === "c.md" && value.text.includes("C tab draft") && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md|chapter.md", "C session text and tab order retained");
 
   await script(window, `(() => { const tab = [...document.querySelectorAll("#document-tabs .document-tab")].find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("a.md")); const button = tab?.querySelector(".document-tab-label"); const mode = document.querySelector('[data-unified-search-mode="project"]'); const query = document.querySelector("#library-query"); if (!(button instanceof HTMLButtonElement) || !(mode instanceof HTMLButtonElement) || !(query instanceof HTMLInputElement)) return false; button.click(); mode.click(); query.value = "PROJECT_LITERAL_SENTINEL"; query.form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); return true; })()`, "Project search");
   await waitFor(window, (value) => value.active === "a.md", "A active for Project search");
@@ -229,7 +283,7 @@ export async function runGRestoreSmoke(window: BrowserWindow): Promise<void> {
     window,
     (value) => value.ready
       && value.active === "a.md"
-      && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md",
-    "restored C, A, B tab order"
+      && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md|chapter.md",
+    "restored C, A, B, and composed-source tab order"
   );
 }
