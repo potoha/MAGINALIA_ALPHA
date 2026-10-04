@@ -1,6 +1,7 @@
 import { validateInternalLinkTarget } from "../project-links";
 import { scanFrontMatter } from "./document-properties";
 import { isMarkdownFenceClosing, isMarkdownFirstLevelHeading, openingMarkdownFence } from "./markdown-fence";
+import { stripDerivedReferenceList } from "./reference-list";
 
 export const SYNCED_BLOCK_VERSION = 1;
 export const SYNCED_BLOCK_PREFIX = "<!-- maginalia:synced-block ";
@@ -61,6 +62,15 @@ export interface ProjectCompositionOptions {
   readonly maxDepth?: number;
   readonly maxNodes?: number;
 }
+
+export type LinearProjectCompositionResult =
+  | { readonly kind: "linear"; readonly markdown: string }
+  | { readonly kind: "blocked"; readonly message: string };
+
+/** Disposable renderer-side snapshot used by References and Export. */
+export type ComposedMarkdownProjection =
+  | { readonly kind: "composed"; readonly text: string; readonly isCurrent?: () => boolean }
+  | { readonly kind: "blocked"; readonly message: string };
 
 function sourceLineEnd(source: string, start: number): number {
   const lf = source.indexOf("\n", start);
@@ -252,6 +262,47 @@ export async function resolveProjectComposition(source: string, options: Project
   const root = validateSyncedBlockTarget(options.rootTarget) ?? options.rootTarget;
   const blocks = await visit(source, [root], 0, "document");
   return { blocks, resolvedCount };
+}
+
+/**
+ * Materialize an already-resolved ProjectComposition into one disposable
+ * Markdown projection.  Resolution owns graph traversal; this function only
+ * replaces its exact structural markers, so it never becomes a second graph
+ * walker or a durable document authority.
+ */
+export function linearizeProjectComposition(source: string, composition: ProjectComposition): LinearProjectCompositionResult {
+  const linearize = (
+    text: string,
+    blocks: ReadonlyMap<string, ComposedSyncedBlock>,
+    sourceMode: "document" | "already-projected"
+  ): LinearProjectCompositionResult => {
+    const pieces: string[] = [];
+    let cursor = 0;
+    for (const occurrence of scanSyncedBlockMarkers(text, { sourceMode })) {
+      if (occurrence.kind !== "valid") {
+        return { kind: "blocked", message: "Synced Block marker is invalid." };
+      }
+      const block = blocks.get(occurrence.marker);
+      if (block === undefined) {
+        return { kind: "blocked", message: "Synced Block composition is incomplete." };
+      }
+      if (block.kind !== "resolved" || block.markdown === undefined) {
+        return { kind: "blocked", message: block.message ?? "Synced document is unavailable." };
+      }
+      const child = linearize(block.markdown, block.children ?? new Map(), "already-projected");
+      if (child.kind === "blocked") return child;
+      const withoutDerivedReferences = stripDerivedReferenceList(child.markdown);
+      if (withoutDerivedReferences.kind === "conflict") {
+        return { kind: "blocked", message: "Synced document has an invalid derived reference list." };
+      }
+      pieces.push(text.slice(cursor, occurrence.start), withoutDerivedReferences.text);
+      cursor = occurrence.end;
+    }
+    pieces.push(text.slice(cursor));
+    const markdown = pieces.join("");
+    return { kind: "linear", markdown };
+  };
+  return linearize(source, composition.blocks, "document");
 }
 
 /** Check a proposed parent -> child edge before source mutation. */

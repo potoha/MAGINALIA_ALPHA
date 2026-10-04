@@ -7,6 +7,8 @@ const STATE_TIMEOUT_MS = 20_000;
 
 export const EXPORT_SMOKE_ANNOTATION_ID = "e5c6d7a8-9012-4b3c-8d7e-6f5a4b3c2d1e";
 export const EXPORT_SMOKE_QUOTE = "これはExport smokeの解決済み引用です。";
+export const EXPORT_SMOKE_DIRTY_CHILD_ANNOTATION_ID = "f6d7e8a9-0123-4c5d-9e8f-7a6b5c4d3e2f";
+export const EXPORT_SMOKE_DIRTY_CHILD_QUOTE = "これはExport smokeの未保存子引用です。";
 export const EXPORT_SMOKE_TITLE = "Export Smoke Book";
 export const EXPORT_SMOKE_AUTHOR = "Export Smoke Author";
 export const EXPORT_SMOKE_PAGE = "42";
@@ -57,6 +59,9 @@ interface PreviewRendererState {
   readonly tableClientHeight: number | null;
   readonly tableScrollHeight: number | null;
   readonly hasExecutableScript: boolean;
+  readonly syncedBlockCount: number;
+  readonly syncedBlockTexts: readonly string[];
+  readonly syncedBlockQuoteStates: readonly string[];
 }
 
 const READ_STATE_SCRIPT = `(() => {
@@ -150,7 +155,11 @@ const READ_PREVIEW_SCRIPT = `(() => {
     tableScrollHeight: root.querySelector(".markdown-table-wrapper") instanceof HTMLElement
       ? root.querySelector(".markdown-table-wrapper").scrollHeight
       : null,
-    hasExecutableScript: root.querySelector("script") !== null
+    hasExecutableScript: root.querySelector("script") !== null,
+    syncedBlockCount: root.querySelectorAll(".rendered-synced-block").length,
+    syncedBlockTexts: [...root.querySelectorAll(".rendered-synced-block-content")].map((block) => block.textContent ?? ""),
+    syncedBlockQuoteStates: [...root.querySelectorAll(".rendered-synced-block .rendered-quote-ref")]
+      .map((quote) => quote.getAttribute("data-quote-state") ?? "")
   };
 })()`;
 
@@ -269,12 +278,17 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
   const root = path.resolve(fixtureRoot);
   const firstPath = path.join(root, "a.md");
   const secondPath = path.join(root, "b.md");
+  const childPath = path.join(root, "child.md");
+  const nestedPath = path.join(root, "nested.md");
   const initialFirst = await readFile(firstPath, "utf8");
   const initialSecond = await readFile(secondPath, "utf8");
+  const initialChild = await readFile(childPath, "utf8");
+  const initialNested = await readFile(nestedPath, "utf8");
   const quoteMarker = `<!-- maginalia:quote-ref v1 {"quoteId":"${EXPORT_SMOKE_ANNOTATION_ID}","mode":"normal"} -->`;
   const referenceStart = "<!-- maginalia:reference-list-start v1 -->";
   const referenceEnd = "<!-- maginalia:reference-list-end v1 -->";
   const dirtySentinel = "\n\nUnsaved export-only edit.\n";
+  const dirtyChildSentinel = `\n\nUnsaved child composition edit.\n\n<!-- maginalia:quote-ref v1 {"quoteId":"${EXPORT_SMOKE_DIRTY_CHILD_ANNOTATION_ID}","mode":"normal"} -->\n`;
 
   await waitForState(window, (state) => state.smokeReady && state.status === "empty", "Project readiness");
   await clickButton(window, "#open-project", "open Project");
@@ -308,7 +322,12 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
       && state.tableImageCount === 1
       && state.tableTagName === "table"
       && state.tableBodyRowCount === 1
-      && state.tableFirstRowCellCount === 8,
+      && state.tableFirstRowCellCount === 8
+      && state.syncedBlockCount === 2
+      && state.syncedBlockTexts.some((text) => text.includes("Synced child prose"))
+      && state.syncedBlockTexts.some((text) => text.includes("Nested synced prose"))
+      && state.syncedBlockQuoteStates.length === 2
+      && state.syncedBlockQuoteStates.every((quoteState) => quoteState === "resolved"),
     "resolved horizontal Markdown Preview"
   );
   assert(!horizontal.hasExecutableScript, "authoring HTML created an executable script in Preview");
@@ -320,6 +339,8 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
   assert(horizontal.imageDisplay === "block" && horizontal.imageMaxWidth === "100%", "Project media did not receive responsive block layout");
   assert(horizontal.tableHeaderTexts.join("|") === "列一|列二|列三|列四|列五|列六|列七|列八", "Japanese table headers were not preserved structurally");
   assert(horizontal.tableOverflowX === "auto", "wide table overflow behavior was not defined");
+  assert(!horizontal.syncedBlockTexts.some((text) => text.includes("Child local title")), "Synced Block projection exposed its child H1");
+  assert(!horizontal.syncedBlockTexts.some((text) => text.includes("stale child reference")), "Preview retained a child-derived reference list");
   assertWideTable(horizontal, "horizontal");
   await clickButton(window, "#document-vertical", "switch Preview to vertical");
   const vertical = await waitForPreviewState(
@@ -365,6 +386,22 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
   );
   const dirtySnapshot = dirty.text;
 
+  await clickFile(window, "child.md");
+  await waitForState(
+    window,
+    (state) => state.activeFile === "child.md" && state.tabs.some((tab) => tab.name.startsWith("child.md") && tab.active),
+    "the child source tab"
+  );
+  await editActive(window, dirtyChildSentinel);
+  await waitForState(
+    window,
+    (state) => state.activeFile === "child.md" && state.text.includes("Unsaved child composition edit."),
+    "the dirty child source session"
+  );
+  assert(await readFile(childPath, "utf8") === initialChild, "child edit reached disk before composition could capture its open session");
+  await clickFile(window, "a.md");
+  await waitForState(window, (state) => state.activeFile === "a.md", "the parent document after child editing");
+
   await clickButton(window, "#export-markdown", "export the dirty active document");
   const exportedA = await waitForState(
     window,
@@ -377,14 +414,21 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
   assert(exportedA.exportMessage.includes("export-1.resolved.md"), "first export did not use the fixture output");
   const outputA = await readFile(path.join(root, "export-1.resolved.md"), "utf8");
   assertIncludes(outputA, `> ${EXPORT_SMOKE_QUOTE}`, "resolved quotation output");
+  assertIncludes(outputA, `> ${EXPORT_SMOKE_DIRTY_CHILD_QUOTE}`, "dirty child-session quotation output");
   assertIncludes(outputA, `（${EXPORT_SMOKE_AUTHOR}『${EXPORT_SMOKE_TITLE}』、p.${EXPORT_SMOKE_PAGE}）`, "human-readable provenance output");
   assertIncludes(outputA, `- ${EXPORT_SMOKE_AUTHOR}『${EXPORT_SMOKE_TITLE}』 Export Smoke Publisher、2024。`, "bibliography output");
   assertIncludes(outputA, dirtySentinel.trim(), "dirty currentText output");
+  assertIncludes(outputA, "Synced child prose", "composed child prose output");
+  assertIncludes(outputA, "Nested synced prose", "composed nested child prose output");
+  assertIncludes(outputA, "Unsaved child composition edit.", "dirty child-session composition output");
+  assert(!outputA.includes("stale child reference"), "export retained a child-derived reference region");
   for (const forbidden of [
     quoteMarker,
+    "maginalia:synced-block",
     referenceStart,
     referenceEnd,
     EXPORT_SMOKE_ANNOTATION_ID,
+    EXPORT_SMOKE_DIRTY_CHILD_ANNOTATION_ID,
     EXPORT_SMOKE_CAPTURE_ID,
     "page-export-smoke",
     "source-page-internal",
@@ -393,13 +437,15 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
     assert(!outputA.includes(forbidden), `export leaked ${forbidden}`);
   }
   assert(await readFile(firstPath, "utf8") === initialFirst, "export changed the authoring file bytes");
+  assert((await readFile(childPath, "utf8")).startsWith(initialChild), "export rewrote the child authoring source");
+  assert(await readFile(nestedPath, "utf8") === initialNested, "export changed the nested authoring file bytes");
   assert(exportedA.status === "modified" && exportedA.saveEnabled, "export cleared the dirty state");
 
   await clickFile(window, "b.md");
   const openedB = await waitForState(
     window,
     (state) => state.activeFile === "b.md"
-      && state.tabs.length === 2
+      && state.tabs.length >= 3
       && state.tabs.some((tab) => tab.name.startsWith("a.md") && !tab.active)
       && state.tabs.some((tab) => tab.name.startsWith("b.md") && tab.active),
     "the second active Markdown tab"

@@ -15,17 +15,35 @@ import {
   type ShelfViewState
 } from "./shelf-controller";
 import { MonacoMarkdownSurface } from "./monaco-surface";
-import { renderMarkdownPreview, type PreviewSyncedBlock } from "./markdown-renderer";
+import {
+  createPreviewQuoteMap,
+  renderMarkdownPreview,
+  scanQuoteMarkersFromText,
+  type PreviewQuote,
+  type PreviewQuoteMap,
+  type PreviewSyncedBlock
+} from "./markdown-renderer";
 import { insertMarkdownTable, transformMarkdownTable, type MarkdownTableCellTarget, type MarkdownTableTarget, type TableOperation } from "./markdown-table-commands";
 import { applyDocumentProperties, readDocumentProperties, type DocumentProperties, type DocumentPropertiesState } from "./document-properties";
 import { ownsCurrentPropertiesTarget, shouldPreserveUnappliedPropertiesForm, type PropertiesTarget } from "./properties-target";
 import { mayDispatchTableTarget, ownsCurrentTableTarget, type ActiveTableTarget } from "./table-target";
 import { PreviewController } from "./preview-controller";
-import { insertSyncedBlockMarker, resolveProjectComposition, validateSyncedBlockTarget, wouldIntroduceSyncedBlockCycle, type ComposedSyncedBlock, type SyncedBlockResolveResult } from "./synced-block";
+import {
+  insertSyncedBlockMarker,
+  linearizeProjectComposition,
+  resolveProjectComposition,
+  scanSyncedBlockMarkers,
+  validateSyncedBlockTarget,
+  wouldIntroduceSyncedBlockCycle,
+  type ComposedMarkdownProjection,
+  type ComposedSyncedBlock,
+  type SyncedBlockResolveResult
+} from "./synced-block";
 import { createLocalStorageRendererPreferenceStore } from "./renderer-preferences";
 import { resolvePreviewMedia } from "./project-media";
 import { resolvePreviewInternalLinks } from "./preview-links";
 import { importDroppedImageIntoDocument } from "./dropped-image";
+import { stripDerivedReferenceList } from "./reference-list";
 import { ContextKeyService } from "./command-context";
 import { CommandRegistry } from "./command-registry";
 import { CommandPalette } from "./command-palette";
@@ -833,7 +851,10 @@ const previewApi = typeof window.maginalia.resolveReferences === "function"
   ? { resolveReferences: (request: { readonly text: string }) => window.maginalia.resolveReferences(request) }
   : null;
 
-function projectSyncedSourceResolver(projectId: string): ((target: string) => Promise<SyncedBlockResolveResult>) | null {
+function projectSyncedSourceResolver(
+  projectId: string,
+  onOpenSession?: (session: { readonly documentId: string; readonly revision: number; readonly currentText: string }) => void
+): ((target: string) => Promise<SyncedBlockResolveResult>) | null {
   const navigation = projectController;
   const resolveFromProject = window.maginalia.resolveSyncedBlockDocument;
   if (navigation === undefined || typeof resolveFromProject !== "function") return null;
@@ -842,8 +863,67 @@ function projectSyncedSourceResolver(projectId: string): ((target: string) => Pr
     if (result.kind !== "resolved") return result;
     const sessionId = navigation.getSessionIdForFile(result.fileId);
     const open = sessionId === null ? null : controller.getDocumentState(sessionId);
+    if (open !== null && typeof open.revision === "number") {
+      onOpenSession?.({ documentId: open.documentId, revision: open.revision, currentText: open.currentText });
+    }
     return { ...result, text: open?.currentText ?? result.text };
   };
+}
+
+/**
+ * Produce one renderer-local composition snapshot for Preview, References,
+ * and Export.  Open child sessions intentionally overlay disk through the
+ * established Project resolver; no expanded content is written to a parent.
+ */
+async function composeSyncedMarkdown(source: string, documentId: string): Promise<ComposedMarkdownProjection> {
+  const navigation = projectController;
+  const project = navigation?.getState().project;
+  const parentFileId = navigation?.getFileIdForSession(documentId) ?? null;
+  const parent = parentFileId === null ? undefined : navigation?.getState().files.find((file) => file.fileId === parentFileId);
+  const markers = scanSyncedBlockMarkers(source);
+  if (markers.length === 0) return { kind: "composed", text: source };
+  const openSources = new Map<string, { readonly revision: number; readonly currentText: string }>();
+  const resolve = project === null || project === undefined ? null : projectSyncedSourceResolver(project.projectId, (open) => {
+    openSources.set(open.documentId, { revision: open.revision, currentText: open.currentText });
+  });
+  if (project === null || project === undefined || parent === undefined || resolve === null) {
+    return { kind: "blocked", message: "Synced Blocks require an open Project document." };
+  }
+  const composition = await resolveProjectComposition(source, { rootTarget: parent.displayName, resolve });
+  const openSourcesCurrent = (): boolean => [...openSources].every(([sessionId, snapshot]) => {
+    const current = controller.getDocumentState(sessionId);
+    return current !== null && current.revision === snapshot.revision && current.currentText === snapshot.currentText;
+  });
+  if (!openSourcesCurrent()) {
+    return { kind: "blocked", message: "Synced Block source changed during composition. Refresh and try again." };
+  }
+  const linear = linearizeProjectComposition(source, composition);
+  return linear.kind === "linear"
+    ? { kind: "composed", text: linear.markdown, isCurrent: openSourcesCurrent }
+    : { kind: "blocked", message: linear.message };
+}
+
+function unresolvedPreviewQuoteMap(markers: readonly string[]): PreviewQuoteMap {
+  const quotes = new Map<string, PreviewQuote>();
+  for (const marker of markers) quotes.set(marker, { state: "unresolved", reason: "Quotation unresolved." });
+  return quotes;
+}
+
+async function resolvePreviewQuotes(text: string): Promise<PreviewQuoteMap> {
+  const markers = scanQuoteMarkersFromText(text);
+  if (markers.length === 0) return new Map();
+  if (previewApi === null) return unresolvedPreviewQuoteMap(markers);
+  try {
+    const result = await previewApi.resolveReferences({ text });
+    if (result.kind === "error") return unresolvedPreviewQuoteMap(markers);
+    const quotes = new Map(createPreviewQuoteMap(result.resolved, result.unresolved));
+    for (const marker of markers) {
+      if (!quotes.has(marker)) quotes.set(marker, { state: "unresolved", reason: "Quotation unresolved." });
+    }
+    return quotes;
+  } catch {
+    return unresolvedPreviewQuoteMap(markers);
+  }
 }
 
 async function resolveSyncedPreviewBlocks(source: string, documentId: string): Promise<ReadonlyMap<string, PreviewSyncedBlock>> {
@@ -862,13 +942,22 @@ async function resolveSyncedPreviewBlocks(source: string, documentId: string): P
     : null;
   const hydrate = async (block: ComposedSyncedBlock): Promise<PreviewSyncedBlock> => {
     if (block.kind !== "resolved" || block.markdown === undefined) return block;
+    // A child may carry its own previously generated list, but composition
+    // presents one parent-derived result. Keep source unchanged and fail
+    // closed rather than rendering ambiguous generated markers as prose.
+    const stripped = stripDerivedReferenceList(block.markdown);
+    if (stripped.kind === "conflict") {
+      return { kind: "unresolved", marker: block.marker, target: block.target, message: "Synced document has an invalid derived reference list." };
+    }
+    const markdown = stripped.text;
     const children = new Map<string, PreviewSyncedBlock>();
     for (const [key, child] of block.children ?? []) children.set(key, await hydrate(child));
-    const [internalLinks, media] = await Promise.all([
-      resolvePreviewInternalLinks(linkApi, project.projectId, block.markdown),
-      resolvePreviewMedia(mediaApi, project.projectId, block.markdown),
+    const [internalLinks, media, quotes] = await Promise.all([
+      resolvePreviewInternalLinks(linkApi, project.projectId, markdown),
+      resolvePreviewMedia(mediaApi, project.projectId, markdown),
+      resolvePreviewQuotes(markdown),
     ]);
-    return { ...block, children, internalLinks, media };
+    return { ...block, markdown, children, internalLinks, media, quotes };
   };
   const previewBlocks = new Map<string, PreviewSyncedBlock>();
   for (const [key, block] of composition.blocks) previewBlocks.set(key, await hydrate(block));
@@ -3386,7 +3475,8 @@ if (referencesApi) {
   referencesController = new ReferencesController({
     api: referencesApi,
     writing: controller,
-    view: referencesView
+    view: referencesView,
+    compose: (document) => composeSyncedMarkdown(document.currentText, document.documentId)
   });
   refreshReferencesButton.addEventListener("click", () => void executeCommand("maginalia.references.refresh"));
 } else {
@@ -3409,7 +3499,8 @@ if (exportApi) {
   exportController = new ExportController({
     api: exportApi,
     writing: controller,
-    view: exportView
+    view: exportView,
+    compose: (document) => composeSyncedMarkdown(document.currentText, document.documentId)
   });
   exportButton.addEventListener("click", () => void executeCommand("maginalia.document.export"));
 } else {
