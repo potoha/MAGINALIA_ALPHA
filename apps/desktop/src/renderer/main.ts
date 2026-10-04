@@ -770,7 +770,11 @@ commandRegistry.register({
   title: "Show Markdown Edit",
   category: "Renderer",
   keywords: ["edit", "markdown", "source"]
-}, () => previewController.setMode("edit"));
+}, () => {
+  // Raw Edit immediately returns selection ownership to Monaco.
+  controller.setExternalSelection(null);
+  previewController.setMode("edit");
+});
 commandRegistry.register({
   id: "maginalia.renderer.showPreview",
   title: "Show Editable Preview",

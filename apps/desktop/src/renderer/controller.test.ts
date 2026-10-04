@@ -19,10 +19,14 @@ import {
   type WritingSurface,
   type WritingView
 } from "./controller";
+import { ContextKeyService } from "./command-context";
+import { CommandRegistry } from "./command-registry";
+import { registerCoreCommands } from "./core-commands";
 import { DocumentSessionStore } from "./document-sessions";
 
 class FakeSurface implements WritingSurface {
   private readonly listeners = new Set<(text: string) => void>();
+  private readonly selectionListeners = new Set<(range: WritingTextRange) => void>();
   public text = "";
   public readonly replacedTexts: string[] = [];
   public selection: WritingTextRange = { start: 0, end: 0 };
@@ -55,6 +59,11 @@ class FakeSurface implements WritingSurface {
     return () => this.listeners.delete(listener);
   }
 
+  public onSelectionChange(listener: (range: WritingTextRange) => void): () => void {
+    this.selectionListeners.add(listener);
+    return () => this.selectionListeners.delete(listener);
+  }
+
   public focus(): void {
     this.focused = true;
   }
@@ -63,6 +72,11 @@ class FakeSurface implements WritingSurface {
     this.text = text;
     this.selection = { start: text.length, end: text.length };
     for (const listener of this.listeners) listener(text);
+  }
+
+  public select(range: WritingTextRange): void {
+    this.selection = { ...range };
+    for (const listener of this.selectionListeners) listener(this.getSelection());
   }
 }
 
@@ -230,6 +244,7 @@ describe("WritingController", () => {
     expect(surface.appliedEdits).toHaveLength(1);
     expect(surface.appliedEdits[0]).toMatchObject({ range: { start: secondMoon, end: secondMoon + 5 }, text: "月🌕" });
     expect(controller.getDocumentState()?.currentText).toBe("\uFEFF前\r\nMoon.\r\n月🌕");
+    expect(controller.getSelection()).toEqual({ start: secondMoon + "月🌕".length, end: secondMoon + "月🌕".length });
     expect(view.status).toEqual({ kind: "modified", message: "Modified" });
     expect(controller.applySourceEdit({
       documentId: initial.documentId,
@@ -237,6 +252,52 @@ describe("WritingController", () => {
       range: { start: secondMoon, end: secondMoon + 5 },
       replacement: "wrong"
     })).toMatchObject({ kind: "error", code: "stale-target" });
+  });
+
+  it("gives Monaco selection ownership after Preview selection and formats Monaco's range", async () => {
+    const { controller, surface } = makeHarness({
+      open: () => Promise.resolve(opened("selection-a", "a.md", "old new"))
+    });
+    await controller.open();
+    controller.setExternalSelection({ start: 0, end: 3 });
+    surface.select({ start: 4, end: 7 });
+
+    const commands = new CommandRegistry();
+    registerCoreCommands(commands, {
+      writing: controller,
+      setPreviewDirection: () => undefined,
+      refreshReferences: () => undefined,
+      exportMarkdown: () => undefined,
+      saveDocument: () => undefined,
+      contextKeys: new ContextKeyService()
+    });
+    await commands.execute("maginalia.editor.toggleBold", { "editor.hasDocument": true, "editor.hasSelection": true });
+
+    expect(controller.getSelection()).toEqual({ start: 4, end: 7 });
+    expect(controller.getDocumentState()?.currentText).toBe("old **new**");
+  });
+
+  it("invalidates a Preview selection when the active document changes", async () => {
+    const { controller, surface } = makeHarness();
+    controller.applyOpenedDocument(opened("selection-a", "a.md", "A old"));
+    controller.setExternalSelection({ start: 2, end: 5 });
+    controller.applyOpenedDocument(opened("selection-b", "b.md", "B fresh"));
+    surface.select({ start: 2, end: 7 });
+
+    const commands = new CommandRegistry();
+    registerCoreCommands(commands, {
+      writing: controller,
+      setPreviewDirection: () => undefined,
+      refreshReferences: () => undefined,
+      exportMarkdown: () => undefined,
+      saveDocument: () => undefined,
+      contextKeys: new ContextKeyService()
+    });
+    await commands.execute("maginalia.editor.toggleBold", { "editor.hasDocument": true, "editor.hasSelection": true });
+
+    expect(controller.getSelection()).toEqual({ start: 2, end: 7 });
+    expect(controller.getDocumentState("selection-a")?.currentText).toBe("A old");
+    expect(controller.getDocumentState("selection-b")?.currentText).toBe("B **fresh**");
   });
 
   it("returns to clean when an edit reverts to the saved text", async () => {
