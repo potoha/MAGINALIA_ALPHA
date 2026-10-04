@@ -5,6 +5,7 @@ import {
   findFrontMatterBoundary,
   projectMarkdownBody,
   readDocumentProperties,
+  scanFrontMatter,
   type ApplyDocumentPropertiesResult,
   type DocumentProperties,
 } from "./document-properties";
@@ -28,6 +29,26 @@ describe("front matter source boundary", () => {
 
   it("accepts an ellipsis closing marker", () => {
     expect(projectMarkdownBody("---\ntitle: Test\n...\n# Test\n")).toEqual({ body: "# Test\n", start: 20 });
+  });
+
+  it("distinguishes an unterminated opener from no front matter without hiding source", () => {
+    const source = "---\ntype: draft\ntitle: [\n# Heading\n本文\n";
+    expect(scanFrontMatter(source)).toEqual({ kind: "unterminated", openingStart: 0 });
+    expect(projectMarkdownBody(source)).toEqual({ body: source, start: 0 });
+    expect(readDocumentProperties(source, "notes.md")).toMatchObject({
+      kind: "invalid",
+      boundary: undefined,
+      message: "Metadata front matter is not closed. Open raw source to repair it."
+    });
+    expect(applyDocumentProperties(source, "notes.md", defaultProperties, { allowBody: true })).toMatchObject({ kind: "invalid" });
+    expect(scanFrontMatter("# Notes\ntext\n")).toEqual({ kind: "none" });
+  });
+
+  it("fails closed for an unterminated BOM and CRLF front matter opener", () => {
+    const source = "\uFEFF---\r\ntitle: Test\r\n\r\n本文\r\n";
+    expect(scanFrontMatter(source)).toEqual({ kind: "unterminated", openingStart: 1 });
+    expect(readDocumentProperties(source, "notes.md")).toMatchObject({ kind: "invalid", boundary: undefined });
+    expect(projectMarkdownBody(source)).toEqual({ body: source, start: 0 });
   });
 });
 

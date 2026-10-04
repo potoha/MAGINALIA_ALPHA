@@ -41,4 +41,13 @@ describe("ContextKeyService", () => {
     })).toEqual({ kind: "executed" });
     expect(apply).toHaveBeenCalledOnce();
   });
+
+  it("exposes Properties reload only for a preserved stale form", async () => {
+    const registry = new CommandRegistry();
+    const reload = vi.fn();
+    registry.register({ id: "maginalia.document.reloadProperties", title: "Reload Properties", when: "properties.stale" }, reload);
+    expect(await registry.execute("maginalia.document.reloadProperties", { "properties.stale": false })).toEqual({ kind: "disabled" });
+    expect(await registry.execute("maginalia.document.reloadProperties", { "properties.stale": true })).toEqual({ kind: "executed" });
+    expect(reload).toHaveBeenCalledOnce();
+  });
 });

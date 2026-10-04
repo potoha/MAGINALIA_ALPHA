@@ -1,6 +1,7 @@
 import { parseDocument } from "yaml";
 
 import { PROJECT_DOCUMENT_TYPES, type ProjectDocumentType } from "../project-metadata";
+import { isMarkdownFenceClosing, openingMarkdownFence } from "./markdown-fence";
 
 export interface FrontMatterBoundary {
   readonly openingStart: number;
@@ -11,6 +12,12 @@ export interface FrontMatterBoundary {
   readonly bodyStart: number;
   readonly lineEnding: "\n" | "\r\n" | "\r";
 }
+
+/** Front-matter detection must distinguish absence from an unclosed opener. */
+export type FrontMatterScan =
+  | { readonly kind: "none" }
+  | { readonly kind: "bounded"; readonly boundary: FrontMatterBoundary }
+  | { readonly kind: "unterminated"; readonly openingStart: number };
 
 export interface DocumentProperties {
   readonly title: string;
@@ -28,7 +35,8 @@ export type DocumentPropertiesState =
     readonly metadataTitle: string | undefined;
     readonly properties: DocumentProperties;
   }
-  | { readonly kind: "invalid" | "raw-only"; readonly boundary: FrontMatterBoundary; readonly message: string };
+  | { readonly kind: "invalid"; readonly boundary: FrontMatterBoundary | undefined; readonly message: string }
+  | { readonly kind: "raw-only"; readonly boundary: FrontMatterBoundary; readonly message: string };
 
 export interface SourceEdit {
   readonly start: number;
@@ -101,43 +109,58 @@ function yamlValue(value: unknown, key: string): { readonly value: string | unde
  * returned offsets use JavaScript UTF-16 string positions in the original
  * Markdown document.
  */
-export function findFrontMatterBoundary(source: string): FrontMatterBoundary | undefined {
+export function scanFrontMatter(source: string): FrontMatterScan {
   const openingStart = source.startsWith("\uFEFF") ? 1 : 0;
   const opening = sourceLineAt(source, openingStart);
-  if (!/^---[ \t]*$/u.test(opening.text) || opening.lineEnding === undefined) return undefined;
+  if (!/^---[ \t]*$/u.test(opening.text) || opening.lineEnding === undefined) return { kind: "none" };
 
   let cursor = opening.next;
   while (cursor < source.length) {
     const line = sourceLineAt(source, cursor);
     if (/^(?:---|\.\.\.)[ \t]*$/u.test(line.text)) {
       return {
-        openingStart,
-        yamlStart: opening.next,
-        yamlEnd: line.start,
-        closingStart: line.start,
-        closingEnd: line.end,
-        bodyStart: line.next,
-        lineEnding: opening.lineEnding,
+        kind: "bounded",
+        boundary: {
+          openingStart,
+          yamlStart: opening.next,
+          yamlEnd: line.start,
+          closingStart: line.start,
+          closingEnd: line.end,
+          bodyStart: line.next,
+          lineEnding: opening.lineEnding,
+        }
       };
     }
     if (line.next === cursor) break;
     cursor = line.next;
   }
-  return undefined;
+  return { kind: "unterminated", openingStart };
+}
+
+export function findFrontMatterBoundary(source: string): FrontMatterBoundary | undefined {
+  const scan = scanFrontMatter(source);
+  return scan.kind === "bounded" ? scan.boundary : undefined;
 }
 
 /** Return the body projection while retaining the source offset of that body. */
 export function projectMarkdownBody(source: string): { readonly body: string; readonly start: number } {
-  const boundary = findFrontMatterBoundary(source);
-  return boundary === undefined
+  const scan = scanFrontMatter(source);
+  return scan.kind !== "bounded"
     ? { body: source, start: 0 }
-    : { body: source.slice(boundary.bodyStart), start: boundary.bodyStart };
+    : { body: source.slice(scan.boundary.bodyStart), start: scan.boundary.bodyStart };
 }
 
 export function readDocumentProperties(source: string, fileName: string): DocumentPropertiesState {
-  const boundary = findFrontMatterBoundary(source);
+  const scan = scanFrontMatter(source);
   const fallback = fallbackTitle(fileName);
-  if (boundary === undefined) {
+  if (scan.kind === "unterminated") {
+    return {
+      kind: "invalid",
+      boundary: undefined,
+      message: "Metadata front matter is not closed. Open raw source to repair it."
+    };
+  }
+  if (scan.kind === "none") {
     return {
       kind: "ready",
       boundary: undefined,
@@ -145,6 +168,7 @@ export function readDocumentProperties(source: string, fileName: string): Docume
       properties: { title: fallback, type: "other", author: "", tags: [], created: "" },
     };
   }
+  const boundary = scan.boundary;
 
   let document;
   try {
@@ -229,19 +253,18 @@ function serializeMetadata(source: string, state: Extract<DocumentPropertiesStat
 
 function firstH1ContentRange(source: string, bodyStart: number): SourceEdit | undefined {
   let cursor = bodyStart;
-  let fence: { readonly character: "`" | "~"; readonly length: number } | undefined;
+  let fence: ReturnType<typeof openingMarkdownFence> = null;
   while (cursor < source.length) {
     const line = sourceLineAt(source, cursor);
-    if (fence !== undefined) {
-      const closing = /^ {0,3}(`+|~+)[ \t]*$/u.exec(line.text);
-      if (closing !== null && closing[1]![0] === fence.character && closing[1]!.length >= fence.length) fence = undefined;
+    if (fence !== null) {
+      if (isMarkdownFenceClosing(line.text, fence)) fence = null;
       if (line.next === cursor) break;
       cursor = line.next;
       continue;
     }
-    const opening = /^ {0,3}(`{3,}|~{3,})/u.exec(line.text);
+    const opening = openingMarkdownFence(line.text);
     if (opening !== null) {
-      fence = { character: opening[1]![0] as "`" | "~", length: opening[1]!.length };
+      fence = opening;
       if (line.next === cursor) break;
       cursor = line.next;
       continue;

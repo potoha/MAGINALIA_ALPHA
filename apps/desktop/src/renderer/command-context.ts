@@ -21,6 +21,7 @@ export const COMMAND_CONTEXT_KEYS = [
   "properties.available",
   "properties.valid",
   "properties.dirty",
+  "properties.stale",
   "renderer.orientation",
   "document.type",
   "view.id",

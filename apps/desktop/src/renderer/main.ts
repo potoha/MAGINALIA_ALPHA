@@ -18,7 +18,7 @@ import { MonacoMarkdownSurface } from "./monaco-surface";
 import { renderMarkdownPreview } from "./markdown-renderer";
 import { insertMarkdownTable, transformMarkdownTable, type MarkdownTableCellTarget, type MarkdownTableTarget, type TableOperation } from "./markdown-table-commands";
 import { applyDocumentProperties, readDocumentProperties, type DocumentProperties, type DocumentPropertiesState } from "./document-properties";
-import { ownsCurrentPropertiesTarget, type PropertiesTarget } from "./properties-target";
+import { ownsCurrentPropertiesTarget, shouldPreserveUnappliedPropertiesForm, type PropertiesTarget } from "./properties-target";
 import { mayDispatchTableTarget, ownsCurrentTableTarget, type ActiveTableTarget } from "./table-target";
 import { PreviewController } from "./preview-controller";
 import { createLocalStorageRendererPreferenceStore } from "./renderer-preferences";
@@ -319,6 +319,7 @@ app.innerHTML = `
               </label>
               <label>Created<input id="properties-created" type="date"></label>
               <button id="properties-apply" data-command-id="maginalia.document.applyProperties" type="submit" disabled>Apply</button>
+              <button id="properties-reload" data-command-id="maginalia.document.reloadProperties" type="button" disabled>Reload Properties</button>
             </form>
             <p id="properties-status" class="properties-status" role="status" aria-live="polite">Open a document to edit its properties.</p>
             <p id="properties-error" class="properties-error" role="alert" hidden></p>
@@ -427,6 +428,7 @@ const propertiesTags = requiredElement<HTMLTextAreaElement>("#properties-tags");
 const propertiesType = requiredElement<HTMLSelectElement>("#properties-type");
 const propertiesCreated = requiredElement<HTMLInputElement>("#properties-created");
 const propertiesApply = requiredElement<HTMLButtonElement>("#properties-apply");
+const propertiesReload = requiredElement<HTMLButtonElement>("#properties-reload");
 const propertiesStatus = requiredElement<HTMLElement>("#properties-status");
 const propertiesError = requiredElement<HTMLElement>("#properties-error");
 const propertiesOpenSource = requiredElement<HTMLButtonElement>("#properties-open-source");
@@ -671,9 +673,11 @@ type PropertiesFormTarget = PropertiesTarget & {
   readonly fileName: string;
   readonly state: DocumentPropertiesState;
   readonly initial: DocumentProperties;
+  readonly stale: boolean;
 };
 
 let propertiesFormTarget: PropertiesFormTarget | null = null;
+let applyingProperties = false;
 
 function activeProperties(): DocumentProperties {
   return {
@@ -704,22 +708,32 @@ function isLooseWorkdeskDocument(): boolean {
 
 function propertiesFormIsValid(): boolean {
   const target = propertiesFormTarget;
-  if (target === null || target.state.kind !== "ready") return false;
+  if (target === null || target.stale || target.state.kind !== "ready") return false;
   if (isLooseWorkdeskDocument() && propertiesType.value === "body") return false;
   return propertiesForm.checkValidity() && propertiesTitle.value.trim().length > 0 && propertiesTitle.value.trim().length <= 240;
 }
 
 function updatePropertiesFormAvailability(): void {
   const target = propertiesFormTarget;
-  const editable = target?.state.kind === "ready";
+  const editable = target?.state.kind === "ready" && !target.stale;
   for (const element of [propertiesTitle, propertiesAuthor, propertiesTags, propertiesType, propertiesCreated]) element.disabled = !editable;
   const bodyOption = propertiesType.querySelector<HTMLOptionElement>('option[value="body"]');
   if (bodyOption) bodyOption.disabled = !editable || isLooseWorkdeskDocument();
   propertiesApply.disabled = !editable || !propertiesFormIsValid() || !propertiesFormIsDirty();
+  propertiesReload.disabled = target?.stale !== true;
 }
 
 function refreshPropertiesPanel(): void {
   const current = controller.getDocumentState();
+  const previous = propertiesFormTarget;
+  if (previous !== null && !applyingProperties && shouldPreserveUnappliedPropertiesForm(previous, current, propertiesFormIsDirty())) {
+    propertiesFormTarget = { ...previous, stale: true };
+    propertiesDocumentName.textContent = `${previous.fileName} (unapplied changes)`;
+    propertiesStatus.textContent = "Your unapplied Properties changes are preserved, but the document changed. Reload Properties to discard them and read the current document.";
+    propertiesError.hidden = true;
+    updatePropertiesFormAvailability();
+    return;
+  }
   if (current === null) {
     propertiesFormTarget = null;
     propertiesDocumentName.textContent = "No document open";
@@ -733,16 +747,14 @@ function refreshPropertiesPanel(): void {
     updatePropertiesFormAvailability();
     return;
   }
-  const previous = propertiesFormTarget;
-  const replacingDirtyForm = previous !== null && propertiesFormIsDirty()
-    && (previous.documentId !== current.documentId || previous.revision !== current.revision);
   const state = readDocumentProperties(current.currentText, current.displayName);
   propertiesFormTarget = {
     documentId: current.documentId,
     revision: current.revision,
     fileName: current.displayName,
     state,
-    initial: state.kind === "ready" ? state.properties : { title: "", author: "", tags: [], type: "other", created: "" }
+    initial: state.kind === "ready" ? state.properties : { title: "", author: "", tags: [], type: "other", created: "" },
+    stale: false
   };
   propertiesDocumentName.textContent = current.displayName;
   if (state.kind === "ready") {
@@ -751,9 +763,7 @@ function refreshPropertiesPanel(): void {
     propertiesTags.value = state.properties.tags.join("\n");
     propertiesType.value = state.properties.type;
     propertiesCreated.value = state.properties.created;
-    propertiesStatus.textContent = replacingDirtyForm
-      ? "Unapplied property changes were discarded after the document changed."
-      : "Edit supported document properties, then apply them to this Markdown file.";
+    propertiesStatus.textContent = "Edit supported document properties, then apply them to this Markdown file.";
     propertiesError.hidden = true;
   } else {
     propertiesTitle.value = "";
@@ -766,6 +776,12 @@ function refreshPropertiesPanel(): void {
     propertiesError.hidden = false;
   }
   updatePropertiesFormAvailability();
+}
+
+function reloadPropertiesPanel(): void {
+  propertiesFormTarget = null;
+  refreshPropertiesPanel();
+  updateCommandContext();
 }
 
 // Declared before PreviewController's immediate initial render. Project
@@ -897,7 +913,7 @@ const updateCommandContext = (): void => {
     ? "none"
     : /\.(?:mp4|webm|ogg)(?:[?#].*)?$/iu.test(mediaMatch[1] ?? line) ? "video" : "image";
   const tableCurrent = ownsCurrentTableTarget(activeTableTarget, current);
-  const propertiesCurrent = ownsCurrentPropertiesTarget(propertiesFormTarget, current);
+  const propertiesCurrent = ownsCurrentPropertiesTarget(propertiesFormTarget, current) && propertiesFormTarget?.stale !== true;
   commandContext.patch({
     "editor.hasDocument": current !== null,
     "editor.hasSelection": selection.start !== selection.end,
@@ -913,6 +929,7 @@ const updateCommandContext = (): void => {
     "properties.available": propertiesCurrent,
     "properties.valid": propertiesCurrent && propertiesFormIsValid(),
     "properties.dirty": propertiesCurrent && propertiesFormIsDirty(),
+    "properties.stale": propertiesFormTarget?.stale === true,
     "renderer.orientation": previewController.getDirection(),
     "document.type": "markdown",
     "view.id": previewController.getMode(),
@@ -952,7 +969,7 @@ commandRegistry.register({
 }, () => {
   const target = propertiesFormTarget;
   const current = controller.getDocumentState();
-  if (!ownsCurrentPropertiesTarget(target, current) || target === null || current === null || target.state.kind !== "ready") {
+  if (!ownsCurrentPropertiesTarget(target, current) || target === null || current === null || target.stale || target.state.kind !== "ready") {
     refreshPropertiesPanel();
     return;
   }
@@ -965,12 +982,19 @@ commandRegistry.register({
     return;
   }
   if (result.kind === "unchanged") return;
-  const applied = controller.applySourceEdit({
-    documentId: target.documentId,
-    revision: target.revision,
-    range: { start: result.edit.start, end: result.edit.end },
-    replacement: result.edit.replacement
-  });
+  const applied = (() => {
+    applyingProperties = true;
+    try {
+      return controller.applySourceEdit({
+        documentId: target.documentId,
+        revision: target.revision,
+        range: { start: result.edit.start, end: result.edit.end },
+        replacement: result.edit.replacement
+      });
+    } finally {
+      applyingProperties = false;
+    }
+  })();
   if (applied.kind !== "applied") {
     refreshPropertiesPanel();
     propertiesError.textContent = "The document changed before Properties could be applied. Review the current properties and try again.";
@@ -978,6 +1002,17 @@ commandRegistry.register({
     return;
   }
   projectController?.updateActiveFileMetadata(target.documentId, { title: result.properties.title, documentType: result.properties.type });
+});
+commandRegistry.register({
+  id: "maginalia.document.reloadProperties",
+  title: "Reload Properties",
+  description: "Discard unapplied Properties changes and reload the active document metadata.",
+  category: "Document",
+  keywords: ["properties", "reload", "discard", "metadata"],
+  when: "properties.stale"
+}, () => {
+  if (propertiesFormTarget?.stale !== true) return;
+  reloadPropertiesPanel();
 });
 commandRegistry.register({ id: "maginalia.editor.insertTable", title: "Insert Table", category: "Editor", keywords: ["table", "insert", "markdown"], when: "editor.hasDocument" }, () => {
   const target = controller.captureInsertionTarget();
@@ -1037,6 +1072,7 @@ propertiesForm.addEventListener("submit", (event) => {
   event.preventDefault();
   void executeCommand("maginalia.document.applyProperties");
 });
+propertiesReload.addEventListener("click", () => void executeCommand("maginalia.document.reloadProperties"));
 for (const field of [propertiesTitle, propertiesAuthor, propertiesTags, propertiesType, propertiesCreated]) {
   field.addEventListener("input", () => {
     propertiesError.hidden = true;

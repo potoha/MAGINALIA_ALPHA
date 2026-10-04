@@ -18,3 +18,15 @@ export function ownsCurrentPropertiesTarget(
     && target.documentId === document.documentId
     && target.revision === document.revision;
 }
+
+/**
+ * A dirty form is ephemeral user input. Preserve it when its source ownership
+ * changes; callers must mark it stale instead of rebinding it to new source.
+ */
+export function shouldPreserveUnappliedPropertiesForm(
+  target: PropertiesTarget | null,
+  document: PropertiesTargetDocument | null,
+  dirty: boolean,
+): boolean {
+  return dirty && target !== null && !ownsCurrentPropertiesTarget(target, document);
+}
