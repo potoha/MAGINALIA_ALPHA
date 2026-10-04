@@ -8,6 +8,7 @@ import {
   validateSyncedBlockTarget,
   wouldIntroduceSyncedBlockCycle,
 } from "./synced-block";
+import { projectMarkdownPreviewSource } from "./markdown-renderer";
 
 const marker = (target: string): string => serializeSyncedBlock(target);
 
@@ -46,6 +47,7 @@ describe("Synced Block marker contract", () => {
 
   it("only scans complete structural marker lines", () => {
     expect(scanSyncedBlockMarkers(`prose ${marker("not-a-block.md")}`)).toEqual([]);
+    expect(scanSyncedBlockMarkers(`> ${marker("quote.md")}\n- ${marker("list.md")}`)).toEqual([]);
   });
 
   it("keeps a leading-BOM marker aligned with the Renderer block parser", () => {
@@ -97,6 +99,33 @@ describe("Synced Block source projection", () => {
       markdown: "\n| A | B |\n| --- | --- |\n| 1 | 2 |\n",
     });
     expect(projectSyncedDocument("preface only\n")).toMatchObject({ kind: "projected", markdown: "preface only\n" });
+  });
+
+  it("does not project a child body a second time when it begins with thematic-rule-like text", async () => {
+    const rawChild = `---\ntitle: Child\n---\n# Child\n---\n${marker("nested.md")}\n---\nTail\n`;
+    const projected = projectSyncedDocument(rawChild);
+    expect(projected).toMatchObject({
+      kind: "projected",
+      markdown: `---\n${marker("nested.md")}\n---\nTail\n`,
+    });
+    if (projected.kind !== "projected") throw new Error("expected projected child");
+    expect(projectMarkdownPreviewSource(projected.markdown, "already-projected").body).toBe(projected.markdown);
+    expect(scanSyncedBlockMarkers(projected.markdown, { sourceMode: "already-projected" })).toMatchObject([
+      { kind: "valid", target: "nested.md" },
+    ]);
+
+    const sources = new Map<string, string>([
+      ["child.md", rawChild],
+      ["nested.md", "# Nested\nNested body\n"],
+    ]);
+    const composition = await resolveProjectComposition(marker("child.md"), {
+      rootTarget: "parent.md",
+      resolve: async (target) => ({ kind: "resolved", target, fileId: target, displayName: target, text: sources.get(target)! }),
+    });
+    expect(composition.blocks.get(marker("child.md"))?.children?.get(marker("nested.md"))).toMatchObject({
+      kind: "resolved",
+      markdown: "Nested body\n",
+    });
   });
 });
 

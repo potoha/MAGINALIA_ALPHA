@@ -6,7 +6,7 @@ import { PreviewCompositionGate } from "./preview-editing";
 import { collectMarkdownTables, escapeTableCell, isMarkdownTableTerminator, type MarkdownTableCellTarget, type MarkdownTableTarget } from "./markdown-table-commands";
 import { projectMarkdownBody } from "./document-properties";
 import { isMarkdownFenceClosing, openingMarkdownFence } from "./markdown-fence";
-import { parseSyncedBlockMarker, type ComposedSyncedBlock } from "./synced-block";
+import { isSyncedBlockStructuralLine, parseSyncedBlockMarker, type ComposedSyncedBlock } from "./synced-block";
 
 /** Safe, typed inline nodes.  Raw HTML is always plain text. */
 export type MarkdownInline =
@@ -362,6 +362,7 @@ export function parseMarkdownBlocks(
     while (index < lines.length && lines[index].trim().length > 0
       && openingMarkdownFence(lines[index]) === null
       && !/^(#{1,6})\s+/u.test(lines[index])
+      && !isSyncedBlockStructuralLine(lines[index])
       && !lines[index].startsWith(">")
       && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index])
       && tableStart(lines, index) === null) {
@@ -394,6 +395,8 @@ export function scanLocalMediaTargets(text: string): readonly string[] {
 }
 
 export interface MarkdownPreviewRenderOptions {
+  /** Raw documents hide front matter; composed children have already projected it. */
+  readonly sourceMode?: "document" | "already-projected";
   /** Bound by the host to main-process validated shell.openExternal only. */
   readonly onOpenExternal?: (url: string) => void;
   /**
@@ -447,6 +450,14 @@ function sourceLines(text: string, sourceOffset = 0): readonly SourceLine[] {
     cursor = newline + 1;
   }
   return lines;
+}
+
+/** Apply front-matter projection once for raw documents, never for child bodies. */
+export function projectMarkdownPreviewSource(
+  text: string,
+  sourceMode: "document" | "already-projected" = "document",
+): { readonly body: string; readonly start: number } {
+  return sourceMode === "document" ? projectMarkdownBody(text) : { body: text, start: 0 };
 }
 
 /** Collect only source ranges whose visible Markdown text is unambiguous. */
@@ -527,6 +538,11 @@ export function collectEditablePreviewRanges(text: string, sourceOffset = 0): re
       index += 1;
       continue;
     }
+    if (isSyncedBlockStructuralLine(line.text)) {
+      blocks.push(Object.freeze([]));
+      index += 1;
+      continue;
+    }
     const table = tableStart(values, index);
     if (table !== null) {
       const count = table.header.length;
@@ -570,6 +586,7 @@ export function collectEditablePreviewRanges(text: string, sourceOffset = 0): re
     while (index < lines.length && lines[index]!.text.trim().length > 0
       && openingMarkdownFence(lines[index]!.text) === null
       && !/^(#{1,6})\s+/u.test(lines[index]!.text)
+      && !isSyncedBlockStructuralLine(lines[index]!.text)
       && !lines[index]!.text.startsWith(">")
       && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index]!.text)
       && tableStart(values, index) === null) paragraph.push(lines[index++]!);
@@ -823,7 +840,7 @@ export function renderMarkdownPreview(
   internalLinks: PreviewInternalLinkMap = new Map(),
   media: PreviewMediaMap = new Map()
 ): void {
-  const projection = projectMarkdownBody(text);
+  const projection = projectMarkdownPreviewSource(text, options.sourceMode);
   const root = document.createElement("article");
   root.className = "markdown-preview-document";
   root.dataset.writingDirection = direction;
@@ -875,6 +892,7 @@ export function renderMarkdownPreview(
           // receive ordinary rendering callbacks but never parent source maps
           // or table targets.
           renderMarkdownPreview(content, resolved.markdown, quotes, direction, {
+            sourceMode: "already-projected",
             onOpenExternal: options.onOpenExternal,
             onOpenInternal: options.onOpenInternal,
             onOpenSyncedBlock: options.onOpenSyncedBlock,

@@ -19,6 +19,11 @@ export type ParsedSyncedBlockMarker =
   | { readonly kind: "valid"; readonly target: string; readonly marker: string }
   | { readonly kind: "invalid"; readonly marker: string; readonly reason: "malformed" | "unsupported-version" | "invalid-target" };
 
+/** Whether a complete authored line is a structural (possibly invalid) marker. */
+export function isSyncedBlockStructuralLine(line: string): boolean {
+  return parseSyncedBlockMarker(line) !== null;
+}
+
 export interface SyncedBlockProjection {
   readonly kind: "projected";
   readonly markdown: string;
@@ -112,9 +117,13 @@ export function parseSyncedBlockMarker(marker: string): ParsedSyncedBlockMarker 
  * Scan authored markers with original UTF-16 offsets. Fenced code remains
  * source code, never a composition graph edge.
  */
-export function scanSyncedBlockMarkers(source: string): readonly (SyncedBlockMarker | Extract<ParsedSyncedBlockMarker, { readonly kind: "invalid" }> & { readonly start: number; readonly end: number })[] {
+export function scanSyncedBlockMarkers(
+  source: string,
+  options: { readonly sourceMode?: "document" | "already-projected" } = {},
+): readonly (SyncedBlockMarker | Extract<ParsedSyncedBlockMarker, { readonly kind: "invalid" }> & { readonly start: number; readonly end: number })[] {
   const result: (SyncedBlockMarker | Extract<ParsedSyncedBlockMarker, { readonly kind: "invalid" }> & { readonly start: number; readonly end: number })[] = [];
-  const frontMatter = scanFrontMatter(source);
+  const sourceMode = options.sourceMode ?? "document";
+  const frontMatter = sourceMode === "document" ? scanFrontMatter(source) : { kind: "none" as const };
   // Match parseMarkdownBlocks(), which treats a leading BOM as encoding rather
   // than authored block text while retaining original source offsets.
   let cursor = frontMatter.kind === "bounded" ? frontMatter.boundary.bodyStart : (source.startsWith("\uFEFF") ? 1 : 0);
@@ -136,7 +145,7 @@ export function scanSyncedBlockMarkers(source: string): readonly (SyncedBlockMar
     // Synced Blocks are structural whole-line markers. Keeping this identical
     // to the Renderer block parser prevents an inline comment from gaining a
     // composition edge that has no rendered block counterpart.
-    const parsed = parseSyncedBlockMarker(line);
+    const parsed = isSyncedBlockStructuralLine(line) ? parseSyncedBlockMarker(line) : null;
     if (parsed !== null) {
       const markerEnd = cursor + line.length;
       if (parsed.kind === "valid") result.push({ ...parsed, start: cursor, end: markerEnd });
@@ -192,9 +201,14 @@ export async function resolveProjectComposition(source: string, options: Project
   const maxNodes = options.maxNodes ?? DEFAULT_SYNCED_BLOCK_MAX_NODES;
   let resolvedCount = 0;
   let visitedBlockCount = 0;
-  const visit = async (text: string, ancestors: readonly string[], depth: number): Promise<ReadonlyMap<string, ComposedSyncedBlock>> => {
+  const visit = async (
+    text: string,
+    ancestors: readonly string[],
+    depth: number,
+    sourceMode: "document" | "already-projected",
+  ): Promise<ReadonlyMap<string, ComposedSyncedBlock>> => {
     const blocks = new Map<string, ComposedSyncedBlock>();
-    for (const occurrence of scanSyncedBlockMarkers(text)) {
+    for (const occurrence of scanSyncedBlockMarkers(text, { sourceMode })) {
       if (occurrence.kind === "invalid") {
         blocks.set(occurrence.marker, { kind: "unresolved", marker: occurrence.marker, message: "Synced Block marker is invalid." });
         continue;
@@ -222,7 +236,7 @@ export async function resolveProjectComposition(source: string, options: Project
         continue;
       }
       resolvedCount += 1;
-      const children = await visit(projection.markdown, [...ancestors, resolved.target], depth + 1);
+      const children = await visit(projection.markdown, [...ancestors, resolved.target], depth + 1, "already-projected");
       blocks.set(occurrence.marker, {
         kind: "resolved",
         marker: occurrence.marker,
@@ -236,7 +250,7 @@ export async function resolveProjectComposition(source: string, options: Project
     return blocks;
   };
   const root = validateSyncedBlockTarget(options.rootTarget) ?? options.rootTarget;
-  const blocks = await visit(source, [root], 0);
+  const blocks = await visit(source, [root], 0, "document");
   return { blocks, resolvedCount };
 }
 

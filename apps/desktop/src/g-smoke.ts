@@ -271,6 +271,19 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
   await script(window, `(() => { const tab = [...document.querySelectorAll("#document-tabs .document-tab")].find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("a.md")); const button = tab?.querySelector(".document-tab-label"); const mode = document.querySelector('[data-unified-search-mode="project"]'); const query = document.querySelector("#library-query"); if (!(button instanceof HTMLButtonElement) || !(mode instanceof HTMLButtonElement) || !(query instanceof HTMLInputElement)) return false; button.click(); mode.click(); query.value = "PROJECT_LITERAL_SENTINEL"; query.form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); return true; })()`, "Project search");
   await waitFor(window, (value) => value.active === "a.md", "A active for Project search");
   await waitForScript(window, "document.querySelectorAll('#project-search-results button').length > 0", "Project result");
+  await script(window, `(() => {
+    const result = document.querySelector("#project-search-results button");
+    const editor = document.querySelector("#editor");
+    if (!(result instanceof HTMLElement) || !(editor instanceof HTMLElement) || typeof DataTransfer !== "function" || typeof DragEvent !== "function") return false;
+    const transfer = new DataTransfer();
+    result.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    const payload = transfer.getData("application/x-maginalia-project-document");
+    if (!payload.includes('"target":"b.md"') || payload.includes("PROJECT_LITERAL_SENTINEL") || /[A-Za-z]:\\\\/u.test(payload)) return false;
+    editor.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    editor.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    return true;
+  })()`, "drag Project search result into authoring source as a Synced Block");
+  await waitFor(window, (value) => value.text.split('maginalia:synced-block v1 {"target":"b.md"}').length >= 3, "Project search drag inserts a canonical marker without copied source");
   await script(window, `(() => { const open = document.querySelector("#project-search-results button"); if (!(open instanceof HTMLButtonElement)) return false; open.click(); const source = document.querySelector("#project-search-source"); const insert = document.querySelector("#project-search-insert"); if (!(source instanceof HTMLTextAreaElement) || !(insert instanceof HTMLButtonElement)) return false; source.selectionStart = 0; source.selectionEnd = source.value.length; insert.click(); return true; })()`, "literal Project insertion");
   await waitFor(window, (value) => value.text.includes("PROJECT_LITERAL_SENTINEL") && value.status === "modified", "literal insertion into destination");
   if (path.basename(path.resolve(fixtureRoot)).length === 0) throw new Error("G smoke fixture root was invalid.");
