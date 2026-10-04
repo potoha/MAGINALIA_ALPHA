@@ -36,6 +36,13 @@ export const WORKBENCH_VIEW_MANIFEST = [
     defaultRegion: "secondary-sidebar",
     activityButtonId: "activity-view-library",
     panelId: "library-navigation"
+  },
+  {
+    id: "properties",
+    title: "Properties",
+    defaultRegion: "secondary-sidebar",
+    activityButtonId: "activity-view-properties",
+    panelId: "properties-panel"
   }
 ] as const satisfies readonly WorkbenchViewDescriptor[];
 

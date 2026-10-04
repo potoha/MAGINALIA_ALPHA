@@ -4,6 +4,7 @@ import { describeEmbed, parseSafeExternalUrl, type EmbedDescriptor } from "./emb
 import { internalLinkDisplayName, parseInternalLinkAt } from "../project-links";
 import { PreviewCompositionGate } from "./preview-editing";
 import { collectMarkdownTables, escapeTableCell, isMarkdownTableTerminator, type MarkdownTableCellTarget, type MarkdownTableTarget } from "./markdown-table-commands";
+import { projectMarkdownBody } from "./document-properties";
 import { isMarkdownFenceClosing, openingMarkdownFence } from "./markdown-fence";
 
 /** Safe, typed inline nodes.  Raw HTML is always plain text. */
@@ -416,15 +417,15 @@ export interface PreviewEditableOptions {
 
 interface SourceLine { readonly text: string; readonly start: number; }
 
-function sourceLines(text: string): readonly SourceLine[] {
+function sourceLines(text: string, sourceOffset = 0): readonly SourceLine[] {
   const lines: SourceLine[] = [];
   let cursor = 0;
   while (cursor <= text.length) {
     const newline = text.indexOf("\n", cursor);
     const rawEnd = newline < 0 ? text.length : newline;
     const end = rawEnd > cursor && text[rawEnd - 1] === "\r" ? rawEnd - 1 : rawEnd;
-    const bom = cursor === 0 && text.startsWith("\uFEFF") ? 1 : 0;
-    lines.push({ text: text.slice(cursor + bom, end), start: cursor + bom });
+    const bom = sourceOffset === 0 && cursor === 0 && text.startsWith("\uFEFF") ? 1 : 0;
+    lines.push({ text: text.slice(cursor + bom, end), start: sourceOffset + cursor + bom });
     if (newline < 0) break;
     cursor = newline + 1;
   }
@@ -487,8 +488,8 @@ function editableInlineRanges(text: string, sourceStart: number): readonly Previ
  * Renderer-local source maps in rendered-block order.  It reads original
  * UTF-16 source offsets (including BOM/CRLF), never normalized preview text.
  */
-export function collectEditablePreviewRanges(text: string): readonly (readonly PreviewEditableTextRange[])[] {
-  const lines = sourceLines(text);
+export function collectEditablePreviewRanges(text: string, sourceOffset = 0): readonly (readonly PreviewEditableTextRange[])[] {
+  const lines = sourceLines(text, sourceOffset);
   const values = lines.map((line) => line.text);
   const blocks: (readonly PreviewEditableTextRange[])[] = [];
   let index = 0;
@@ -805,13 +806,14 @@ export function renderMarkdownPreview(
   internalLinks: PreviewInternalLinkMap = new Map(),
   media: PreviewMediaMap = new Map()
 ): void {
+  const projection = projectMarkdownBody(text);
   const root = document.createElement("article");
   root.className = "markdown-preview-document";
   root.dataset.writingDirection = direction;
-  const rangesByBlock = options.editable === undefined ? [] : collectEditablePreviewRanges(text);
-  const tablesByBlock = options.editable === undefined ? [] : collectMarkdownTables(text);
+  const rangesByBlock = options.editable === undefined ? [] : collectEditablePreviewRanges(projection.body, projection.start);
+  const tablesByBlock = options.editable === undefined ? [] : collectMarkdownTables(projection.body, projection.start);
   let tableIndex = 0;
-  const blocks = parseMarkdownBlocks(text, quotes, internalLinks, media);
+  const blocks = parseMarkdownBlocks(projection.body, quotes, internalLinks, media);
   blocks.forEach((block, blockIndex) => {
     const editableState = options.editable === undefined ? undefined : { ranges: rangesByBlock[blockIndex] ?? [], cursor: 0 };
     let element: HTMLElement;

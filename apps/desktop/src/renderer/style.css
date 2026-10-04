@@ -514,6 +514,76 @@ button:disabled {
   background: #fffdf8;
 }
 
+.properties-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid #d5cec3;
+  border-radius: 0.75rem;
+  background: #fffdf8;
+}
+
+.properties-heading-row,
+.properties-advanced {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.properties-heading-row h2,
+.properties-advanced strong { margin: 0; font-size: 1rem; }
+
+.properties-document-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #5f6c76;
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.properties-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.properties-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  color: #5f6c76;
+  font-size: 0.8rem;
+}
+
+.properties-form input,
+.properties-form textarea,
+.properties-form select {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid #c8beb1;
+  border-radius: 0.35rem;
+  padding: 0.4rem 0.5rem;
+  color: inherit;
+  background: #fff;
+  font: inherit;
+}
+
+.properties-form textarea { resize: vertical; }
+
+.properties-status,
+.properties-error {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.properties-status { color: #5f6c76; }
+.properties-error { color: #8d2929; }
+.properties-advanced { justify-content: space-between; }
+
 .mods-status {
   max-width: 14rem;
   overflow: hidden;

@@ -153,6 +153,13 @@ describe("ProjectNavigationController", () => {
     expect(test.navigation.getOpenedFileIds()).toEqual([files[1].fileId, files[0].fileId]);
   });
 
+  it("refreshes the existing Project file summary after a source-owned metadata edit", async () => {
+    const test = harness("cancel", (file) => opened(file), true);
+    await test.navigation.openProject();
+    test.navigation.updateActiveFileMetadata(files[0].fileId, { title: "更新後", documentType: "body" });
+    expect(test.view.state.files[0]).toMatchObject({ fileId: files[0].fileId, displayName: "first.md", title: "更新後", documentType: "body" });
+  });
+
   it("keeps existing tab mappings when a replacement Project's first file fails", async () => {
     let failReplacement = false;
     const test = harness("cancel", (file) => failReplacement

@@ -2,12 +2,13 @@ import { describe, expect, it } from "vitest";
 import { CENTRAL_SERVICE_VIEW_MANIFEST, WORKBENCH_VIEW_MANIFEST } from "./workbench-views";
 
 describe("Workbench view manifest", () => {
-  it("exposes only Project and Shelf in the normal Activity Bar", () => {
-    expect(WORKBENCH_VIEW_MANIFEST.map((view) => view.id)).toEqual(["workspace", "library"]);
-    expect(WORKBENCH_VIEW_MANIFEST.map((view) => view.title)).toEqual(["Project", "Shelf"]);
+  it("exposes Project, Shelf, and document Properties in the normal Activity Bar", () => {
+    expect(WORKBENCH_VIEW_MANIFEST.map((view) => view.id)).toEqual(["workspace", "library", "properties"]);
+    expect(WORKBENCH_VIEW_MANIFEST.map((view) => view.title)).toEqual(["Project", "Shelf", "Properties"]);
     expect(WORKBENCH_VIEW_MANIFEST.map((view) => view.activityButtonId)).toEqual([
       "activity-view-workspace",
-      "activity-view-library"
+      "activity-view-library",
+      "activity-view-properties"
     ]);
     expect(WORKBENCH_VIEW_MANIFEST.map((view) => view.id as string)).not.toContain("repository");
   });
