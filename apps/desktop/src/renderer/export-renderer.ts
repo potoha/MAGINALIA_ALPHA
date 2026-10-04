@@ -13,6 +13,7 @@ import {
   type ReferenceListConflictReason
 } from "./reference-list";
 import { renderInternalLinksForExport } from "../project-links";
+import { createExportDocumentModel, serializeExportDocumentModel } from "./export-document-model";
 
 /** The immutable input captured from the active DocumentSession at export start. */
 export interface ExportDocumentSnapshot {
@@ -404,11 +405,12 @@ export function renderResolvedMarkdown(
   // visible wording while stripping wiki targets, including in a dirty export
   // snapshot; code spans and fenced code are intentionally left untouched.
   const output = renderInternalLinksForExport(removeReferenceMarkers(references.text));
+  const documentModel = createExportDocumentModel(output);
   return Object.freeze({
     kind: "rendered",
     documentId: snapshot.documentId,
     revision: snapshot.revision,
-    text: output,
+    text: serializeExportDocumentModel(documentModel),
     resolvedCount: resolution.resolved.length,
     sourceCount: dedupeSources(resolution.sources).length
   });
