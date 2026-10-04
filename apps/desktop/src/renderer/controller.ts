@@ -313,6 +313,11 @@ export class WritingController {
     return this.externalSelection ?? this.surface.getSelection();
   }
 
+  /** Current Preview-owned selection, if any; callers must not fall back to hidden Monaco. */
+  public getExternalSelection(): WritingTextRange | null {
+    return this.externalSelection ?? null;
+  }
+
   /** Preview selection drives existing Markdown commands without a second model. */
   public setExternalSelection(range: WritingTextRange | null): void {
     const current = this.getActiveSession();

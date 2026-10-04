@@ -9,6 +9,7 @@ import {
 import { restoreRendererPreferences } from "./renderer-preferences";
 import { collectMarkdownTables } from "./markdown-table-commands";
 import { projectMarkdownBody } from "./document-properties";
+import { scanSyncedBlockMarkers, serializeSyncedBlock } from "./synced-block";
 
 describe("Markdown preview parser", () => {
   it("maps safe rendered text to exact original UTF-16 ranges without searching repeated text", () => {
@@ -66,6 +67,31 @@ describe("Markdown preview parser", () => {
   it("parses ordinary headings, blockquotes, lists, and fenced code", () => {
     const blocks = parseMarkdownBlocks("# 見出し\n\n> quote\n\n- one\n- two\n\n```\nconst x = 1;\n```");
     expect(blocks.map((block) => block.kind)).toEqual(["heading", "blockquote", "list", "code"]);
+  });
+
+  it("keeps Synced Block source comments structural and never maps them as parent prose", () => {
+    const marker = serializeSyncedBlock("chapters/one.md");
+    const source = `before\n\n${marker}\n\nafter`;
+    expect(parseMarkdownBlocks(source).map((block) => block.kind)).toEqual(["paragraph", "synced-block", "paragraph"]);
+    expect(collectEditablePreviewRanges(source).flat().map((range) => range.text)).toEqual(["before", "after"]);
+  });
+
+  it("keeps valid and invalid whole-line Synced Block markers structurally aligned without blank lines", () => {
+    const valid = serializeSyncedBlock("chapters/one.md");
+    const invalid = "<!-- maginalia:synced-block v2 {\"target\":\"future.md\"} -->";
+    for (const marker of [valid, invalid]) {
+      const source = `before\n${marker}\nafter`;
+      expect(parseMarkdownBlocks(source).map((block) => block.kind)).toEqual(["paragraph", "synced-block", "paragraph"]);
+      expect(collectEditablePreviewRanges(source).map((ranges) => ranges.map((range) => range.text))).toEqual([["before"], [], ["after"]]);
+    }
+    expect(scanSyncedBlockMarkers(`before\n${invalid}\nafter`)).toMatchObject([{ kind: "invalid" }]);
+  });
+
+  it("keeps marker-shaped fenced code inert in every structural consumer", () => {
+    const source = `before\n\`\`\`md\n${serializeSyncedBlock("fake.md")}\n\`\`\`\nafter`;
+    expect(parseMarkdownBlocks(source).map((block) => block.kind)).toEqual(["paragraph", "code", "paragraph"]);
+    expect(collectEditablePreviewRanges(source).map((ranges) => ranges.map((range) => range.text))).toEqual([["before"], [], ["after"]]);
+    expect(scanSyncedBlockMarkers(source)).toEqual([]);
   });
 
   it("keeps all six heading levels distinct in the presentation AST", () => {

@@ -15,12 +15,13 @@ import {
   type ShelfViewState
 } from "./shelf-controller";
 import { MonacoMarkdownSurface } from "./monaco-surface";
-import { renderMarkdownPreview } from "./markdown-renderer";
+import { renderMarkdownPreview, type PreviewSyncedBlock } from "./markdown-renderer";
 import { insertMarkdownTable, transformMarkdownTable, type MarkdownTableCellTarget, type MarkdownTableTarget, type TableOperation } from "./markdown-table-commands";
 import { applyDocumentProperties, readDocumentProperties, type DocumentProperties, type DocumentPropertiesState } from "./document-properties";
 import { ownsCurrentPropertiesTarget, shouldPreserveUnappliedPropertiesForm, type PropertiesTarget } from "./properties-target";
 import { mayDispatchTableTarget, ownsCurrentTableTarget, type ActiveTableTarget } from "./table-target";
 import { PreviewController } from "./preview-controller";
+import { insertSyncedBlockMarker, resolveProjectComposition, validateSyncedBlockTarget, wouldIntroduceSyncedBlockCycle, type ComposedSyncedBlock, type SyncedBlockResolveResult } from "./synced-block";
 import { createLocalStorageRendererPreferenceStore } from "./renderer-preferences";
 import { resolvePreviewMedia } from "./project-media";
 import { resolvePreviewInternalLinks } from "./preview-links";
@@ -792,10 +793,87 @@ let previewMediaGeneration = 0;
 let activeTableTarget: ActiveTableTarget | null = null;
 let commandContextReady = false;
 let pendingInternalLinkOpen: { readonly fileId: string } | null = null;
+let pendingSyncedBlockOpen: { readonly fileId: string; readonly target: string } | null = null;
+let pendingSyncedBlockInsert: { readonly projectId: string; readonly target: string } | null = null;
+const PROJECT_DOCUMENT_DRAG_MIME = "application/x-maginalia-project-document";
+
+function projectDocumentDragData(projectId: string, target: string): string {
+  return JSON.stringify({ projectId, target });
+}
+
+function readProjectDocumentDrag(dataTransfer: DataTransfer | null | undefined): { readonly projectId: string; readonly target: string } | null {
+  const raw = dataTransfer?.getData(PROJECT_DOCUMENT_DRAG_MIME);
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as { projectId?: unknown; target?: unknown };
+    return typeof record.projectId === "string" && typeof record.target === "string"
+      && record.projectId.length > 0 && record.target.length > 0
+      ? { projectId: record.projectId, target: record.target }
+      : null;
+  } catch { return null; }
+}
+
+function requestSyncedBlockInsertion(candidate: { readonly projectId: string; readonly target: string }): void {
+  pendingSyncedBlockInsert = candidate;
+  updateCommandContext();
+  void executeCommand("maginalia.syncedBlock.insertDocument").finally(() => {
+    // A drag/source selection is a one-shot authoring intent. If command
+    // context rejects it before the handler runs, do not let it survive for a
+    // later document, selection, or palette invocation.
+    if (pendingSyncedBlockInsert === candidate) {
+      pendingSyncedBlockInsert = null;
+      updateCommandContext();
+    }
+  });
+}
 
 const previewApi = typeof window.maginalia.resolveReferences === "function"
   ? { resolveReferences: (request: { readonly text: string }) => window.maginalia.resolveReferences(request) }
   : null;
+
+function projectSyncedSourceResolver(projectId: string): ((target: string) => Promise<SyncedBlockResolveResult>) | null {
+  const navigation = projectController;
+  const resolveFromProject = window.maginalia.resolveSyncedBlockDocument;
+  if (navigation === undefined || typeof resolveFromProject !== "function") return null;
+  return async (target: string): Promise<SyncedBlockResolveResult> => {
+    const result = await resolveFromProject({ projectId, target });
+    if (result.kind !== "resolved") return result;
+    const sessionId = navigation.getSessionIdForFile(result.fileId);
+    const open = sessionId === null ? null : controller.getDocumentState(sessionId);
+    return { ...result, text: open?.currentText ?? result.text };
+  };
+}
+
+async function resolveSyncedPreviewBlocks(source: string, documentId: string): Promise<ReadonlyMap<string, PreviewSyncedBlock>> {
+  const navigation = projectController;
+  const project = navigation?.getState().project;
+  const parentFileId = navigation?.getFileIdForSession(documentId) ?? null;
+  const parent = parentFileId === null ? undefined : navigation?.getState().files.find((file) => file.fileId === parentFileId);
+  const resolve = project === null || project === undefined ? null : projectSyncedSourceResolver(project.projectId);
+  if (project === null || project === undefined || parent === undefined || resolve === null) return new Map();
+  const composition = await resolveProjectComposition(source, { rootTarget: parent.displayName, resolve });
+  const linkApi = typeof window.maginalia.resolveInternalLink === "function"
+    ? { resolveInternalLink: (request: { readonly projectId: string; readonly target: string }) => window.maginalia.resolveInternalLink(request) }
+    : null;
+  const mediaApi = typeof window.maginalia.resolveProjectAsset === "function"
+    ? { resolveProjectAsset: (request: { readonly projectId: string; readonly relativePath: string }) => window.maginalia.resolveProjectAsset(request) }
+    : null;
+  const hydrate = async (block: ComposedSyncedBlock): Promise<PreviewSyncedBlock> => {
+    if (block.kind !== "resolved" || block.markdown === undefined) return block;
+    const children = new Map<string, PreviewSyncedBlock>();
+    for (const [key, child] of block.children ?? []) children.set(key, await hydrate(child));
+    const [internalLinks, media] = await Promise.all([
+      resolvePreviewInternalLinks(linkApi, project.projectId, block.markdown),
+      resolvePreviewMedia(mediaApi, project.projectId, block.markdown),
+    ]);
+    return { ...block, children, internalLinks, media };
+  };
+  const previewBlocks = new Map<string, PreviewSyncedBlock>();
+  for (const [key, block] of composition.blocks) previewBlocks.set(key, await hydrate(block));
+  return previewBlocks;
+}
 const previewController = new PreviewController({
   writing: controller,
   api: previewApi,
@@ -861,6 +939,11 @@ const previewController = new PreviewController({
         onOpenInternal: ({ fileId }: { readonly target: string; readonly fileId: string }) => {
           pendingInternalLinkOpen = { fileId };
           void executeCommand("maginalia.link.openInTab");
+        },
+        onOpenSyncedBlock: ({ fileId, target }: { readonly fileId: string; readonly target: string }) => {
+          pendingSyncedBlockOpen = { fileId, target };
+          updateCommandContext();
+          void executeCommand("maginalia.syncedBlock.openSource");
         }
       };
       renderMarkdownPreview(previewContainer, text, state.quoteMap, state.direction, previewOptions);
@@ -872,12 +955,13 @@ const previewController = new PreviewController({
         : null;
       void Promise.all([
         resolvePreviewInternalLinks(linkApi, projectId, text),
-        resolvePreviewMedia(mediaApi, projectId, text)
-      ]).then(([internalLinks, media]) => {
+        resolvePreviewMedia(mediaApi, projectId, text),
+        state.document === null ? Promise.resolve(new Map<string, PreviewSyncedBlock>()) : resolveSyncedPreviewBlocks(text, state.document.documentId),
+      ]).then(([internalLinks, media, syncedBlocks]) => {
         if (generation !== previewMediaGeneration || previewController.getMode() !== "preview" || previewController.isInlineEditing()) return;
         const current = controller.getDocumentState();
         if (current?.currentText !== text) return;
-        renderMarkdownPreview(previewContainer, text, state.quoteMap, state.direction, previewOptions, internalLinks, media);
+        renderMarkdownPreview(previewContainer, text, state.quoteMap, state.direction, { ...previewOptions, syncedBlocks }, internalLinks, media);
       }).catch(() => undefined);
     }
   }
@@ -914,6 +998,14 @@ const updateCommandContext = (): void => {
     : /\.(?:mp4|webm|ogg)(?:[?#].*)?$/iu.test(mediaMatch[1] ?? line) ? "video" : "image";
   const tableCurrent = ownsCurrentTableTarget(activeTableTarget, current);
   const propertiesCurrent = ownsCurrentPropertiesTarget(propertiesFormTarget, current) && propertiesFormTarget?.stale !== true;
+  const project = projectController?.getState().project;
+  const parentFileId = current === null ? null : projectController?.getFileIdForSession(current.documentId) ?? null;
+  const insertionSelectionIsSafe = previewController.getMode() !== "preview" || controller.getExternalSelection() !== null;
+  const syncedBlockInsertable = current !== null && project !== null && project !== undefined
+    && parentFileId !== null && pendingSyncedBlockInsert !== null
+    && pendingSyncedBlockInsert.projectId === project.projectId
+    && validateSyncedBlockTarget(pendingSyncedBlockInsert.target) !== null
+    && insertionSelectionIsSafe;
   commandContext.patch({
     "editor.hasDocument": current !== null,
     "editor.hasSelection": selection.start !== selection.end,
@@ -926,6 +1018,9 @@ const updateCommandContext = (): void => {
     "table.bodyCell": tableCurrent && activeTableTarget?.cell.rowKind === "body",
     "table.canDeleteRow": tableCurrent && activeTableTarget?.cell.rowKind === "body",
     "table.canDeleteColumn": tableCurrent && (activeTableTarget?.table.header.length ?? 0) > 1,
+    "syncedBlock.available": current !== null && project !== null && project !== undefined && parentFileId !== null,
+    "syncedBlock.insertable": syncedBlockInsertable,
+    "syncedBlock.target": pendingSyncedBlockOpen !== null,
     "properties.available": propertiesCurrent,
     "properties.valid": propertiesCurrent && propertiesFormIsValid(),
     "properties.dirty": propertiesCurrent && propertiesFormIsDirty(),
@@ -945,6 +1040,12 @@ controller.onDocumentChange(() => {
   }
   refreshPropertiesPanel();
   updateCommandContext();
+});
+// Composition must notice unsaved edits in inactive child tabs as well as the
+// active parent document. This is renderer-only invalidation; sessions remain
+// the single source of truth and no filesystem polling is introduced.
+controller.onSessionChange(() => {
+  if (previewController.getMode() === "preview" && !previewController.isInlineEditing()) previewController.refresh();
 });
 controller.onSelectionChange(() => updateCommandContext());
 registerWorkbenchCommands(commandRegistry, workbench, WORKBENCH_VIEW_MANIFEST);
@@ -1048,6 +1149,56 @@ for (const [id, operation, title] of [
       : operation === "deleteColumn" ? "table.canDeleteColumn"
         : "table.active"
 }, () => runTableOperation(operation));
+commandRegistry.register({
+  id: "maginalia.syncedBlock.insertDocument",
+  title: "Insert as Synced Block",
+  description: "Insert a Project document as a synchronized composition reference.",
+  category: "Project",
+  keywords: ["synced", "block", "compose", "document"],
+  when: "syncedBlock.insertable"
+}, async () => {
+  const pending = pendingSyncedBlockInsert;
+  // Consume the renderer-local source candidate before asynchronous graph
+  // work. Every rejection path therefore fails closed instead of retaining a
+  // target that could later apply to another document.
+  pendingSyncedBlockInsert = null;
+  updateCommandContext();
+  const project = projectController?.getState().project;
+  const parent = controller.getDocumentState();
+  if (pending === null || project === null || project === undefined || pending.projectId !== project.projectId || parent === null || validateSyncedBlockTarget(pending.target) === null) return;
+  const parentFileId = projectController?.getFileIdForSession(parent.documentId) ?? null;
+  const parentFile = parentFileId === null ? undefined : projectController?.getState().files.find((file) => file.fileId === parentFileId);
+  // Preview insertion is legal only for a currently mapped Preview selection;
+  // never fall back to a hidden Monaco selection.
+  if (parentFile === undefined || (previewController.getMode() === "preview" && controller.getExternalSelection() === null)) return;
+  const target = controller.captureInsertionTarget();
+  const resolve = projectSyncedSourceResolver(project.projectId);
+  if (target === null || resolve === null || !controller.isInsertionTargetCurrent(target)) return;
+  let createsCycle = false;
+  try { createsCycle = await wouldIntroduceSyncedBlockCycle(parentFile.displayName, pending.target, resolve); } catch { return; }
+  if (!controller.isInsertionTargetCurrent(target)) return;
+  if (createsCycle) {
+    documentStatus.dataset.state = "error";
+    documentStatus.textContent = "That Synced Block would create a composition cycle.";
+    return;
+  }
+  controller.applySourceEdit({ ...target, replacement: insertSyncedBlockMarker(parent.currentText, target.range.start, target.range.end, pending.target).replacement });
+});
+commandRegistry.register({
+  id: "maginalia.syncedBlock.openSource",
+  title: "Open Synced Block Source",
+  description: "Open the Project document that owns this composed block.",
+  category: "Project",
+  keywords: ["synced", "block", "source", "open"],
+  when: "syncedBlock.target"
+}, async () => {
+  const pending = pendingSyncedBlockOpen;
+  const project = projectController?.getState().project;
+  pendingSyncedBlockOpen = null;
+  updateCommandContext();
+  if (pending === null || project === null || project === undefined || typeof window.maginalia.openInternalLink !== "function") return;
+  await projectController?.openInternalLink(pending.fileId, () => window.maginalia.openInternalLink!({ projectId: project.projectId, fileId: pending.fileId }));
+});
 commandRegistry.register({
   id: "maginalia.renderer.showEdit",
   title: "Show Markdown Edit",
@@ -1508,6 +1659,11 @@ const modContributionBridge = new ModContributionBridge({
 });
 
 editorContainer.addEventListener("dragover", (event) => {
+  if (readProjectDocumentDrag(event.dataTransfer) !== null) {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    return;
+  }
   const files = event.dataTransfer?.files;
   if (files !== undefined && files.length > 0) event.preventDefault();
 });
@@ -1552,6 +1708,12 @@ function chooseImageForImport(): Promise<void> {
 }
 
 editorContainer.addEventListener("drop", (event) => {
+  const projectDocument = readProjectDocumentDrag(event.dataTransfer);
+  if (projectDocument !== null) {
+    event.preventDefault();
+    requestSyncedBlockInsertion(projectDocument);
+    return;
+  }
   const dropped = event.dataTransfer?.files.item(0);
   // Prevent Chromium from navigating the Workbench to a dropped local file.
   // The actual source path crosses only the bounded import IPC below.
@@ -1562,6 +1724,18 @@ editorContainer.addEventListener("drop", (event) => {
     return;
   }
   void importImageFileIntoCurrentDocument(dropped);
+});
+
+previewContainer.addEventListener("dragover", (event) => {
+  if (readProjectDocumentDrag(event.dataTransfer) === null) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+});
+previewContainer.addEventListener("drop", (event) => {
+  const projectDocument = readProjectDocumentDrag(event.dataTransfer);
+  if (projectDocument === null) return;
+  event.preventDefault();
+  requestSyncedBlockInsertion(projectDocument);
 });
 
 async function flushAllAutosave(): Promise<boolean> {
@@ -1638,7 +1812,13 @@ function renderDocumentTabs(change: DocumentSessionChange): void {
       draggedDocumentViewId = view.instanceId;
       tab.classList.add("dragging");
       event.dataTransfer?.setData("text/plain", view.instanceId);
-      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+      const fileId = projectController?.getFileIdForSession(session.documentId) ?? null;
+      const project = projectController?.getState().project;
+      const file = fileId === null ? undefined : projectController?.getState().files.find((candidate) => candidate.fileId === fileId);
+      if (project !== null && project !== undefined && file !== undefined) {
+        event.dataTransfer?.setData(PROJECT_DOCUMENT_DRAG_MIME, projectDocumentDragData(project.projectId, file.displayName));
+      }
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = file === undefined ? "move" : "copyMove";
     });
     tab.addEventListener("dragover", (event) => {
       if (draggedDocumentViewId === null || draggedDocumentViewId === view.instanceId) return;
@@ -1912,6 +2092,13 @@ function renderProjectState(state: ProjectNavigationState): void {
     button.dataset.manuscriptName = file.displayName;
     button.dataset.projectFileType = file.documentType;
     button.title = file.displayName;
+    button.draggable = true;
+    button.addEventListener("dragstart", (event) => {
+      const project = state.project;
+      if (project === null) return;
+      event.dataTransfer?.setData(PROJECT_DOCUMENT_DRAG_MIME, projectDocumentDragData(project.projectId, file.displayName));
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "copyMove";
+    });
     button.tabIndex = selectedProjectFileId === file.fileId ? 0 : -1;
     const title = document.createElement("span");
     title.className = "project-file-title";
@@ -1926,6 +2113,15 @@ function renderProjectState(state: ProjectNavigationState): void {
       button.setAttribute("aria-current", "page");
     }
     item.setAttribute("role", "none");
+    const insertSynced = document.createElement("button");
+    insertSynced.type = "button";
+    insertSynced.className = "project-header-action";
+    insertSynced.textContent = "Sync";
+    insertSynced.title = `Insert ${file.displayName} as a Synced Block`;
+    insertSynced.addEventListener("click", () => {
+      const project = state.project;
+      if (project !== null) requestSyncedBlockInsertion({ projectId: project.projectId, target: file.displayName });
+    });
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "project-header-action explorer-delete";
@@ -1936,7 +2132,7 @@ function renderProjectState(state: ProjectNavigationState): void {
       selectedExplorerEntryId = file.fileId;
       void commandRegistry.execute("maginalia.explorer.delete", commandContext.snapshot());
     });
-    item.append(button, remove);
+    item.append(button, insertSynced, remove);
     manuscriptList.append(item);
   }
 }
@@ -2428,6 +2624,13 @@ function renderProjectSearchState(state: ProjectSearchState): void {
       open.className = "project-search-open";
       open.textContent = result.displayName;
       open.title = "Preview raw Markdown";
+      open.draggable = true;
+      open.addEventListener("dragstart", (event) => {
+        const project = projectController?.getState().project;
+        if (project === null || project === undefined) return;
+        event.dataTransfer?.setData(PROJECT_DOCUMENT_DRAG_MIME, projectDocumentDragData(project.projectId, result.displayName));
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
+      });
       open.addEventListener("click", () => {
         selectedProjectSearchText = result.text;
         projectSearchSource.value = result.text;

@@ -1540,6 +1540,41 @@ button:focus-visible {
   text-orientation: mixed;
 }
 
+.rendered-synced-block {
+  box-sizing: border-box;
+  margin: 1.25rem 0;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid #c7b9ad;
+  border-inline-start: 3px solid #7d5545;
+  border-radius: 0.25rem;
+  background: #fcfaf7;
+}
+
+.rendered-synced-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+  color: #554238;
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+
+.rendered-synced-block-open-source {
+  flex: none;
+  font: inherit;
+}
+
+.rendered-synced-block-content > .markdown-preview-document {
+  max-width: none;
+}
+
+.rendered-synced-block-message {
+  margin: 0;
+  color: #833524;
+}
+
 .markdown-table {
   min-width: max-content;
   border-collapse: collapse;
@@ -1645,6 +1680,7 @@ button:focus-visible {
 .markdown-preview-document[data-writing-direction="vertical"] video,
 .markdown-preview-document[data-writing-direction="vertical"] .rendered-local-media.unresolved,
 .markdown-preview-document[data-writing-direction="vertical"] .rendered-embed-card,
+.markdown-preview-document[data-writing-direction="vertical"] .rendered-synced-block,
 .markdown-preview-document[data-writing-direction="vertical"] .markdown-table-wrapper {
   writing-mode: horizontal-tb;
   text-orientation: mixed;

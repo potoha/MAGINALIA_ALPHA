@@ -22,6 +22,22 @@ function opened<T extends { kind: string }>(value: T): Extract<T, { kind: "opene
 }
 
 describe("Project service", () => {
+  it("resolves a Synced Block source through owned Project containment without exposing a path", async () => {
+    await withTempDirectory(async (directory) => {
+      const root = path.join(directory, "project");
+      await mkdir(path.join(root, "chapters"), { recursive: true });
+      await writeFile(path.join(root, "chapters", "春.md"), "# 春\n本文\n", "utf8");
+      const owner = {};
+      const service = new ProjectService(new DocumentWorkspaceService(), new MarkdownFileService(), new MemoryProjectPathStore());
+      const project = opened(await service.openForOwner(owner, root));
+      const result = await service.resolveSyncedDocumentForOwner(owner, project.project.projectId, "chapters/春.md");
+      expect(result).toMatchObject({ kind: "resolved", target: "chapters/春.md", displayName: "chapters/春.md", text: "# 春\n本文\n" });
+      expect(JSON.stringify(result)).not.toContain(root);
+      await expect(service.resolveSyncedDocumentForOwner(owner, project.project.projectId, "../outside.md"))
+        .resolves.toMatchObject({ kind: "invalid" });
+    });
+  });
+
   it("opens a local folder as a flat Registry and creates ordinary Markdown", async () => {
     await withTempDirectory(async (directory) => {
       const root = path.join(directory, "coffee");

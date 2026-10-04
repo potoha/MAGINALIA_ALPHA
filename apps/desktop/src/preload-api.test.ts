@@ -36,6 +36,7 @@ import {
   RESOLVE_INTERNAL_LINK_CHANNEL,
   OPEN_INTERNAL_LINK_CHANNEL,
   OPEN_EXTERNAL_LINK_CHANNEL,
+  RESOLVE_SYNCED_BLOCK_DOCUMENT_CHANNEL,
   RESOLVE_PROJECT_ASSET_CHANNEL,
   IMPORT_DROPPED_IMAGE_CHANNEL,
   SEARCH_PROJECT_MARKDOWN_CHANNEL,
@@ -102,6 +103,7 @@ describe("preload boundary", () => {
       "resolveInternalLink",
       "openInternalLink",
       "openExternalLink",
+      "resolveSyncedBlockDocument",
       "resolveProjectAsset",
       "importDroppedImageFile",
       "searchProjectMarkdown",
@@ -192,6 +194,7 @@ describe("preload boundary", () => {
     await api.resolveInternalLink({ projectId: "77777777-7777-4777-8777-777777777777", target: "notes/eco.md" });
     await api.openInternalLink({ projectId: "77777777-7777-4777-8777-777777777777", fileId: "88888888-8888-4888-8888-888888888888" });
     await api.openExternalLink({ url: "https://example.test/" });
+    await api.resolveSyncedBlockDocument({ projectId: "77777777-7777-4777-8777-777777777777", target: "notes/eco.md" });
     await api.resolveProjectAsset({ projectId: "77777777-7777-4777-8777-777777777777", relativePath: "assets/figure.png" });
     await api.importDroppedImageFile({ projectId: "77777777-7777-4777-8777-777777777777", file: {} as File, optimize: true });
     await api.searchProjectMarkdown?.({ projectId: "77777777-7777-4777-8777-777777777777", query: "Eco" });
@@ -339,6 +342,7 @@ describe("preload boundary", () => {
         args: [{ projectId: "77777777-7777-4777-8777-777777777777", fileId: "88888888-8888-4888-8888-888888888888" }]
       },
       { channel: OPEN_EXTERNAL_LINK_CHANNEL, args: [{ url: "https://example.test/" }] },
+      { channel: RESOLVE_SYNCED_BLOCK_DOCUMENT_CHANNEL, args: [{ projectId: "77777777-7777-4777-8777-777777777777", target: "notes/eco.md" }] },
       {
         channel: RESOLVE_PROJECT_ASSET_CHANNEL,
         args: [{ projectId: "77777777-7777-4777-8777-777777777777", relativePath: "assets/figure.png" }]

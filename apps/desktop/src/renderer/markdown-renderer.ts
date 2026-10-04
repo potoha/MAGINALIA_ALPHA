@@ -6,6 +6,7 @@ import { PreviewCompositionGate } from "./preview-editing";
 import { collectMarkdownTables, escapeTableCell, isMarkdownTableTerminator, type MarkdownTableCellTarget, type MarkdownTableTarget } from "./markdown-table-commands";
 import { projectMarkdownBody } from "./document-properties";
 import { isMarkdownFenceClosing, openingMarkdownFence } from "./markdown-fence";
+import { isSyncedBlockStructuralLine, parseSyncedBlockMarker, type ComposedSyncedBlock } from "./synced-block";
 
 /** Safe, typed inline nodes.  Raw HTML is always plain text. */
 export type MarkdownInline =
@@ -24,6 +25,7 @@ export type MarkdownBlock =
   | { readonly kind: "blockquote"; readonly content: readonly MarkdownInline[] }
   | { readonly kind: "code"; readonly text: string }
   | { readonly kind: "list"; readonly ordered: boolean; readonly items: readonly (readonly MarkdownInline[])[] }
+  | { readonly kind: "synced-block"; readonly marker: string; readonly valid: boolean }
   | {
     readonly kind: "table";
     readonly alignments: readonly MarkdownTableAlignment[];
@@ -305,6 +307,12 @@ export function parseMarkdownBlocks(
       index += 1;
       continue;
     }
+    const synced = parseSyncedBlockMarker(line);
+    if (synced !== null) {
+      blocks.push({ kind: "synced-block", marker: line, valid: synced.kind === "valid" });
+      index += 1;
+      continue;
+    }
     const table = tableStart(lines, index);
     if (table !== null) {
       const columnCount = table.header.length;
@@ -354,6 +362,7 @@ export function parseMarkdownBlocks(
     while (index < lines.length && lines[index].trim().length > 0
       && openingMarkdownFence(lines[index]) === null
       && !/^(#{1,6})\s+/u.test(lines[index])
+      && !isSyncedBlockStructuralLine(lines[index])
       && !lines[index].startsWith(">")
       && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index])
       && tableStart(lines, index) === null) {
@@ -380,12 +389,14 @@ export function scanLocalMediaTargets(text: string): readonly string[] {
     else if (block.kind === "table") {
       visit(block.header.flat());
       for (const row of block.rows) visit(row.flat());
-    } else visit(block.content);
+    } else if (block.kind !== "synced-block") visit(block.content);
   }
   return Object.freeze([...targets]);
 }
 
 export interface MarkdownPreviewRenderOptions {
+  /** Raw documents hide front matter; composed children have already projected it. */
+  readonly sourceMode?: "document" | "already-projected";
   /** Bound by the host to main-process validated shell.openExternal only. */
   readonly onOpenExternal?: (url: string) => void;
   /**
@@ -398,6 +409,15 @@ export interface MarkdownPreviewRenderOptions {
   /** Table authoring remains a Renderer projection over exact Markdown spans. */
   readonly onTableTarget?: (target: MarkdownTableTarget, cell: MarkdownTableCellTarget) => void;
   readonly onTableCommand?: (commandId: string, target: MarkdownTableTarget, cell: MarkdownTableCellTarget) => void;
+  /** Renderer-only composed child document models; never durable source text. */
+  readonly syncedBlocks?: ReadonlyMap<string, PreviewSyncedBlock>;
+  /** Opens a resolved child through the existing Project document/session path. */
+  readonly onOpenSyncedBlock?: (block: { readonly fileId: string; readonly target: string }) => void;
+}
+
+export interface PreviewSyncedBlock extends ComposedSyncedBlock {
+  readonly internalLinks?: PreviewInternalLinkMap;
+  readonly media?: PreviewMediaMap;
 }
 
 export interface PreviewEditableTextRange {
@@ -430,6 +450,14 @@ function sourceLines(text: string, sourceOffset = 0): readonly SourceLine[] {
     cursor = newline + 1;
   }
   return lines;
+}
+
+/** Apply front-matter projection once for raw documents, never for child bodies. */
+export function projectMarkdownPreviewSource(
+  text: string,
+  sourceMode: "document" | "already-projected" = "document",
+): { readonly body: string; readonly start: number } {
+  return sourceMode === "document" ? projectMarkdownBody(text) : { body: text, start: 0 };
 }
 
 /** Collect only source ranges whose visible Markdown text is unambiguous. */
@@ -510,6 +538,11 @@ export function collectEditablePreviewRanges(text: string, sourceOffset = 0): re
       index += 1;
       continue;
     }
+    if (isSyncedBlockStructuralLine(line.text)) {
+      blocks.push(Object.freeze([]));
+      index += 1;
+      continue;
+    }
     const table = tableStart(values, index);
     if (table !== null) {
       const count = table.header.length;
@@ -553,6 +586,7 @@ export function collectEditablePreviewRanges(text: string, sourceOffset = 0): re
     while (index < lines.length && lines[index]!.text.trim().length > 0
       && openingMarkdownFence(lines[index]!.text) === null
       && !/^(#{1,6})\s+/u.test(lines[index]!.text)
+      && !isSyncedBlockStructuralLine(lines[index]!.text)
       && !lines[index]!.text.startsWith(">")
       && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index]!.text)
       && tableStart(values, index) === null) paragraph.push(lines[index++]!);
@@ -806,7 +840,7 @@ export function renderMarkdownPreview(
   internalLinks: PreviewInternalLinkMap = new Map(),
   media: PreviewMediaMap = new Map()
 ): void {
-  const projection = projectMarkdownBody(text);
+  const projection = projectMarkdownPreviewSource(text, options.sourceMode);
   const root = document.createElement("article");
   root.className = "markdown-preview-document";
   root.dataset.writingDirection = direction;
@@ -830,6 +864,47 @@ export function renderMarkdownPreview(
       case "list": {
         element = document.createElement(block.ordered ? "ol" : "ul");
         for (const item of block.items) { const li = document.createElement("li"); appendInlines(li, item, options, editableState); element.append(li); }
+        break;
+      }
+      case "synced-block": {
+        const resolved = options.syncedBlocks?.get(block.marker);
+        element = document.createElement("section");
+        element.className = "rendered-synced-block";
+        element.dataset.syncedBlockState = resolved?.kind ?? (block.valid ? "unresolved" : "invalid");
+        const header = document.createElement("header");
+        header.className = "rendered-synced-block-header";
+        const label = document.createElement("span");
+        label.textContent = resolved?.displayName ?? resolved?.target ?? "Synced document";
+        header.append(label);
+        if (resolved?.kind === "resolved" && resolved.fileId !== undefined && resolved.target !== undefined) {
+          const open = document.createElement("button");
+          open.type = "button";
+          open.className = "rendered-synced-block-open-source";
+          open.textContent = "Open source";
+          open.addEventListener("click", () => options.onOpenSyncedBlock?.({ fileId: resolved.fileId!, target: resolved.target! }));
+          header.append(open);
+        }
+        element.append(header);
+        if (resolved?.kind === "resolved" && resolved.markdown !== undefined) {
+          const content = document.createElement("div");
+          content.className = "rendered-synced-block-content";
+          // Child projections are deliberately read-only in their parent. They
+          // receive ordinary rendering callbacks but never parent source maps
+          // or table targets.
+          renderMarkdownPreview(content, resolved.markdown, quotes, direction, {
+            sourceMode: "already-projected",
+            onOpenExternal: options.onOpenExternal,
+            onOpenInternal: options.onOpenInternal,
+            onOpenSyncedBlock: options.onOpenSyncedBlock,
+            syncedBlocks: resolved.children,
+          }, resolved.internalLinks, resolved.media);
+          element.append(content);
+        } else {
+          const message = document.createElement("p");
+          message.className = "rendered-synced-block-message";
+          message.textContent = resolved?.message ?? (block.valid ? "Synced document unavailable." : "Synced Block marker is invalid.");
+          element.append(message);
+        }
         break;
       }
       case "table": {

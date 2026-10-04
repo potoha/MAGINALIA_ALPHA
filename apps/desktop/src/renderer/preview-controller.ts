@@ -81,7 +81,8 @@ export class PreviewController {
 
   public dispose(): void { this.removeDocumentListener(); }
 
-  private refresh(): void {
+  /** Recompose disposable Preview state after an inactive source session changes. */
+  public refresh(): void {
     const document = this.options.writing.getDocumentState();
     if (this.mode === "preview" && document !== null && document.documentId === this.inlineEditingDocumentId) return;
     if (document === null || document.documentId !== this.inlineEditingDocumentId) this.inlineEditingDocumentId = null;
