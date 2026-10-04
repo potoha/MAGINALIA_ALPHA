@@ -158,7 +158,12 @@ export class WritingController {
     this.confirmReplace = options.confirmReplace;
     this.store = options.sessionStore ?? new DocumentSessionStore();
     this.removeTextListener = this.surface.onTextChange((text) => this.handleTextChange(text));
-    this.removeSelectionListener = this.surface.onSelectionChange?.((range) => this.notifySelectionChange(range));
+    this.removeSelectionListener = this.surface.onSelectionChange?.((range) => {
+      // A Monaco gesture takes ownership immediately; a Preview range must
+      // never continue to shadow the active editor selection.
+      this.externalSelection = undefined;
+      this.notifySelectionChange(range);
+    });
     this.removeStoreListener = this.store.onDidChange((change) => this.handleStoreChange(change));
     this.setAutosaveCoordinator(options.autosave ?? null);
     this.render();
@@ -193,7 +198,7 @@ export class WritingController {
 
   public onSelectionChange(listener: (range: WritingTextRange) => void): () => void {
     this.selectionChangeListeners.add(listener);
-    listener(this.surface.getSelection());
+    listener(this.getSelection());
     return () => this.selectionChangeListeners.delete(listener);
   }
 
@@ -217,7 +222,7 @@ export class WritingController {
     if (session === null) return false;
     const view = this.store.activateDocument(documentId, region);
     if (view === null) return false;
-    this.activeDocumentId = documentId;
+    this.setActiveDocumentId(documentId);
     this.replaceSurfaceForActiveSession(false);
     this.errorMessage = undefined;
     this.render();
@@ -231,7 +236,7 @@ export class WritingController {
     if (session === null) return null;
     const view = this.store.openView(documentId, { region: "main", groupId: "editor-group-1" });
     if (view === null) return null;
-    this.activeDocumentId = documentId;
+    this.setActiveDocumentId(documentId);
     this.replaceSurfaceForActiveSession(false);
     this.errorMessage = undefined;
     this.render();
@@ -279,7 +284,7 @@ export class WritingController {
 
     this.store.closeView(instanceId);
     if (views.length === 1) this.store.removeSession(view.documentId);
-    this.activeDocumentId = this.store.snapshot().activeDocumentId;
+    this.setActiveDocumentId(this.store.snapshot().activeDocumentId);
     this.replaceSurfaceForActiveSession(false);
     this.render();
     this.notifyDocumentChange();
@@ -576,7 +581,7 @@ export class WritingController {
       displayName: result.displayName,
       text: result.text
     });
-    this.activeDocumentId = session.documentId;
+    this.setActiveDocumentId(session.documentId);
     this.store.openView(session.documentId, { region: "main", groupId: "editor-group-1" });
     this.replaceSurfaceForActiveSession(true);
     this.render();
@@ -593,7 +598,7 @@ export class WritingController {
       this.currentSaves.delete(active);
       this.saveErrors.delete(active);
     }
-    this.activeDocumentId = null;
+    this.setActiveDocumentId(null);
     this.replacingSurface = true;
     try {
       this.surface.replaceDocument("");
@@ -613,7 +618,7 @@ export class WritingController {
       this.saveErrors.delete(session.documentId);
       this.store.removeSession(session.documentId);
     }
-    this.activeDocumentId = null;
+    this.setActiveDocumentId(null);
     this.replacingSurface = true;
     try {
       this.surface.replaceDocument("");
@@ -727,6 +732,12 @@ export class WritingController {
     return this.activeDocumentId === null ? null : this.store.getSession(this.activeDocumentId);
   }
 
+  /** Preview selection is valid only for the currently active document. */
+  private setActiveDocumentId(documentId: DocumentId | null): void {
+    if (this.activeDocumentId !== documentId) this.externalSelection = undefined;
+    this.activeDocumentId = documentId;
+  }
+
   private replaceSurfaceForActiveSession(focus: boolean): void {
     const session = this.getActiveSession();
     const nextText = session?.currentText ?? "";
@@ -743,7 +754,7 @@ export class WritingController {
 
   private handleStoreChange(change: DocumentSessionChange): void {
     const active = change.activeDocumentId;
-    this.activeDocumentId = active;
+    this.setActiveDocumentId(active);
     const liveDocumentIds = new Set(change.sessions.map((session) => session.documentId));
     for (const documentId of this.autosaveStatuses.keys()) {
       if (!liveDocumentIds.has(documentId)) this.autosaveStatuses.delete(documentId);
