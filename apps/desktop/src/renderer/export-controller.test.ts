@@ -8,6 +8,11 @@ import type {
 } from "../export-ipc";
 import type { ReviewerResolutionResult } from "../reviewer-resolution";
 import {
+  createExportPresentationSettings,
+  DEFAULT_EXPORT_PRESENTATION_SETTINGS,
+  type ExportPresentationSettings
+} from "../export-presentation-settings";
+import {
   ExportController,
   type ExportControllerApi,
   type ExportControllerView,
@@ -37,8 +42,8 @@ function success(exportId = "export-1"): ResolveExportResult {
   };
 }
 
-function exported(): WriteExportResult {
-  return { kind: "exported", fileName: "draft.resolved.md" };
+function exported(fileName = "draft.resolved.md"): WriteExportResult {
+  return { kind: "exported", fileName };
 }
 
 class FakeWriting implements ExportWritingPort {
@@ -78,6 +83,7 @@ function createHarness(options: {
   compose?: (request: ResolveExportRequest) => Promise<
     { readonly kind: "composed"; readonly text: string } | { readonly kind: "blocked"; readonly message: string }
   >;
+  getPresentationSettings?: () => ExportPresentationSettings;
 } = {}) {
   const writing = options.writing ?? new FakeWriting({ documentId: "a", text: "# A\n" });
   const states: ExportViewState[] = [];
@@ -86,7 +92,13 @@ function createHarness(options: {
     resolveExport: options.resolve === undefined ? vi.fn(async () => success()) : vi.fn(options.resolve),
     writeExport: options.write === undefined ? vi.fn(async () => exported()) : vi.fn(options.write)
   };
-  const controller = new ExportController({ api, writing, view, compose: options.compose });
+  const controller = new ExportController({
+    api,
+    writing,
+    view,
+    compose: options.compose,
+    getPresentationSettings: options.getPresentationSettings
+  });
   return { controller, api, writing, states };
 }
 
@@ -133,6 +145,86 @@ describe("ExportController", () => {
     expect(write).toHaveBeenCalledTimes(1);
     expect(states.at(-1)).toMatchObject({ status: "cancelled", message: "Export canceled." });
     expect(writing.getDocumentState()?.currentText).toBe("# A\n");
+  });
+
+  it("routes DOCX through the same resolved snapshot with shared presentation settings", async () => {
+    const write = vi.fn(async () => exported("draft.resolved.docx"));
+    const { controller, states } = createHarness({ write });
+
+    await controller.exportDocx();
+
+    expect(write).toHaveBeenCalledWith(expect.objectContaining({
+      documentId: "a",
+      revision: 1,
+      format: "docx",
+      settings: DEFAULT_EXPORT_PRESENTATION_SETTINGS
+    }));
+    expect(states.at(-1)).toMatchObject({ status: "success", message: "Exported DOCX: draft.resolved.docx" });
+  });
+
+  it("uses shared defaults for PDF when no saved preference provider is supplied", async () => {
+    const write = vi.fn(async (_request: WriteExportRequest) => exported("draft.pdf"));
+    const { controller } = createHarness({ write });
+
+    await controller.exportPdf();
+
+    expect(write).toHaveBeenCalledWith(expect.objectContaining({
+      format: "pdf",
+      settings: DEFAULT_EXPORT_PRESENTATION_SETTINGS
+    }));
+  });
+
+  it.each([
+    ["pdf", "exportPdf"],
+    ["docx", "exportDocx"]
+  ] as const)("forwards the selected immutable settings to %s", async (format, method) => {
+    const selectedSettings = createExportPresentationSettings({
+      paperSize: "B5",
+      orientation: "landscape",
+      paragraphIndent: false,
+      header: { left: "左", center: "中央", right: "右" },
+      pageNumber: false
+    });
+    const write = vi.fn(async () => exported(`draft.${format}`));
+    const { controller } = createHarness({ write, getPresentationSettings: () => selectedSettings });
+
+    await controller[method]();
+
+    expect(write).toHaveBeenCalledWith(expect.objectContaining({ format, settings: selectedSettings }));
+  });
+
+  it("keeps resolved Markdown export presentation-neutral", async () => {
+    const write = vi.fn(async (_request: WriteExportRequest) => exported());
+    const { controller } = createHarness({ write });
+
+    await controller.exportMarkdown();
+
+    expect(write).toHaveBeenCalledWith({
+      exportId: "export-1",
+      documentId: "a",
+      revision: 1,
+      text: "# A\n"
+    });
+  });
+
+  it("snapshots settings when export starts", async () => {
+    const initialSettings = createExportPresentationSettings({ paperSize: "A5" });
+    const laterSettings = createExportPresentationSettings({ paperSize: "Letter", orientation: "landscape" });
+    let currentSettings = initialSettings;
+    const pending = deferred<ResolveExportResult>();
+    const write = vi.fn(async (_request: WriteExportRequest) => exported("draft.pdf"));
+    const { controller } = createHarness({
+      resolve: () => pending.promise,
+      write,
+      getPresentationSettings: () => currentSettings
+    });
+
+    const operation = controller.exportPdf();
+    currentSettings = laterSettings;
+    pending.resolve(success());
+    await operation;
+
+    expect(write).toHaveBeenCalledWith(expect.objectContaining({ settings: initialSettings }));
   });
 
   it("blocks unresolved output before asking the host to write", async () => {

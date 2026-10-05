@@ -6,6 +6,8 @@ import { registerCoreCommands } from "./core-commands";
 function register(actions: {
   readonly refreshReferences?: () => void | Promise<void>;
   readonly exportMarkdown?: () => void | Promise<void>;
+  readonly exportPdf?: () => void | Promise<void>;
+  readonly exportDocx?: () => void | Promise<void>;
   readonly saveDocument?: () => void | Promise<void>;
 } = {}) {
   const commands = new CommandRegistry();
@@ -21,6 +23,8 @@ function register(actions: {
     setPreviewDirection: () => undefined,
     refreshReferences: actions.refreshReferences ?? (() => undefined),
     exportMarkdown: actions.exportMarkdown ?? (() => undefined),
+    exportPdf: actions.exportPdf ?? (() => undefined),
+    exportDocx: actions.exportDocx ?? (() => undefined),
     saveDocument: actions.saveDocument ?? (() => undefined),
     contextKeys,
   });
@@ -43,6 +47,8 @@ describe("Core command adapters", () => {
       setPreviewDirection: () => undefined,
       refreshReferences: () => undefined,
       exportMarkdown: () => undefined,
+      exportPdf: () => undefined,
+      exportDocx: () => undefined,
       saveDocument: () => undefined,
       contextKeys,
     });
@@ -55,15 +61,21 @@ describe("Core command adapters", () => {
   it("gives Save, Export, and References one stable command handler each", async () => {
     const saveDocument = vi.fn(async () => undefined);
     const exportMarkdown = vi.fn(async () => undefined);
+    const exportPdf = vi.fn(async () => undefined);
+    const exportDocx = vi.fn(async () => undefined);
     const refreshReferences = vi.fn(async () => undefined);
-    const commands = register({ saveDocument, exportMarkdown, refreshReferences });
+    const commands = register({ saveDocument, exportMarkdown, exportPdf, exportDocx, refreshReferences });
     const context = { "editor.hasDocument": true };
 
     await expect(commands.execute("maginalia.document.save", context)).resolves.toEqual({ kind: "executed" });
     await expect(commands.execute("maginalia.document.export", context)).resolves.toEqual({ kind: "executed" });
+    await expect(commands.execute("maginalia.document.exportPdf", context)).resolves.toEqual({ kind: "executed" });
+    await expect(commands.execute("maginalia.document.exportDocx", context)).resolves.toEqual({ kind: "executed" });
     await expect(commands.execute("maginalia.references.refresh", context)).resolves.toEqual({ kind: "executed" });
     expect(saveDocument).toHaveBeenCalledOnce();
     expect(exportMarkdown).toHaveBeenCalledOnce();
+    expect(exportPdf).toHaveBeenCalledOnce();
+    expect(exportDocx).toHaveBeenCalledOnce();
     expect(refreshReferences).toHaveBeenCalledOnce();
   });
 

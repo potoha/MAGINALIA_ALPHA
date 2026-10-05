@@ -100,6 +100,8 @@ import {
   WRITE_EXPORT_CHANNEL,
   createExportHandlers
 } from "./export-ipc";
+import { writePdfWithVivliostyle } from "./export-pdf";
+import { writeDocxWithPandoc } from "./export-docx";
 import {
   INVOKE_MOD_COMMAND_CHANNEL,
   LOAD_MODS_CHANNEL,
@@ -556,24 +558,29 @@ let exportDialogSequence = 0;
 const exportHandlers = createExportHandlers({
   sessions: markdownFileService,
   resolve: referenceResolution,
-  showSaveDialog: (defaultPath, event) => {
+  showSaveDialog: (defaultPath, event, format) => {
     if (exportSmoke.requested && exportSmoke.rootPath) {
       exportDialogSequence += 1;
       return Promise.resolve({
         canceled: false,
-        filePath: path.join(exportSmoke.rootPath, `export-${exportDialogSequence}.resolved.md`)
+        filePath: path.join(exportSmoke.rootPath, `export-${exportDialogSequence}.resolved.${format === "markdown" ? "md" : format}`)
       });
     }
     const ownerWindow = BrowserWindow.fromWebContents(event.sender as WebContents);
     const options = {
-      title: "Export Markdown",
+      title: `Export ${format === "markdown" ? "Markdown" : format.toUpperCase()}`,
       defaultPath,
-      filters: [{ name: "Markdown", extensions: ["md"] }]
+      filters: [{
+        name: format === "markdown" ? "Markdown" : format.toUpperCase(),
+        extensions: [format === "markdown" ? "md" : format]
+      }]
     };
     return ownerWindow === null
       ? dialog.showSaveDialog(options)
       : dialog.showSaveDialog(ownerWindow, options);
-  }
+  },
+  writePdf: (outputPath, document, settings) => writePdfWithVivliostyle(outputPath, document, settings),
+  writeDocx: (outputPath, document, settings) => writeDocxWithPandoc(outputPath, document, settings)
 });
 const repositoryHandlers = createRepositoryHandlers({
   pickParentFolder: () => repositorySmoke.requested

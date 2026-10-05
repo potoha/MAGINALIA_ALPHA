@@ -1,10 +1,17 @@
 import type { DocumentState } from "@maginalia/writing-core";
 import type {
+  ExportFormat,
   ResolveExportRequest,
   ResolveExportResult,
   WriteExportRequest,
   WriteExportResult
 } from "../export-ipc";
+import {
+  createExportPresentationSettings,
+  DEFAULT_EXPORT_PRESENTATION_SETTINGS,
+  isExportPresentationSettings,
+  type ExportPresentationSettings
+} from "../export-presentation-settings";
 import { renderResolvedMarkdown } from "./export-renderer";
 import type { ComposedMarkdownProjection } from "./synced-block";
 
@@ -35,6 +42,8 @@ export interface ExportControllerOptions {
   readonly writing: ExportWritingPort;
   readonly view: ExportControllerView;
   readonly compose?: (document: ResolveExportRequest) => Promise<ComposedMarkdownProjection>;
+  /** Read the current persisted UI selection when a PDF/DOCX export starts. */
+  readonly getPresentationSettings?: () => ExportPresentationSettings;
 }
 
 const EMPTY_STATE: ExportViewState = Object.freeze({
@@ -75,6 +84,7 @@ export class ExportController {
   private readonly writing: ExportWritingPort;
   private readonly view: ExportControllerView;
   private readonly compose: ((document: ResolveExportRequest) => Promise<ComposedMarkdownProjection>) | null;
+  private readonly getPresentationSettings: () => ExportPresentationSettings;
   private readonly removeDocumentListener: () => void;
   private state: ExportViewState;
   private exporting = false;
@@ -84,6 +94,7 @@ export class ExportController {
     this.writing = options.writing;
     this.view = options.view;
     this.compose = options.compose ?? null;
+    this.getPresentationSettings = options.getPresentationSettings ?? (() => DEFAULT_EXPORT_PRESENTATION_SETTINGS);
     this.state = this.writing.getDocumentState() === null ? EMPTY_STATE : READY_STATE;
     this.removeDocumentListener = this.writing.onDocumentChange((document) => {
       // The in-flight operation intentionally keeps its original snapshot and
@@ -99,7 +110,23 @@ export class ExportController {
   }
 
   public async exportMarkdown(): Promise<void> {
+    return this.export("markdown");
+  }
+
+  public async exportPdf(): Promise<void> {
+    return this.export("pdf");
+  }
+
+  public async exportDocx(): Promise<void> {
+    return this.export("docx");
+  }
+
+  private async export(format: ExportFormat): Promise<void> {
     if (this.exporting) return;
+
+    // Snapshot the settings with the document before asynchronous resolution.
+    // A UI change during export applies to the next export, not this one.
+    const presentationSettings = format === "markdown" ? undefined : this.readPresentationSettings();
 
     const document = this.writing.getDocumentState();
     if (document === null) {
@@ -116,7 +143,8 @@ export class ExportController {
     });
 
     this.exporting = true;
-    this.setState(EXPORTING_STATE);
+    const formatName = format === "markdown" ? "Markdown" : format.toUpperCase();
+    this.setState({ ...EXPORTING_STATE, message: `Exporting ${formatName}…` });
 
     let composedText = snapshot.currentText;
     let compositionCurrent = (): boolean => true;
@@ -195,7 +223,11 @@ export class ExportController {
       exportId: resolved.exportId,
       documentId: snapshot.documentId,
       revision: snapshot.revision,
-      text: rendered.text
+      text: rendered.text,
+      ...(format === "markdown" ? {} : {
+        format,
+        settings: presentationSettings ?? DEFAULT_EXPORT_PRESENTATION_SETTINGS
+      })
     });
 
     let written: WriteExportResult;
@@ -213,7 +245,7 @@ export class ExportController {
     if (written.kind === "exported") {
       this.finish({
         status: "success",
-        message: `Exported Markdown: ${written.fileName}`,
+        message: `Exported ${formatName}: ${written.fileName}`,
         enabled: true
       });
     } else if (written.kind === "cancelled") {
@@ -233,6 +265,17 @@ export class ExportController {
 
   public dispose(): void {
     this.removeDocumentListener();
+  }
+
+  private readPresentationSettings(): ExportPresentationSettings {
+    try {
+      const settings: unknown = this.getPresentationSettings();
+      return isExportPresentationSettings(settings)
+        ? createExportPresentationSettings(settings)
+        : DEFAULT_EXPORT_PRESENTATION_SETTINGS;
+    } catch {
+      return DEFAULT_EXPORT_PRESENTATION_SETTINGS;
+    }
   }
 
   private finish(state: ExportViewState): void {

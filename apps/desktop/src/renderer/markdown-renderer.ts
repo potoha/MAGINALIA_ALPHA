@@ -1,23 +1,34 @@
 import type { ResolvedQuoteRef, UnresolvedQuoteRef } from "../reviewer-resolution";
 import type { WritingDirection } from "./renderer-preferences";
-import { describeEmbed, parseSafeExternalUrl, type EmbedDescriptor } from "./embed-providers";
-import { internalLinkDisplayName, parseInternalLinkAt } from "../project-links";
+import {
+  parseMarkdownInlines,
+  quoteMarkerAt,
+  safeExternalHref,
+  QUOTE_MARKER_PREFIX,
+  type MarkdownInline,
+  type PreviewInternalLinkMap,
+  type PreviewMediaMap,
+  type PreviewQuote,
+  type PreviewQuoteMap
+} from "./markdown-inline";
+import { parseInternalLinkAt } from "../project-links";
+import { describeEmbed } from "./embed-providers";
 import { PreviewCompositionGate } from "./preview-editing";
 import { collectMarkdownTables, escapeTableCell, isMarkdownTableTerminator, type MarkdownTableCellTarget, type MarkdownTableTarget } from "./markdown-table-commands";
 import { projectMarkdownBody } from "./document-properties";
 import { isMarkdownFenceClosing, openingMarkdownFence } from "./markdown-fence";
+import { isMarkdownBlockquoteLine, parseMarkdownHeading, parseMarkdownListItem } from "./markdown-structure";
 import { isSyncedBlockStructuralLine, parseSyncedBlockMarker, type ComposedSyncedBlock } from "./synced-block";
 
-/** Safe, typed inline nodes.  Raw HTML is always plain text. */
-export type MarkdownInline =
-  | { readonly kind: "text"; readonly text: string }
-  | { readonly kind: "code"; readonly text: string }
-  | { readonly kind: "strong"; readonly children: readonly MarkdownInline[] }
-  | { readonly kind: "emphasis"; readonly children: readonly MarkdownInline[] }
-  | { readonly kind: "link"; readonly label: readonly MarkdownInline[]; readonly href: string; readonly embed?: EmbedDescriptor }
-  | { readonly kind: "internal-link"; readonly target: string; readonly label: readonly MarkdownInline[]; readonly state: "resolved" | "unresolved"; readonly fileId?: string }
-  | { readonly kind: "local-media"; readonly target: string; readonly alt: string; readonly media: PreviewMedia }
-  | { readonly kind: "quote-ref"; readonly marker: string; readonly quote: PreviewQuote };
+export {
+  parseMarkdownInlines,
+  type MarkdownInline,
+  type PreviewInternalLinkMap,
+  type PreviewMedia,
+  type PreviewMediaMap,
+  type PreviewQuote,
+  type PreviewQuoteMap
+} from "./markdown-inline";
 
 export type MarkdownBlock =
   | { readonly kind: "heading"; readonly depth: number; readonly content: readonly MarkdownInline[] }
@@ -38,27 +49,6 @@ export type MarkdownTableAlignment = "left" | "center" | "right" | "none";
 function trimTableWhitespace(value: string): string {
   return value.replace(/^[\t ]+|[\t ]+$/gu, "");
 }
-
-export interface PreviewQuote {
-  readonly state: "resolved" | "unresolved";
-  readonly text?: string;
-  readonly provenance?: string;
-  readonly reason?: string;
-}
-
-export type PreviewQuoteMap = ReadonlyMap<string, PreviewQuote>;
-export type PreviewInternalLinkMap = ReadonlyMap<string, { readonly fileId?: string }>;
-export interface PreviewMedia {
-  readonly state: "resolved" | "unresolved";
-  readonly assetKind?: "image" | "video";
-  readonly mimeType?: string;
-  readonly dataUrl?: string;
-  readonly reason?: string;
-}
-export type PreviewMediaMap = ReadonlyMap<string, PreviewMedia>;
-
-const QUOTE_MARKER_PREFIX = "<!-- maginalia:quote-ref ";
-const QUOTE_MARKER_END = "-->";
 
 function parseTableRow(line: string): readonly string[] | null {
   if (!line.includes("|")) return null;
@@ -139,147 +129,6 @@ function isStructuralParagraph(nodes: readonly MarkdownInline[]): boolean {
     && nodes.every(isStructuralInline);
 }
 
-function safeExternalHref(value: string): string | null {
-  return parseSafeExternalUrl(value)?.href ?? null;
-}
-
-function localMediaTarget(value: string): string | null {
-  if (value.length === 0 || value.length > 1_024 || value.includes("\\") || /[\u0000-\u001F\u007F]/u.test(value)) return null;
-  if (/^(?:[A-Za-z]:|\/|file:|data:|javascript:)/iu.test(value)) return null;
-  const segments = value.split("/");
-  if (segments.some((part) => part.length === 0 || part === "." || part === "..")) return null;
-  return segments.join("/");
-}
-
-function localMedia(
-  target: string,
-  alt: string,
-  media: PreviewMediaMap
-): MarkdownInline {
-  return {
-    kind: "local-media",
-    target,
-    alt,
-    media: media.get(target) ?? { state: "unresolved", reason: "Project media unavailable." }
-  };
-}
-
-function quoteMarkerAt(text: string, start: number): { readonly marker: string; readonly end: number } | null {
-  if (!text.startsWith(QUOTE_MARKER_PREFIX, start)) return null;
-  const close = text.indexOf(QUOTE_MARKER_END, start + QUOTE_MARKER_PREFIX.length);
-  if (close < 0) return { marker: text.slice(start), end: text.length };
-  return { marker: text.slice(start, close + QUOTE_MARKER_END.length), end: close + QUOTE_MARKER_END.length };
-}
-
-/**
- * A deliberately small Markdown AST for the renderer.  It creates text nodes
- * rather than HTML strings, so authoring HTML/comments can never execute.
- */
-export function parseMarkdownInlines(
-  text: string,
-  quotes: PreviewQuoteMap = new Map(),
-  internalLinks: PreviewInternalLinkMap = new Map(),
-  media: PreviewMediaMap = new Map()
-): readonly MarkdownInline[] {
-  const nodes: MarkdownInline[] = [];
-  let cursor = 0;
-  const pushText = (value: string): void => {
-    if (value.length > 0) nodes.push({ kind: "text", text: value });
-  };
-
-  while (cursor < text.length) {
-    const marker = quoteMarkerAt(text, cursor);
-    if (marker !== null) {
-      nodes.push({
-        kind: "quote-ref",
-        marker: marker.marker,
-        quote: quotes.get(marker.marker) ?? { state: "unresolved", reason: "Quotation unresolved." }
-      });
-      cursor = marker.end;
-      continue;
-    }
-    if (text[cursor] === "`") {
-      const end = text.indexOf("`", cursor + 1);
-      if (end > cursor + 1) {
-        nodes.push({ kind: "code", text: text.slice(cursor + 1, end) });
-        cursor = end + 1;
-        continue;
-      }
-    }
-    // The canonical Project-asset notation. It is never treated as a wiki
-    // link, and the renderer still needs a main-process-approved media map.
-    if (text.startsWith("![[", cursor)) {
-      const close = text.indexOf("]]", cursor + 3);
-      if (close >= 0) {
-        const target = localMediaTarget(text.slice(cursor + 3, close));
-        if (target === null) pushText(text.slice(cursor, close + 2));
-        else nodes.push(localMedia(target, target.split("/").at(-1) ?? "media", media));
-        cursor = close + 2;
-        continue;
-      }
-    }
-    // Compatibility input for normal Markdown Project-relative images.
-    const image = /^!\[([^\]]*)\]\(([^\s)]+)\)/u.exec(text.slice(cursor));
-    if (image !== null) {
-      const target = localMediaTarget(image[2]);
-      if (target !== null) {
-        nodes.push(localMedia(target, image[1], media));
-        cursor += image[0].length;
-        continue;
-      }
-    }
-    const internal = parseInternalLinkAt(text, cursor);
-    if (internal !== null) {
-      if (internal.kind === "link") {
-        const resolved = internalLinks.get(internal.target);
-        const label = internal.label ?? internalLinkDisplayName(internal.target);
-        nodes.push({
-          kind: "internal-link",
-          target: internal.target,
-          label: parseMarkdownInlines(label, quotes, internalLinks, media),
-          state: resolved?.fileId === undefined ? "unresolved" : "resolved",
-          ...(resolved?.fileId === undefined ? {} : { fileId: resolved.fileId })
-        });
-      } else {
-        nodes.push({ kind: "text", text: "unresolved link" });
-      }
-      cursor = internal.end;
-      continue;
-    }
-    const link = /^\[([^\]]+)\]\(([^\s)]+)\)/u.exec(text.slice(cursor));
-    if (link !== null) {
-      const href = safeExternalHref(link[2]);
-      if (href !== null) {
-        const embed = describeEmbed(href);
-        nodes.push({ kind: "link", label: parseMarkdownInlines(link[1], quotes, internalLinks, media), href, ...(embed === null ? {} : { embed }) });
-        cursor += link[0].length;
-        continue;
-      }
-    }
-    const wrapped = /^(\*\*|__|\*|_)([^\n]+?)\1/u.exec(text.slice(cursor));
-    if (wrapped !== null && wrapped[2].length > 0) {
-      nodes.push({
-        kind: wrapped[1].length === 2 ? "strong" : "emphasis",
-        children: parseMarkdownInlines(wrapped[2], quotes, internalLinks, media)
-      });
-      cursor += wrapped[0].length;
-      continue;
-    }
-    const nextSpecial = [
-      text.indexOf("`", cursor + 1),
-      text.indexOf("!", cursor + 1),
-      text.indexOf("[", cursor + 1),
-      text.indexOf("*", cursor + 1),
-      text.indexOf("_", cursor + 1),
-      text.indexOf(QUOTE_MARKER_PREFIX, cursor + 1)
-    ].filter((value) => value >= 0);
-    const end = nextSpecial.length === 0 ? text.length : Math.min(...nextSpecial);
-    pushText(text.slice(cursor, end));
-    cursor = end;
-  }
-  return Object.freeze(nodes);
-}
-
 export function parseMarkdownBlocks(
   text: string,
   quotes: PreviewQuoteMap = new Map(),
@@ -301,9 +150,9 @@ export function parseMarkdownBlocks(
       blocks.push({ kind: "code", text: code.join("\n") });
       continue;
     }
-    const heading = /^(#{1,6})\s+(.+)$/u.exec(line);
+    const heading = parseMarkdownHeading(line);
     if (heading !== null) {
-      blocks.push({ kind: "heading", depth: heading[1].length, content: parseMarkdownInlines(heading[2], quotes, internalLinks, media) });
+      blocks.push({ kind: "heading", depth: heading.level, content: parseMarkdownInlines(heading.content, quotes, internalLinks, media) });
       index += 1;
       continue;
     }
@@ -335,23 +184,23 @@ export function parseMarkdownBlocks(
       });
       continue;
     }
-    if (line.startsWith(">")) {
+    if (isMarkdownBlockquoteLine(line)) {
       const quoteLines: string[] = [];
-      while (index < lines.length && lines[index].startsWith(">")) {
+      while (index < lines.length && isMarkdownBlockquoteLine(lines[index])) {
         quoteLines.push(lines[index].replace(/^>\s?/u, ""));
         index += 1;
       }
       blocks.push({ kind: "blockquote", content: parseMarkdownInlines(quoteLines.join("\n"), quotes, internalLinks, media) });
       continue;
     }
-    const list = /^(?:([-*+])\s+|(\d+)\.\s+)(.+)$/u.exec(line);
+    const list = parseMarkdownListItem(line);
     if (list !== null) {
-      const ordered = list[2] !== undefined;
+      const ordered = list.ordered;
       const items: (readonly MarkdownInline[])[] = [];
       while (index < lines.length) {
-        const item = /^(?:([-*+])\s+|(\d+)\.\s+)(.+)$/u.exec(lines[index]);
-        if (item === null || (item[2] !== undefined) !== ordered) break;
-        items.push(parseMarkdownInlines(item[3], quotes, internalLinks, media));
+        const item = parseMarkdownListItem(lines[index]);
+        if (item === null || item.ordered !== ordered) break;
+        items.push(parseMarkdownInlines(item.content, quotes, internalLinks, media));
         index += 1;
       }
       blocks.push({ kind: "list", ordered, items });
@@ -361,10 +210,10 @@ export function parseMarkdownBlocks(
     index += 1;
     while (index < lines.length && lines[index].trim().length > 0
       && openingMarkdownFence(lines[index]) === null
-      && !/^(#{1,6})\s+/u.test(lines[index])
+      && parseMarkdownHeading(lines[index]) === null
       && !isSyncedBlockStructuralLine(lines[index])
-      && !lines[index].startsWith(">")
-      && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index])
+      && !isMarkdownBlockquoteLine(lines[index])
+      && parseMarkdownListItem(lines[index]) === null
       && tableStart(lines, index) === null) {
       paragraph.push(lines[index++]);
     }
@@ -534,9 +383,9 @@ export function collectEditablePreviewRanges(text: string, sourceOffset = 0): re
       blocks.push(Object.freeze([]));
       continue;
     }
-    const heading = /^(#{1,6})\s+(.+)$/u.exec(line.text);
+    const heading = parseMarkdownHeading(line.text);
     if (heading !== null) {
-      blocks.push(editableInlineRanges(heading[2], line.start + heading[0].length - heading[2].length));
+      blocks.push(editableInlineRanges(heading.content, line.start + heading.contentStart));
       index += 1;
       continue;
     }

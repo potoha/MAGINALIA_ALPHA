@@ -40,6 +40,7 @@ import {
   type SyncedBlockResolveResult
 } from "./synced-block";
 import { createLocalStorageRendererPreferenceStore } from "./renderer-preferences";
+import { createExportPresentationSettings, EXPORT_PAPER_SIZES } from "../export-presentation-settings";
 import { resolvePreviewMedia } from "./project-media";
 import { resolvePreviewInternalLinks } from "./preview-links";
 import { importDroppedImageIntoDocument } from "./dropped-image";
@@ -125,10 +126,40 @@ app.innerHTML = `
         <button id="open-markdown" type="button">Open</button>
         <button id="save-markdown" data-command-id="maginalia.document.save" type="button" disabled>Save</button>
         <button id="export-markdown" data-command-id="maginalia.document.export" type="button" disabled>Export Markdown</button>
+        <button id="export-pdf" data-command-id="maginalia.document.exportPdf" type="button" disabled>Export PDF</button>
+        <button id="export-docx" data-command-id="maginalia.document.exportDocx" type="button" disabled>Export DOCX</button>
         <span id="document-name" class="document-name">No document open</span>
         <span id="document-status" class="document-status" data-state="empty" role="status" aria-live="polite">No document open</span>
         <span id="export-status" class="export-status" data-state="empty" role="status" aria-live="polite">Open a document to export.</span>
       </div>
+      <details id="export-settings-panel" class="export-settings">
+        <summary>Export settings</summary>
+        <div class="export-settings-fields">
+          <label for="export-paper-size">Paper size</label>
+          <select id="export-paper-size">
+            ${EXPORT_PAPER_SIZES.map((size) => `<option value="${size}">${size.startsWith("B") ? `${size} (JIS)` : size}</option>`).join("")}
+          </select>
+          <label for="export-orientation">Orientation</label>
+          <select id="export-orientation">
+            <option value="portrait">Portrait</option>
+            <option value="landscape">Landscape</option>
+          </select>
+          <label class="export-settings-check" for="export-paragraph-indent">
+            <input id="export-paragraph-indent" type="checkbox">
+            First-line indent (1 em)
+          </label>
+          <fieldset class="export-header-fields">
+            <legend>Header text</legend>
+            <label for="export-header-left">Left<input id="export-header-left" type="text" autocomplete="off"></label>
+            <label for="export-header-center">Center<input id="export-header-center" type="text" autocomplete="off"></label>
+            <label for="export-header-right">Right<input id="export-header-right" type="text" autocomplete="off"></label>
+          </fieldset>
+          <label class="export-settings-check" for="export-page-number">
+            <input id="export-page-number" type="checkbox">
+            Centered page number in footer
+          </label>
+        </div>
+      </details>
       <div id="workbench-layout-controls" class="layout-controls" aria-label="Workbench layout controls">
         <button id="toolbar-toggle-activity-bar" data-workbench-command="maginalia.view.toggleActivityBar" type="button" title="Toggle activity bar">Activity</button>
         <button id="toolbar-toggle-primary-sidebar" data-workbench-command="maginalia.view.togglePrimarySidebar" type="button" title="Toggle primary sidebar">Primary</button>
@@ -408,6 +439,15 @@ const openWorkdeskButton = requiredElement<HTMLButtonElement>("#open-workdesk");
 const createWorkdeskButton = requiredElement<HTMLButtonElement>("#workdesk-create");
 const saveButton = requiredElement<HTMLButtonElement>("#save-markdown");
 const exportButton = requiredElement<HTMLButtonElement>("#export-markdown");
+const exportPdfButton = requiredElement<HTMLButtonElement>("#export-pdf");
+const exportDocxButton = requiredElement<HTMLButtonElement>("#export-docx");
+const exportPaperSizeInput = requiredElement<HTMLSelectElement>("#export-paper-size");
+const exportOrientationInput = requiredElement<HTMLSelectElement>("#export-orientation");
+const exportParagraphIndentInput = requiredElement<HTMLInputElement>("#export-paragraph-indent");
+const exportHeaderLeftInput = requiredElement<HTMLInputElement>("#export-header-left");
+const exportHeaderCenterInput = requiredElement<HTMLInputElement>("#export-header-center");
+const exportHeaderRightInput = requiredElement<HTMLInputElement>("#export-header-right");
+const exportPageNumberInput = requiredElement<HTMLInputElement>("#export-page-number");
 const documentName = requiredElement<HTMLElement>("#document-name");
 const documentStatus = requiredElement<HTMLElement>("#document-status");
 const exportStatus = requiredElement<HTMLElement>("#export-status");
@@ -807,6 +847,35 @@ function reloadPropertiesPanel(): void {
 // activation fills it later; previews without a Project show safe fallbacks.
 let projectController: ProjectNavigationController | undefined;
 const rendererPreferences = createLocalStorageRendererPreferenceStore();
+let currentExportPresentationSettings = rendererPreferences.load().exportPresentationSettings;
+function restoreExportSettingsControls(): void {
+  exportPaperSizeInput.value = currentExportPresentationSettings.paperSize;
+  exportOrientationInput.value = currentExportPresentationSettings.orientation;
+  exportParagraphIndentInput.checked = currentExportPresentationSettings.paragraphIndent;
+  exportHeaderLeftInput.value = currentExportPresentationSettings.header.left;
+  exportHeaderCenterInput.value = currentExportPresentationSettings.header.center;
+  exportHeaderRightInput.value = currentExportPresentationSettings.header.right;
+  exportPageNumberInput.checked = currentExportPresentationSettings.pageNumber;
+}
+function saveExportSettingsFromControls(): void {
+  try {
+    currentExportPresentationSettings = createExportPresentationSettings({
+      paperSize: exportPaperSizeInput.value,
+      orientation: exportOrientationInput.value,
+      paragraphIndent: exportParagraphIndentInput.checked,
+      header: {
+        left: exportHeaderLeftInput.value,
+        center: exportHeaderCenterInput.value,
+        right: exportHeaderRightInput.value
+      },
+      pageNumber: exportPageNumberInput.checked
+    });
+    rendererPreferences.save({ ...rendererPreferences.load(), exportPresentationSettings: currentExportPresentationSettings });
+  } catch {
+    // Invalid transient control state cannot alter the last valid settings.
+  }
+}
+restoreExportSettingsControls();
 let previewMediaGeneration = 0;
 let activeTableTarget: ActiveTableTarget | null = null;
 let commandContextReady = false;
@@ -1146,6 +1215,8 @@ registerCoreCommands(commandRegistry, {
   },
   refreshReferences: () => referencesController?.refresh(),
   exportMarkdown: () => exportController?.exportMarkdown(),
+  exportPdf: () => exportController?.exportPdf(),
+  exportDocx: () => exportController?.exportDocx(),
   saveDocument: () => controller.save(),
   contextKeys: commandContext
 });
@@ -3488,6 +3559,8 @@ if (referencesApi) {
 const exportView: ExportControllerView = {
   setExportState(state: ExportViewState): void {
     exportButton.disabled = !state.enabled;
+    exportPdfButton.disabled = !state.enabled;
+    exportDocxButton.disabled = !state.enabled;
     exportStatus.dataset.state = state.status;
     exportStatus.textContent = state.message;
   }
@@ -3500,11 +3573,22 @@ if (exportApi) {
     api: exportApi,
     writing: controller,
     view: exportView,
-    compose: (document) => composeSyncedMarkdown(document.currentText, document.documentId)
+    compose: (document) => composeSyncedMarkdown(document.currentText, document.documentId),
+    getPresentationSettings: () => currentExportPresentationSettings
   });
+  for (const input of [exportPaperSizeInput, exportOrientationInput, exportParagraphIndentInput, exportPageNumberInput]) {
+    input.addEventListener("change", saveExportSettingsFromControls);
+  }
+  for (const input of [exportHeaderLeftInput, exportHeaderCenterInput, exportHeaderRightInput]) {
+    input.addEventListener("input", saveExportSettingsFromControls);
+  }
   exportButton.addEventListener("click", () => void executeCommand("maginalia.document.export"));
+  exportPdfButton.addEventListener("click", () => void executeCommand("maginalia.document.exportPdf"));
+  exportDocxButton.addEventListener("click", () => void executeCommand("maginalia.document.exportDocx"));
 } else {
   exportButton.disabled = true;
+  exportPdfButton.disabled = true;
+  exportDocxButton.disabled = true;
   exportStatus.dataset.state = "error";
   exportStatus.textContent = "Markdown export is unavailable.";
 }

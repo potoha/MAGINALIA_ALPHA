@@ -4,6 +4,12 @@ import * as path from "node:path";
 import { MAX_MARKDOWN_BYTES } from "./markdown-ipc";
 import type { MarkdownFileService, MarkdownSessionInfo } from "./markdown-file-service";
 import type { ReviewerResolutionResult } from "./reviewer-resolution";
+import { createExportDocumentModel, type ExportDocumentModel } from "./renderer/export-document-model";
+import {
+  DEFAULT_EXPORT_PRESENTATION_SETTINGS,
+  isExportPresentationSettings,
+  type ExportPresentationSettings
+} from "./export-presentation-settings";
 export { RESOLVE_EXPORT_CHANNEL, WRITE_EXPORT_CHANNEL } from "./export-contract";
 
 export const MAX_EXPORT_TEXT_CHARS = MAX_MARKDOWN_BYTES;
@@ -39,11 +45,16 @@ export interface ExportResolutionFailure {
 
 export type ResolveExportResult = ResolveExportSuccess | ExportResolutionFailure;
 
+export type ExportFormat = "markdown" | "pdf" | "docx";
+
 export interface WriteExportRequest {
   readonly exportId: string;
   readonly documentId: string;
   readonly revision: number;
   readonly text: string;
+  /** Legacy callers omit these and continue to write resolved Markdown. */
+  readonly format?: ExportFormat;
+  readonly settings?: ExportPresentationSettings;
 }
 
 export interface ExportCancelled {
@@ -100,8 +111,19 @@ export interface ExportHandlerDependencies {
   readonly resolve: (owner: object, text: string) => ReviewerResolutionResult | Promise<ReviewerResolutionResult>;
   readonly showSaveDialog: (
     defaultPath: string,
-    event: ExportInvokeEvent
+    event: ExportInvokeEvent,
+    format: ExportFormat
   ) => ExportSaveDialogResult | Promise<ExportSaveDialogResult>;
+  readonly writePdf?: (
+    outputPath: string,
+    document: ExportDocumentModel,
+    settings: ExportPresentationSettings
+  ) => Promise<void>;
+  readonly writeDocx?: (
+    outputPath: string,
+    document: ExportDocumentModel,
+    settings: ExportPresentationSettings
+  ) => Promise<void>;
 }
 
 interface PendingExport {
@@ -189,15 +211,21 @@ export function isResolveExportRequest(value: unknown): value is ResolveExportRe
 }
 
 export function isWriteExportRequest(value: unknown): value is WriteExportRequest {
-  return isPlainRecord(value)
-    && hasExactKeys(value, ["exportId", "documentId", "revision", "text"])
-    && typeof value.exportId === "string"
-    && value.exportId.length > 0
-    && typeof value.documentId === "string"
-    && value.documentId.length > 0
-    && isRevision(value.revision)
-    && typeof value.text === "string"
-    && value.text.length <= MAX_EXPORT_TEXT_CHARS;
+  if (!isPlainRecord(value)
+    || typeof value.exportId !== "string"
+    || value.exportId.length === 0
+    || typeof value.documentId !== "string"
+    || value.documentId.length === 0
+    || !isRevision(value.revision)
+    || typeof value.text !== "string"
+    || value.text.length > MAX_EXPORT_TEXT_CHARS) return false;
+  const keys = Reflect.ownKeys(value);
+  const legacy = keys.length === 4 && keys.every((key) => typeof key === "string" && ["exportId", "documentId", "revision", "text"].includes(key));
+  const formatted = keys.length === 6 && keys.every((key) => typeof key === "string" && ["exportId", "documentId", "revision", "text", "format", "settings"].includes(key));
+  if (!legacy && !formatted) return false;
+  return legacy
+    || ((value.format === "markdown" || value.format === "pdf" || value.format === "docx")
+      && isExportPresentationSettings(value.settings));
 }
 
 function bytesTooLarge(text: string): boolean {
@@ -245,10 +273,15 @@ async function sameFile(left: string, right: string): Promise<boolean> {
   }
 }
 
-function defaultExportPath(session: MarkdownSessionInfo): string {
+function defaultExportPath(session: MarkdownSessionInfo, format: ExportFormat): string {
   const extension = path.extname(session.filePath);
   const base = path.basename(session.filePath, extension);
-  return path.join(path.dirname(session.filePath), `${base}.resolved.md`);
+  const outputExtension = format === "markdown" ? "md" : format;
+  return path.join(path.dirname(session.filePath), `${base}.resolved.${outputExtension}`);
+}
+
+function formatLabel(format: ExportFormat): string {
+  return format === "markdown" ? "Markdown" : format.toUpperCase();
 }
 
 async function atomicWrite(filePath: string, text: string): Promise<void> {
@@ -353,15 +386,17 @@ export class ExportService {
     const session = this.dependencies.sessions.getSessionInfoForOwner(owner, request.documentId);
     if (session === null || session.filePath !== pending.session.filePath) return SESSION_NOT_OWNED_WRITE;
     if (bytesTooLarge(request.text)) return CONTENT_TOO_LARGE_WRITE;
+    const format = request.format ?? "markdown";
+    const settings = request.settings ?? DEFAULT_EXPORT_PRESENTATION_SETTINGS;
 
     let dialogResult: ExportSaveDialogResult;
     try {
-      dialogResult = await this.dependencies.showSaveDialog(defaultExportPath(session), event);
+      dialogResult = await this.dependencies.showSaveDialog(defaultExportPath(session, format), event, format);
     } catch {
       return {
         kind: "error",
         code: "dialog-failed",
-        message: "The Export Markdown dialog could not be opened."
+        message: `The Export ${formatLabel(format)} dialog could not be opened.`
       };
     }
     if (dialogResult.canceled || dialogResult.filePath === undefined) {
@@ -370,28 +405,53 @@ export class ExportService {
     }
 
     const outputPath = dialogResult.filePath;
-    if (!path.isAbsolute(outputPath) || path.extname(outputPath).toLowerCase() !== ".md") {
+    const extension = format === "markdown" ? ".md" : `.${format}`;
+    if (!path.isAbsolute(outputPath) || path.extname(outputPath).toLowerCase() !== extension) {
       return {
         kind: "error",
         code: "invalid-output",
-        message: "Choose an absolute output path ending in .md."
+        message: `Choose an absolute ${formatLabel(format)} output path ending in ${extension}.`
       };
     }
     if (await sameFile(session.filePath, outputPath)) {
       return {
         kind: "error",
         code: "source-overwrite",
-        message: "The exported Markdown cannot overwrite the authoring document."
+        message: "An export cannot overwrite the authoring document."
       };
     }
 
     try {
-      await atomicWrite(outputPath, request.text);
+      if (format === "pdf") {
+        if (this.dependencies.writePdf === undefined) {
+          return {
+            kind: "error",
+            code: "write-failed",
+            message: "PDF export is unavailable because the Vivliostyle adapter is not configured."
+          };
+        }
+        await this.dependencies.writePdf(outputPath, createExportDocumentModel(request.text), settings);
+      } else if (format === "docx") {
+        if (this.dependencies.writeDocx === undefined) {
+          return {
+            kind: "error",
+            code: "write-failed",
+            message: "DOCX export is unavailable because the Pandoc adapter is not configured."
+          };
+        }
+        await this.dependencies.writeDocx(outputPath, createExportDocumentModel(request.text), settings);
+      } else {
+        await atomicWrite(outputPath, request.text);
+      }
     } catch {
       return {
         kind: "error",
         code: "write-failed",
-        message: "The exported Markdown could not be written. Check the destination and try again."
+        message: format === "pdf"
+          ? "The PDF could not be generated. Check the Vivliostyle installation and destination."
+          : format === "docx"
+            ? "The DOCX could not be generated. Check the Pandoc installation and destination."
+            : "The exported Markdown could not be written. Check the destination and try again."
       };
     }
     this.pendingByOwner.get(owner)?.delete(request.exportId);

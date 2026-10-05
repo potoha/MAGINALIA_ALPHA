@@ -11,6 +11,7 @@ import {
   type WriteExportRequest
 } from "./export-ipc";
 import { MarkdownFileService } from "./markdown-file-service";
+import { createExportPresentationSettings, type ExportPresentationSettings } from "./export-presentation-settings";
 
 const owner = {};
 const otherOwner = {};
@@ -157,6 +158,95 @@ describe("resolved Markdown export IPC boundary", () => {
     })).resolves.toEqual({ kind: "exported", fileName: "draft.resolved.md" });
     expect(await readFile(output, "utf8")).toBe("# exported\n");
     expect(await readFile(source, "utf8")).toBe("# disk\n");
+  });
+
+  it("routes PDF output through the injected Vivliostyle adapter and keeps source untouched", async () => {
+    const { root, source, service } = await fixture("# 日本語\n");
+    const sessionId = await open(service, source, "# 日本語\n");
+    const output = path.join(root, "draft.resolved.pdf");
+    const selectedSettings = createExportPresentationSettings({
+      paperSize: "A5",
+      orientation: "landscape",
+      header: { left: "左", center: "中央", right: "右" },
+      pageNumber: false
+    });
+    const writePdf = vi.fn(async (
+      outputPath: string,
+      document: { readonly kind: string; readonly blocks: readonly { readonly kind: string; readonly markdown: string }[] },
+      settings: ExportPresentationSettings
+    ) => {
+      expect(document.kind).toBe("export-document");
+      expect(document.blocks.some((block) => block.kind === "heading" && block.markdown.includes("日本語"))).toBe(true);
+      expect(settings).toEqual(selectedSettings);
+      await writeFile(outputPath, Buffer.from("%PDF-1.7\n", "ascii"));
+    });
+    const handlers = createExportHandlers({
+      sessions: service,
+      resolve: async () => resolution,
+      showSaveDialog: async (defaultPath, _event, format) => {
+        expect(defaultPath).toBe(output);
+        expect(format).toBe("pdf");
+        return { canceled: false, filePath: output };
+      },
+      writePdf
+    });
+    const prepared = await resolve(handlers, sessionId, "# 日本語\n");
+    await expect(handlers.writeExport(event, {
+      exportId: prepared.exportId,
+      documentId: sessionId,
+      revision: prepared.revision,
+      text: "# 日本語\n",
+      format: "pdf",
+      settings: selectedSettings
+    })).resolves.toEqual({ kind: "exported", fileName: "draft.resolved.pdf" });
+    expect(writePdf).toHaveBeenCalledOnce();
+    expect((await readFile(output)).toString("ascii")).toContain("%PDF-1.7");
+    expect(await readFile(source, "utf8")).toBe("# 日本語\n");
+  });
+
+  it("routes DOCX output through the injected Pandoc adapter and keeps source untouched", async () => {
+    const { root, source, service } = await fixture("# 日本語\n");
+    const sessionId = await open(service, source, "# 日本語\n");
+    const output = path.join(root, "draft.resolved.docx");
+    const selectedSettings = createExportPresentationSettings({
+      paperSize: "B4",
+      orientation: "landscape",
+      paragraphIndent: false,
+      header: { left: "左", center: "中央", right: "右" },
+      pageNumber: false
+    });
+    const writeDocx = vi.fn(async (
+      outputPath: string,
+      document: { readonly kind: string; readonly blocks: readonly { readonly kind: string; readonly markdown: string }[] },
+      settings: ExportPresentationSettings
+    ) => {
+      expect(document.kind).toBe("export-document");
+      expect(document.blocks.some((block) => block.kind === "heading" && block.markdown.includes("日本語"))).toBe(true);
+      expect(settings).toEqual(selectedSettings);
+      await writeFile(outputPath, Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from("pandoc fixture")]));
+    });
+    const handlers = createExportHandlers({
+      sessions: service,
+      resolve: async () => resolution,
+      showSaveDialog: async (defaultPath, _event, format) => {
+        expect(defaultPath).toBe(output);
+        expect(format).toBe("docx");
+        return { canceled: false, filePath: output };
+      },
+      writeDocx
+    });
+    const prepared = await resolve(handlers, sessionId, "# 日本語\n");
+    await expect(handlers.writeExport(event, {
+      exportId: prepared.exportId,
+      documentId: sessionId,
+      revision: prepared.revision,
+      text: "# 日本語\n",
+      format: "docx",
+      settings: selectedSettings
+    })).resolves.toEqual({ kind: "exported", fileName: "draft.resolved.docx" });
+    expect(writeDocx).toHaveBeenCalledOnce();
+    expect((await readFile(output)).subarray(0, 2).toString("ascii")).toBe("PK");
+    expect(await readFile(source, "utf8")).toBe("# 日本語\n");
   });
 
   it("rejects exact source overwrite and stale or cross-owner transactions", async () => {

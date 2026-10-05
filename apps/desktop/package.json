@@ -8,6 +8,7 @@
     "@maginalia/repository-core": "0.0.0",
     "@maginalia/source-core": "0.0.0",
     "@maginalia/writing-core": "0.0.0",
+    "fflate": "^0.8.3",
     "isomorphic-git": "1.41.9",
     "koffi": "3.3.0",
     "monaco-editor": "0.53.0",

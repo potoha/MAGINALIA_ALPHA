@@ -190,7 +190,20 @@ describe("preload boundary", () => {
     await api.closeReviewerView();
     await api.resolveReferences({ text: "# Draft" });
     await api.resolveExport({ documentId: "opaque-session", revision: 1, currentText: "# Draft" });
-    await api.writeExport({ exportId: "opaque-export", documentId: "opaque-session", revision: 1, text: "# Output" });
+    await api.writeExport({
+      exportId: "opaque-export",
+      documentId: "opaque-session",
+      revision: 1,
+      text: "# Output",
+      format: "docx",
+      settings: {
+        paperSize: "A4",
+        orientation: "portrait",
+        paragraphIndent: true,
+        header: { left: "", center: "", right: "" },
+        pageNumber: true
+      }
+    });
     await api.resolveInternalLink({ projectId: "77777777-7777-4777-8777-777777777777", target: "notes/eco.md" });
     await api.openInternalLink({ projectId: "77777777-7777-4777-8777-777777777777", fileId: "88888888-8888-4888-8888-888888888888" });
     await api.openExternalLink({ url: "https://example.test/" });
@@ -331,7 +344,20 @@ describe("preload boundary", () => {
       },
       {
         channel: WRITE_EXPORT_CHANNEL,
-        args: [{ exportId: "opaque-export", documentId: "opaque-session", revision: 1, text: "# Output" }]
+        args: [{
+          exportId: "opaque-export",
+          documentId: "opaque-session",
+          revision: 1,
+          text: "# Output",
+          format: "docx",
+          settings: {
+            paperSize: "A4",
+            orientation: "portrait",
+            paragraphIndent: true,
+            header: { left: "", center: "", right: "" },
+            pageNumber: true
+          }
+        }]
       },
       {
         channel: RESOLVE_INTERNAL_LINK_CHANNEL,

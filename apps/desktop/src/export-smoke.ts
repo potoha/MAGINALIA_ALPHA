@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { BrowserWindow } from "electron";
+import { strFromU8, unzipSync } from "fflate";
+import { validateDocxArtifactFile } from "./export-docx";
 
 const POLL_INTERVAL_MS = 25;
 const STATE_TIMEOUT_MS = 20_000;
@@ -24,6 +26,17 @@ interface ExportRendererState {
   readonly exportStatus: string;
   readonly exportMessage: string;
   readonly exportEnabled: boolean;
+  readonly exportPdfEnabled: boolean;
+  readonly exportDocxEnabled: boolean;
+  readonly exportSettings: {
+    readonly available: boolean;
+    readonly open: boolean;
+    readonly paperSize: string;
+    readonly orientation: string;
+    readonly paragraphIndent: boolean;
+    readonly header: { readonly left: string; readonly center: string; readonly right: string };
+    readonly pageNumber: boolean;
+  };
   readonly tabs: readonly { readonly name: string; readonly active: boolean }[];
 }
 
@@ -71,9 +84,21 @@ const READ_STATE_SCRIPT = `(() => {
   const status = document.querySelector("#document-status");
   const save = document.querySelector("#save-markdown");
   const exportButton = document.querySelector("#export-markdown");
+  const exportPdfButton = document.querySelector("#export-pdf");
+  const exportDocxButton = document.querySelector("#export-docx");
+  const exportSettingsPanel = document.querySelector("#export-settings-panel");
+  const exportPaperSize = document.querySelector("#export-paper-size");
+  const exportOrientation = document.querySelector("#export-orientation");
+  const exportParagraphIndent = document.querySelector("#export-paragraph-indent");
+  const exportHeaderLeft = document.querySelector("#export-header-left");
+  const exportHeaderCenter = document.querySelector("#export-header-center");
+  const exportHeaderRight = document.querySelector("#export-header-right");
+  const exportPageNumber = document.querySelector("#export-page-number");
   const exportStatus = document.querySelector("#export-status");
   if (!editor || editor.dataset.smokeReady !== "project" || !project || !manuscriptList
-    || !status || !save || !exportButton || !exportStatus) return null;
+    || !status || !save || !exportButton || !exportPdfButton || !exportDocxButton || !exportSettingsPanel
+    || !exportPaperSize || !exportOrientation || !exportParagraphIndent || !exportHeaderLeft
+    || !exportHeaderCenter || !exportHeaderRight || !exportPageNumber || !exportStatus) return null;
   const active = [...manuscriptList.querySelectorAll("button[data-manuscript-id]")]
     .find((button) => button.getAttribute("aria-current") === "page");
   const tabs = [...document.querySelectorAll("#document-tabs .document-tab")].map((tab) => ({
@@ -90,6 +115,21 @@ const READ_STATE_SCRIPT = `(() => {
     exportStatus: exportStatus.dataset.state ?? "",
     exportMessage: exportStatus.textContent ?? "",
     exportEnabled: !exportButton.disabled,
+    exportPdfEnabled: !exportPdfButton.disabled,
+    exportDocxEnabled: !exportDocxButton.disabled,
+    exportSettings: {
+      available: exportSettingsPanel instanceof HTMLDetailsElement,
+      open: exportSettingsPanel instanceof HTMLDetailsElement && exportSettingsPanel.open,
+      paperSize: exportPaperSize instanceof HTMLSelectElement ? exportPaperSize.value : "",
+      orientation: exportOrientation instanceof HTMLSelectElement ? exportOrientation.value : "",
+      paragraphIndent: exportParagraphIndent instanceof HTMLInputElement && exportParagraphIndent.checked,
+      header: {
+        left: exportHeaderLeft instanceof HTMLInputElement ? exportHeaderLeft.value : "",
+        center: exportHeaderCenter instanceof HTMLInputElement ? exportHeaderCenter.value : "",
+        right: exportHeaderRight instanceof HTMLInputElement ? exportHeaderRight.value : ""
+      },
+      pageNumber: exportPageNumber instanceof HTMLInputElement && exportPageNumber.checked
+    },
     tabs
   };
 })()`;
@@ -276,6 +316,10 @@ function assertWideTable(state: PreviewRendererState, direction: string): void {
 /** Verify dirty active-session projection, ordinary Markdown output, and tab selection. */
 export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string): Promise<void> {
   const root = path.resolve(fixtureRoot);
+  // Some developer hosts do not have Vivliostyle installed. This opt-in keeps
+  // the Electron DOCX flow testable independently; the normal smoke still
+  // requires and validates a real PDF.
+  const skipPdf = process.env.MAGINALIA_EXPORT_SMOKE_SKIP_PDF === "1";
   const firstPath = path.join(root, "a.md");
   const secondPath = path.join(root, "b.md");
   const childPath = path.join(root, "child.md");
@@ -451,6 +495,35 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
     "the second active Markdown tab"
   );
   assert(openedB.text.includes("B-only document"), "second document was not active");
+
+  const chosenSettings = {
+    paperSize: "B4",
+    orientation: "landscape",
+    paragraphIndent: false,
+    header: {
+      left: "左側ヘッダー",
+      center: "中央ヘッダー",
+      right: "右側ヘッダー"
+    },
+    pageNumber: false
+  } as const;
+  await selectExportSettings(window, chosenSettings);
+  const configured = await waitForState(
+    window,
+    (state) => state.exportSettings.available
+      && state.exportSettings.open
+      && state.exportSettings.paperSize === chosenSettings.paperSize
+      && state.exportSettings.orientation === chosenSettings.orientation
+      && state.exportSettings.paragraphIndent === chosenSettings.paragraphIndent
+      && state.exportSettings.header.left === chosenSettings.header.left
+      && state.exportSettings.header.center === chosenSettings.header.center
+      && state.exportSettings.header.right === chosenSettings.header.right
+      && state.exportSettings.pageNumber === chosenSettings.pageNumber,
+    "selected Export presentation settings"
+  );
+  assert(configured.status === "saved" && !configured.saveEnabled, "changing Export settings dirtied the Markdown document");
+  assert(configured.text.includes("B-only document"), "changing Export settings changed the active Markdown session");
+
   await clickButton(window, "#export-markdown", "export only the active second document");
   const exportedB = await waitForState(
     window,
@@ -462,8 +535,98 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
   assert(exportedB.exportMessage.includes("export-2.resolved.md"), "second export did not use the fixture output");
   const outputB = await readFile(path.join(root, "export-2.resolved.md"), "utf8");
   assertIncludes(outputB, "B-only document", "second document content");
+  for (const headerText of Object.values(chosenSettings.header)) {
+    assert(!outputB.includes(headerText), "presentation header settings leaked into resolved Markdown output");
+  }
   for (const forbidden of [EXPORT_SMOKE_QUOTE, EXPORT_SMOKE_TITLE, dirtySentinel.trim(), quoteMarker]) {
     assert(!outputB.includes(forbidden), `second export used inactive document content ${forbidden}`);
   }
   assert(await readFile(secondPath, "utf8") === initialSecond, "second export changed its authoring file");
+
+  if (!skipPdf) {
+    await clickButton(window, "#export-pdf", "export the active document as PDF");
+    const exportedPdf = await waitForState(
+      window,
+      (state) => state.exportStatus === "success"
+        && state.activeFile === "b.md"
+        && state.exportMessage.includes("export-3.resolved.pdf"),
+      "the PDF export"
+    );
+    assert(exportedPdf.exportPdfEnabled, "PDF export was not available for the active document");
+    const pdf = await readFile(path.join(root, "export-3.resolved.pdf"));
+    assert(pdf.length > 4 && pdf.subarray(0, 4).toString("ascii") === "%PDF", "PDF export did not create a real PDF artifact");
+    assert(await readFile(secondPath, "utf8") === initialSecond, "PDF export changed its authoring file");
+  }
+
+  await clickButton(window, "#export-docx", "export the active document as DOCX");
+  const docxNumber = skipPdf ? 3 : 4;
+  const exportedDocx = await waitForState(
+    window,
+    (state) => state.exportStatus === "success"
+      && state.activeFile === "b.md"
+      && state.exportMessage.includes(`export-${docxNumber}.resolved.docx`),
+    "the DOCX export"
+  );
+  assert(exportedDocx.exportDocxEnabled, "DOCX export was not available for the active document");
+  const docxPath = path.join(root, `export-${docxNumber}.resolved.docx`);
+  await validateDocxArtifactFile(docxPath);
+  const docxParts = unzipSync(await readFile(docxPath));
+  const documentXml = strFromU8(docxParts["word/document.xml"]!);
+  const stylesXml = strFromU8(docxParts["word/styles.xml"]!);
+  const relationshipsXml = strFromU8(docxParts["word/_rels/document.xml.rels"]!);
+  const headerXml = strFromU8(docxParts["word/header1.xml"]!);
+  assert(documentXml.includes(`w:w="${Math.round(364 * 1440 / 25.4)}"`), "DOCX did not use the selected JIS B4 landscape width");
+  assert(documentXml.includes(`w:h="${Math.round(257 * 1440 / 25.4)}"`), "DOCX did not use the selected JIS B4 landscape height");
+  assert(documentXml.includes('w:orient="landscape"'), "DOCX did not use the selected landscape orientation");
+  assert(!stylesXml.includes('w:firstLineChars="100"'), "DOCX ignored the selected paragraph-indent setting");
+  assert(headerXml.includes("左側ヘッダー") && headerXml.includes("中央ヘッダー") && headerXml.includes("右側ヘッダー"), "DOCX did not receive all selected header slots");
+  assert(docxParts["word/footer1.xml"] === undefined, "DOCX included a footer despite page numbers being disabled");
+  assert(!relationshipsXml.includes("relationships/footer"), "DOCX retained a page-number footer relationship");
+  assert(await readFile(secondPath, "utf8") === initialSecond, "DOCX export changed its authoring file");
+}
+
+async function selectExportSettings(
+  window: BrowserWindow,
+  settings: {
+    readonly paperSize: string;
+    readonly orientation: string;
+    readonly paragraphIndent: boolean;
+    readonly header: { readonly left: string; readonly center: string; readonly right: string };
+    readonly pageNumber: boolean;
+  }
+): Promise<void> {
+  await runScript(window, `(() => {
+    const panel = document.querySelector("#export-settings-panel");
+    const paperSize = document.querySelector("#export-paper-size");
+    const orientation = document.querySelector("#export-orientation");
+    const paragraphIndent = document.querySelector("#export-paragraph-indent");
+    const headerLeft = document.querySelector("#export-header-left");
+    const headerCenter = document.querySelector("#export-header-center");
+    const headerRight = document.querySelector("#export-header-right");
+    const pageNumber = document.querySelector("#export-page-number");
+    if (!(panel instanceof HTMLDetailsElement)
+      || !(paperSize instanceof HTMLSelectElement)
+      || !(orientation instanceof HTMLSelectElement)
+      || !(paragraphIndent instanceof HTMLInputElement)
+      || !(headerLeft instanceof HTMLInputElement)
+      || !(headerCenter instanceof HTMLInputElement)
+      || !(headerRight instanceof HTMLInputElement)
+      || !(pageNumber instanceof HTMLInputElement)) return false;
+    panel.open = true;
+    paperSize.value = ${JSON.stringify(settings.paperSize)};
+    paperSize.dispatchEvent(new Event("change", { bubbles: true }));
+    orientation.value = ${JSON.stringify(settings.orientation)};
+    orientation.dispatchEvent(new Event("change", { bubbles: true }));
+    paragraphIndent.checked = ${JSON.stringify(settings.paragraphIndent)};
+    paragraphIndent.dispatchEvent(new Event("change", { bubbles: true }));
+    headerLeft.value = ${JSON.stringify(settings.header.left)};
+    headerLeft.dispatchEvent(new Event("input", { bubbles: true }));
+    headerCenter.value = ${JSON.stringify(settings.header.center)};
+    headerCenter.dispatchEvent(new Event("input", { bubbles: true }));
+    headerRight.value = ${JSON.stringify(settings.header.right)};
+    headerRight.dispatchEvent(new Event("input", { bubbles: true }));
+    pageNumber.checked = ${JSON.stringify(settings.pageNumber)};
+    pageNumber.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`, "set Export presentation settings");
 }
