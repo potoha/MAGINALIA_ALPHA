@@ -19,10 +19,12 @@ The current pre-alpha contains the working substrate for:
 - Monaco-based editing
 - required local autosave and local persistence
 - Shelf search and structured quotation insertion
+- Reviewer approval into the canonical Private Shelf
 - generic Source references beyond ISBN-only books
 - automatic reference resolution
 - rich Markdown rendering, including vertical-writing support
-- resolved Markdown export
+- resolved Markdown, PDF, and DOCX export
+- local Git-backed History for Projects, Workdesks, and the Private Shelf
 - a shared command surface and Command Palette
 - a small filesystem-based Mod host and first-party Mod experiments
 - host-independent Format, Repository, Source, and Writing core packages
@@ -48,10 +50,11 @@ MAGINALIA_ALPHA/
 ├─ packages/repository-core/
 ├─ packages/source-core/
 ├─ packages/writing-core/
+├─ spec/                    # authoritative portable format schemas
+├─ sidecars/reviewer/       # Python / FastAPI Reviewer
 ├─ mods/                    # first-party / development Mods
-├─ plan/                    # planning and implementation history
-├─ readme-first.md          # salvage/source rules
-├─ requirements.yaml        # dependency overview
+├─ docs/                    # maintained implementation and contract guidance
+├─ memory/                  # retrieval-oriented development context
 ├─ package.json
 └─ package-lock.json
 ```
@@ -84,11 +87,11 @@ For exact dependency versions, use `package-lock.json` and package manifests as 
 
 ## Read before changing architecture
 
-- [`readme-first.md`](readme-first.md) — salvage rules and upstream source map
-- [`requirements.yaml`](requirements.yaml) — dependency overview; package manifests and lockfile remain authoritative
-- [`plan/README.md`](plan/README.md) — planning index
+- [`AGENTS.md`](AGENTS.md) — repository workflow, invariants, and source authority
+- [MAGINALIA_IDE Decision Log](https://github.com/potoha/MAGINALIA_IDE/blob/main/plan/09_DECISION_LOG.md) — canonical cross-product decisions
+- [MAGINALIA_IDE Alpha Close Sequence](https://github.com/potoha/MAGINALIA_IDE/blob/main/plan/27_ALPHA_CLOSE_SLICE_SEQUENCE.md) — canonical alpha-close planning
 
-Canonical cross-product decisions still live in `potoha/MAGINALIA_IDE`, especially accepted ADRs and `plan/09_DECISION_LOG.md`. When old implementation and an accepted decision disagree, the accepted decision wins.
+Canonical cross-product decisions, ADRs, and planning live in `potoha/MAGINALIA_IDE`. Package manifests and `package-lock.json` are the dependency authority. When old implementation and an accepted decision disagree, the accepted decision wins.
 
 ## Salvage sources
 
@@ -101,7 +104,7 @@ Canonical cross-product decisions still live in `potoha/MAGINALIA_IDE`, especial
 
 ## Current safety boundary
 
-Git/GitHub production synchronization work is intentionally gated until a human programmer can review the state machine, failure paths, tests, and security boundaries. Local autosave and persistence may continue independently of that gate.
+Production Git/GitHub authentication, discovery, fetch, push, provisioning, and restore are frozen by D032. Local Git-backed History remains supported. Local autosave and persistence continue independently of the remote-sync gate.
 
 The absence of cloud connectivity must not make local writing unavailable, and credentials must never be stored in portable research repositories.
 

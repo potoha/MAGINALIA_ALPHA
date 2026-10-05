@@ -74,6 +74,10 @@ It is not automatically:
 
 Do not introduce a runtime dependency on another local repository unless the Product Owner explicitly changes that architecture.
 
+### Salvage and historical sources
+
+Treat older repositories and historical documents as evidence, not active implementation targets. Before reusing material, check the current contract, accepted MAGINALIA_IDE decision, current source, tests, and security boundary. Classify candidate behavior as KEEP, ADAPT, REWRITE, or DROP; preserve contracts and proven behavior while dropping obsolete host glue and credentials. New MAGINALIA Desktop implementation belongs in MAGINALIA_ALPHA unless the Product Owner explicitly directs otherwise.
+
 ## Engineering language
 
 Engineering artifacts are English-first:
@@ -135,6 +139,8 @@ When adding a new Core feature, first decide whether its user-executable actions
 Decision D032 remains authoritative.
 
 Do not implement or reopen production Git/GitHub fetch/pull/push/auth/conflict orchestration unless the Product Owner explicitly changes that decision.
+
+D059 removes the frozen remote Git/GitHub product path during pre-installer maintenance. Local Git-backed History remains supported and must be kept separate from remote synchronization.
 
 Local development Git operations required to implement and commit work are allowed.
 
@@ -235,13 +241,6 @@ Stop and reconsider if work begins to:
 
 Keep the requested slice bounded.
 
-## Current H.5 note
+## Current Reviewer boundary
 
-The repository contains unfinished Reviewer integration work originating from the Antigravity attempt.
-
-For Reviewer/H.5 work:
-- retrieve the relevant H.5 and Antigravity debt memory records;
-- audit the current source before extending it;
-- preserve sound salvage;
-- do not treat the unfinished implementation as accepted;
-- prove the real Reviewer lifecycle rather than relying only on mocked tests.
+The Python/FastAPI Reviewer sidecar, `sidecars/contracts/`, and the current Reviewer/Shelf approval flow are supported product paths. Preserve the opaque Reviewer `annotationId` QuoteRef identity and prove lifecycle changes through the real sidecar/Electron smoke where applicable. Historical H.5 recovery notes are not current implementation instructions; use the live source, tests, and accepted MAGINALIA_IDE decisions.

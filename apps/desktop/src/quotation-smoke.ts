@@ -5,11 +5,10 @@ import type { BrowserWindow } from "electron";
 const POLL_INTERVAL_MS = 25;
 const STATE_TIMEOUT_MS = 15_000;
 
-export const QUOTATION_SMOKE_LIBRARY_NAME = "Smoke Reference Library";
 export const QUOTATION_SMOKE_BOOK_TITLE = "Smoke Book Title";
 export const QUOTATION_SMOKE_AUTHOR = "Smoke Author";
 export const QUOTATION_SMOKE_SOURCE_ID = "isbn:9781234567890";
-export const QUOTATION_SMOKE_ANNOTATION_ID = "ann:01J0A1B2C3D4E5F6G7H8J9K0M1";
+export const QUOTATION_SMOKE_ANNOTATION_ID = "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV";
 export const QUOTATION_SMOKE_QUOTE = "これは引用 QUOTATIONTEXTSENTINEL";
 export const QUOTATION_SMOKE_MEMO = "PRIVATE_MEMO_ONLY_SENTINEL";
 export const QUOTATION_SMOKE_RAW_OCR = "PRIVATE_RAW_OCR_SENTINEL";
@@ -203,10 +202,13 @@ function assertReferenceOnly(state: QuotationRendererState): void {
     "p. 17"
   ];
   for (const value of publicValues) assertTrue(state.libraryResultText.includes(value), "reference result omitted public metadata");
+  assertTrue(state.libraryResultText.includes(QUOTATION_SMOKE_MEMO), "Private Shelf search omitted its searchable personal memo");
+  assertTrue(state.libraryResultText.includes(QUOTATION_SMOKE_QUOTE), "Private Shelf result omitted its quotation");
   assertAbsent(
     state.libraryResultText + state.libraryResultHtml,
-    [...QUOTATION_SMOKE_PRIVATE_SENTINELS, QUOTATION_SMOKE_QUOTE,
-      "privateMemo", "rawOcr", "captureImage", "localPath", "deviceMetadata",
+    [QUOTATION_SMOKE_RAW_OCR, QUOTATION_SMOKE_CAPTURE_IMAGE, QUOTATION_SMOKE_LOCAL_PATH,
+      QUOTATION_SMOKE_DEVICE_METADATA, QUOTATION_SMOKE_COMMENT, QUOTATION_SMOKE_ATTRIBUTION,
+      QUOTATION_SMOKE_UNPUBLISHED, "rawOcr", "captureImage", "localPath", "deviceMetadata",
       "unpublishedComments", "comment", "attribution"],
     "reference result"
   );
@@ -215,8 +217,7 @@ function assertReferenceOnly(state: QuotationRendererState): void {
 export async function runQuotationSmoke(
   window: BrowserWindow,
   documentRoot: string,
-  libraryRoot: string,
-  getResolveCount: () => number
+  libraryRoot: string
 ): Promise<void> {
   const canonicalDocumentRoot = path.resolve(documentRoot);
   const canonicalLibraryRoot = path.resolve(libraryRoot);
@@ -225,10 +226,10 @@ export async function runQuotationSmoke(
   const manuscriptPath = path.join(canonicalDocumentRoot, "manuscript.md");
   const initialText = await readFile(manuscriptPath, "utf8");
   const documentName = path.basename(canonicalDocumentRoot);
-  const provenance = "出典: " + QUOTATION_SMOKE_BOOK_TITLE
-    + " / 著者: " + QUOTATION_SMOKE_AUTHOR
-    + " / source: " + QUOTATION_SMOKE_SOURCE_ID
-    + " / p. 17 / annotation: " + QUOTATION_SMOKE_ANNOTATION_ID;
+  const quoteRef = `<!-- maginalia:quote-ref v1 ${JSON.stringify({
+    quoteId: QUOTATION_SMOKE_ANNOTATION_ID,
+    mode: "normal"
+  })} -->`;
 
   await waitForState(
     window,
@@ -252,12 +253,11 @@ export async function runQuotationSmoke(
   assertTrue(/[\u3040-\u30ff]/u.test(opened.text), "opened Document lost its Japanese content");
   await dispatchEditorEvent(window, "maginalia-smoke-cursor-end");
 
-  await clickButton(window, "#choose-library", "Choose Library");
   await waitForState(
     window,
-    (state) => state.libraryName === QUOTATION_SMOKE_LIBRARY_NAME
+    (state) => state.libraryName === "Private Shelf"
       && state.libraryStatusKind === "idle",
-    "the Library to open"
+    "the configured Private Shelf to be ready"
   );
 
   await search(window, QUOTATION_SMOKE_MEMO);
@@ -267,7 +267,6 @@ export async function runQuotationSmoke(
     "the memo-only reference result"
   );
   assertReferenceOnly(searched);
-  assertEqual(getResolveCount(), 0, "quotation resolve count before explicit Insert");
 
   await clickResultAction(window, "Select");
   await waitForState(
@@ -275,7 +274,6 @@ export async function runQuotationSmoke(
     (state) => state.resultCount === 1 && state.libraryResultText.includes("Selected"),
     "the reference selection"
   );
-  assertEqual(getResolveCount(), 0, "quotation resolve count after selecting a reference");
 
   await clickResultAction(window, "Insert");
   const inserted = await waitForState(
@@ -284,15 +282,13 @@ export async function runQuotationSmoke(
       && state.saveEnabled
       && state.activeManuscript === "manuscript.md"
       && state.text.startsWith(initialText)
-      && state.text.includes(QUOTATION_SMOKE_QUOTE)
-      && state.text.includes(provenance),
-    "the quotation insertion to make the Manuscript dirty"
+      && state.text.includes(quoteRef),
+    "the QuoteRef insertion to make the Manuscript dirty"
   );
-  assertTrue(inserted.text.includes(QUOTATION_SMOKE_QUOTE), "inserted Document omitted the quotation text");
-  assertTrue(inserted.text.includes(provenance), "inserted Document omitted public provenance");
+  assertTrue(inserted.text.includes(QUOTATION_SMOKE_ANNOTATION_ID), "inserted QuoteRef omitted the opaque Shelf annotationId");
+  assertTrue(!inserted.text.includes(QUOTATION_SMOKE_QUOTE), "QuoteRef insertion copied the quotation into Markdown");
   assertAbsent(inserted.text, QUOTATION_SMOKE_PRIVATE_SENTINELS, "inserted Document");
   assertReferenceOnly(inserted);
-  assertEqual(getResolveCount(), 1, "quotation resolve count after explicit Insert");
   const expectedText = inserted.text;
 
   await sendEditorKey(window, "Z");
@@ -304,7 +300,6 @@ export async function runQuotationSmoke(
     "the Monaco quotation edit to undo"
   );
   assertEqual(undone.text, initialText, "undo result");
-  assertEqual(getResolveCount(), 1, "quotation resolve count after undo");
 
   await dispatchEditorEvent(window, "maginalia-smoke-cursor-end");
   await clickResultAction(window, "Insert");
@@ -315,7 +310,6 @@ export async function runQuotationSmoke(
       && state.text === expectedText,
     "the quotation to be inserted again after undo"
   );
-  assertEqual(getResolveCount(), 2, "quotation resolve count after reinsertion");
 
   await sendEditorKey(window, "S");
   const saved = await waitForState(

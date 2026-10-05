@@ -226,9 +226,10 @@ async function readPreviewState(window: BrowserWindow): Promise<PreviewRendererS
 async function waitForState(
   window: BrowserWindow,
   predicate: (state: ExportRendererState) => boolean,
-  description: string
+  description: string,
+  timeoutMs = STATE_TIMEOUT_MS
 ): Promise<ExportRendererState> {
-  const deadline = Date.now() + STATE_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   let last: ExportRendererState | null = null;
   while (Date.now() < deadline) {
     last = await readState(window);
@@ -550,7 +551,10 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
       (state) => state.exportStatus === "success"
         && state.activeFile === "b.md"
         && state.exportMessage.includes("export-3.resolved.pdf"),
-      "the PDF export"
+      "the PDF export",
+      // Vivliostyle can need over a minute to launch its Chromium PDF engine
+      // on a cold Windows host; keep that real process path inside a bound.
+      120_000
     );
     assert(exportedPdf.exportPdfEnabled, "PDF export was not available for the active document");
     const pdf = await readFile(path.join(root, "export-3.resolved.pdf"));

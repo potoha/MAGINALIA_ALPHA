@@ -212,7 +212,8 @@ try {
   const result = await runElectronSmoke({
     userDataRoot,
     appArgs: ["--smoke-export", projectRoot],
-    env: { MAGINALIA_REVIEWER_BASE_URL: reviewerFixture.baseUrl }
+    env: { MAGINALIA_REVIEWER_BASE_URL: reviewerFixture.baseUrl },
+    timeoutMs: 180_000
   });
   assertElectronSmokeMarker(result, marker, "Electron Export smoke");
 

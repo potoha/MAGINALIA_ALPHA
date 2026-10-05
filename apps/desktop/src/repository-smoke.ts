@@ -7,10 +7,6 @@ import * as git from "isomorphic-git";
 const POLL_INTERVAL_MS = 25;
 const STATE_TIMEOUT_MS = 20_000;
 const INCOMPLETE_MARKER = "MAGINALIA-INCOMPLETE.txt";
-const PRIVATE_MEMO = "REPOSITORY_SMOKE_PRIVATE_MEMO_SENTINEL";
-const PRIVATE_RAW_OCR = "REPOSITORY_SMOKE_PRIVATE_RAW_OCR_SENTINEL";
-const PRIVATE_PATH = "REPOSITORY_SMOKE_PRIVATE_PATH_SENTINEL";
-const BOOK_ID = "isbn:9781234567890";
 
 interface RepositoryRendererState {
   readonly smokeReady: boolean;
@@ -27,10 +23,6 @@ interface RepositoryRendererState {
   readonly historyCount: number;
   readonly historyValues: readonly string[];
   readonly historySelection: string;
-  readonly libraryName: string;
-  readonly libraryStatus: string;
-  readonly libraryResultText: string;
-  readonly libraryResultHtml: string;
   readonly bodyText: string;
   readonly bodyHtml: string;
 }
@@ -47,12 +39,9 @@ const READ_STATE_SCRIPT = `(() => {
   const save = document.querySelector('#save-markdown');
   const historyStatus = document.querySelector('#repository-history-status');
   const history = document.querySelector('#repository-history-entry');
-  const libraryName = document.querySelector('#library-name');
-  const libraryStatus = document.querySelector('#library-status');
-  const libraryResults = document.querySelector('#library-results');
   if (!editor || editor.dataset.smokeReady !== 'repository' || !repositoryKind || !repositoryName
     || !repositoryStatus || !repositoryError || !documentName || !manuscriptList || !documentStatus
-    || !save || !historyStatus || !history || !libraryName || !libraryStatus || !libraryResults) return null;
+    || !save || !historyStatus || !history) return null;
   const active = [...manuscriptList.querySelectorAll('button[data-manuscript-id]')]
     .find((button) => button.getAttribute('aria-current') === 'page');
   return {
@@ -70,10 +59,6 @@ const READ_STATE_SCRIPT = `(() => {
     historyCount: history.options.length,
     historyValues: [...history.options].map((option) => option.value),
     historySelection: history.value,
-    libraryName: libraryName.textContent ?? '',
-    libraryStatus: libraryStatus.dataset.state ?? '',
-    libraryResultText: libraryResults.textContent ?? '',
-    libraryResultHtml: libraryResults.innerHTML ?? '',
     bodyText: document.body.textContent ?? '',
     bodyHtml: document.body.innerHTML ?? ''
   };
@@ -117,7 +102,7 @@ async function waitForState(
     await delay(POLL_INTERVAL_MS);
   }
   const details = lastState
-    ? ` Last state: repository ${lastState.repositoryStatus} (${lastState.repositoryError}), document ${lastState.documentStatus}, History ${lastState.historyStatus}.`
+    ? ` Last state: repository ${lastState.repositoryStatus} (${lastState.repositoryKind}/${lastState.repositoryName}; ${lastState.repositoryError}), document ${lastState.documentStatus} ${lastState.activeManuscript} ${JSON.stringify(lastState.documentText)}, History ${lastState.historyStatus}.`
     : " Renderer probe was not available.";
   throw new Error(`Repository smoke timed out while waiting for ${description}.${details}`);
 }
@@ -247,7 +232,7 @@ function assertSourceUnchanged(before: RepositorySnapshot, after: RepositorySnap
 
 function assertRendererPrivacy(state: RepositoryRendererState, sourceRoot: string, head: string): void {
   const rendered = state.bodyText + state.bodyHtml;
-  for (const privateValue of [sourceRoot, head, ".git", "MAGINALIA-INCOMPLETE.txt", "privateMemo", PRIVATE_RAW_OCR, PRIVATE_PATH]) {
+  for (const privateValue of [sourceRoot, head, ".git", "MAGINALIA-INCOMPLETE.txt"]) {
     assertTrue(!rendered.includes(privateValue), `renderer exposed private repository evidence ${privateValue}`);
   }
   assertTrue(!/\b(?:oid|commit|head)\b/i.test(rendered), "renderer exposed local History implementation wording");
@@ -331,31 +316,4 @@ export async function runRepositorySmoke(window: BrowserWindow, smokeRoot: strin
   assertTrue(!(await markerExists(copy.root)), "History copy still has its incomplete marker");
   assertSourceUnchanged(sourceBeforeCopy, await readSnapshot(project.root));
   assertRendererPrivacy(copyOpened, project.root, sourceBeforeCopy.head);
-
-  await setInput(window, "#repository-kind", "shelf");
-  await setInput(window, "#repository-title", "Repository Smoke Shelf");
-  await clickButton(window, "#create-repository", "Create Private Shelf");
-  const shelfReady = await waitForState(
-    window,
-    (state) => state.repositoryKind === "Private Shelf"
-      && state.repositoryName === "Repository Smoke Shelf"
-      && state.repositoryStatus === "ready"
-      && state.libraryName === "Repository Smoke Shelf"
-      && state.libraryStatus === "idle"
-      && state.documentText === firstText,
-    "the Private Shelf and Library handoff",
-  );
-  await setInput(window, "#library-query", PRIVATE_MEMO);
-  await clickButton(window, "#library-search", "search the Private Shelf");
-  const searched = await waitForState(
-    window,
-    (state) => state.libraryStatus === "ready" && state.libraryResultText.length > 0,
-    "the private memo-index Library result",
-  );
-  assertTrue(searched.libraryResultText.includes(BOOK_ID), "Library result omitted public source metadata");
-  assertTrue(!searched.libraryResultText.includes(PRIVATE_MEMO), "Library result exposed private memo");
-  assertTrue(!searched.libraryResultText.includes(PRIVATE_RAW_OCR), "Library result exposed raw OCR");
-  assertTrue(!searched.libraryResultText.includes(PRIVATE_PATH), "Library result exposed source path");
-  assertTrue(!searched.libraryResultHtml.includes("privateMemo"), "Library HTML exposed private field name");
-  assertEqual(searched.documentText, firstText, "Private Shelf activation changed the current manuscript");
 }

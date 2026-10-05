@@ -312,7 +312,6 @@ app.innerHTML = `
               <strong id="library-name">Private Shelf</strong>
               <button id="open-reviewer" type="button" title="取り込む・確認する">取り込む・確認する</button>
               <button id="refresh-shelf" type="button" title="Sync Reviewer approvals into the selected Private Shelf">Shelfを更新</button>
-              <button id="choose-library" type="button" hidden aria-hidden="true">Choose local Library</button>
               <button id="refresh-references" data-command-id="maginalia.references.refresh" type="button" disabled>Refresh References</button>
             </div>
             <form id="library-search-form" class="library-search-form">
@@ -466,7 +465,6 @@ const newFileForm = requiredElement<HTMLFormElement>("#new-file-form");
 const newFileName = requiredElement<HTMLInputElement>("#new-file-name");
 const newFileTitle = requiredElement<HTMLInputElement>("#new-file-title");
 const newFileType = requiredElement<HTMLSelectElement>("#new-file-type");
-const chooseLibraryButton = requiredElement<HTMLButtonElement>("#choose-library");
 const libraryName = requiredElement<HTMLElement>("#library-name");
 const openReviewerButton = requiredElement<HTMLButtonElement>("#open-reviewer");
 const refreshShelfButton = requiredElement<HTMLButtonElement>("#refresh-shelf");
@@ -3411,11 +3409,6 @@ if (libraryApi) {
     writing: controller,
     view: legacyLibraryView
   });
-  chooseLibraryButton.addEventListener("click", () => {
-    void libraryController?.openLibrary();
-  });
-} else {
-  chooseLibraryButton.disabled = true;
 }
 
 let shelfController: ShelfController | undefined;

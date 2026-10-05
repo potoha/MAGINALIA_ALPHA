@@ -158,24 +158,12 @@ import {
 } from "./workspace-state-ipc";
 import { FileWorkspaceStateStore } from "./workspace-state-service";
 import {
-  createRepositoryCloudDiscoveryCancellationHandlers,
-  createRepositoryCloudDiscoveryHandlers,
-  CANCEL_PRIVATE_WORKS_DISCOVERY_CHANNEL,
-  DISCOVER_PRIVATE_WORKS_CHANNEL,
-  GITHUB_DEVICE_PROMPT_CHANNEL,
-  GITHUB_DEVICE_VERIFICATION_URI,
-  type CloudDiscoveryOperation
-} from "./repository-cloud-ipc";
-import {
   AUTOSAVE_FLUSH_REQUEST_CHANNEL,
   AUTOSAVE_FLUSH_RESPONSE_CHANNEL,
   isAutosaveFlushResponseRequest,
   type AutosaveFlushResponseResult
 } from "./autosave-ipc";
 import { AutosaveShutdownCoordinator } from "./autosave-shutdown";
-import { discoverAuthenticatedRestoreRepositories } from "./repository-cloud-discover-operation";
-import { RepositoryCloudCoordinator } from "./repository-cloud-coordinator";
-import type { GitHubDeviceVerificationCallback, GitHubDeviceVerificationPrompt } from "./repository-github-auth";
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -320,47 +308,6 @@ const repositoryService = new LocalRepositoryService({
   // validated direct-child boundaries; renderer paths never become ignores.
   workdeskHistoryExclusionResolver: (root, identity) => workdeskService.historyExcludedChildDirectories(root, identity),
 });
-let quotationResolveCount = 0;
-
-const REPOSITORY_SMOKE_BOOK_ID = "isbn:9781234567890";
-const REPOSITORY_SMOKE_ANNOTATION_ID = "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV";
-const REPOSITORY_SMOKE_PRIVATE_MEMO = "REPOSITORY_SMOKE_PRIVATE_MEMO_SENTINEL";
-const REPOSITORY_SMOKE_RAW_OCR = "REPOSITORY_SMOKE_PRIVATE_RAW_OCR_SENTINEL";
-const REPOSITORY_SMOKE_LOCAL_PATH = "REPOSITORY_SMOKE_PRIVATE_PATH_SENTINEL";
-
-async function seedRepositorySmokeShelf(owner: object, repositoryId: string): Promise<void> {
-  const resolved = await repositoryService.resolveForOwner(owner, repositoryId);
-  if (resolved.kind === "error") throw new Error(resolved.message);
-  await mkdir(path.join(resolved.canonicalRoot, "books"), { recursive: true });
-  await mkdir(path.join(resolved.canonicalRoot, "annotations"), { recursive: true });
-  await writeFile(
-    path.join(resolved.canonicalRoot, "books", "smoke-book.json"),
-    JSON.stringify({
-      type: "book",
-      version: "0.1",
-      id: REPOSITORY_SMOKE_BOOK_ID,
-      title: "Repository Smoke Book",
-      authors: ["Repository Smoke Author"],
-      isbn13: "9781234567890",
-    }) + "\n",
-    "utf8",
-  );
-  await writeFile(
-    path.join(resolved.canonicalRoot, "annotations", "smoke-annotation.json"),
-    JSON.stringify({
-      type: "annotation",
-      version: "0.1",
-      id: REPOSITORY_SMOKE_ANNOTATION_ID,
-      source: REPOSITORY_SMOKE_BOOK_ID,
-      location: { page: 17, path: "pages/p17" },
-      quote: "Repository smoke quotation",
-      privateMemo: REPOSITORY_SMOKE_PRIVATE_MEMO,
-      rawOcr: REPOSITORY_SMOKE_RAW_OCR,
-      localPath: REPOSITORY_SMOKE_LOCAL_PATH,
-    }) + "\n",
-    "utf8",
-  );
-}
 const documentWorkspaceHandlers = createDocumentWorkspaceHandlers({
   pickDocumentFolder: async () => {
     if (workspaceSmoke.requested || quotationSmoke.requested || shelfSmoke.requested || d5Smoke.requested) {
@@ -526,10 +473,8 @@ const libraryHandlers = createLibraryHandlers({
     }),
   openLibraryRoot: (owner, rootPath) => libraryService.openForOwner(owner, rootPath),
   searchLibrary: (owner, libraryId, query) => libraryService.searchForOwner(owner, libraryId, query),
-  resolveQuotationForInsert: (owner, libraryId, annotationId) => {
-    if (quotationSmoke.requested) quotationResolveCount += 1;
-    return libraryService.resolveQuotationForInsertForOwner(owner, libraryId, annotationId);
-  }
+  resolveQuotationForInsert: (owner, libraryId, annotationId) =>
+    libraryService.resolveQuotationForInsertForOwner(owner, libraryId, annotationId)
 });
 const reviewerShelfSync = createReviewerShelfSyncAdapter({
   // Reviewer is started only by the explicit Shelf refresh operation. Its
@@ -600,13 +545,8 @@ const repositoryHandlers = createRepositoryHandlers({
       title: "Open Repository",
       properties: ["openDirectory"]
     }),
-  createRepository: async (owner, parentRoot, kind, title) => {
-    const result = await repositoryService.createForOwner(owner, parentRoot, kind, title);
-    if (repositorySmoke.requested && kind === "shelf" && result.kind === "opened") {
-      await seedRepositorySmokeShelf(owner, result.repository.repositoryId);
-    }
-    return result;
-  },
+  createRepository: (owner, parentRoot, kind, title) =>
+    repositoryService.createForOwner(owner, parentRoot, kind, title),
   openRepository: (owner, root) => repositoryService.openForOwner(owner, root),
   resolveRepository: (owner, repositoryId) => repositoryService.resolveForOwner(owner, repositoryId),
   createHistory: (owner, repositoryId) => repositoryService.createHistoryForOwner(owner, repositoryId),
@@ -713,81 +653,12 @@ let gSmokeFinished = false;
 let hSmokeFinished = false;
 let h5SmokeFinished = false;
 
-const CLOUD_USER_CODE_PATTERN = /^[A-Za-z0-9-]+$/u;
-const MAX_CLOUD_USER_CODE_LENGTH = 64;
-
 function isLiveMainWindowSender(owner: object): owner is WebContents {
   const window = mainWindow;
   if (window === null || window.isDestroyed()) return false;
   const sender = window.webContents;
   return sender === owner && !sender.isDestroyed();
 }
-
-function isDeviceVerificationPrompt(value: unknown): value is GitHubDeviceVerificationPrompt {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  try {
-    if (Object.getPrototypeOf(value) !== Object.prototype) return false;
-    const keys = Reflect.ownKeys(value);
-    if (keys.length !== 2
-      || !keys.every((key) => key === "userCode" || key === "verificationUri")) {
-      return false;
-    }
-    const userCodeDescriptor = Object.getOwnPropertyDescriptor(value, "userCode");
-    const verificationUriDescriptor = Object.getOwnPropertyDescriptor(value, "verificationUri");
-    if (userCodeDescriptor === undefined
-      || !("value" in userCodeDescriptor)
-      || verificationUriDescriptor === undefined
-      || !("value" in verificationUriDescriptor)) {
-      return false;
-    }
-    const userCode = userCodeDescriptor.value;
-    return typeof userCode === "string"
-      && userCode.length > 0
-      && userCode.length <= MAX_CLOUD_USER_CODE_LENGTH
-      && CLOUD_USER_CODE_PATTERN.test(userCode)
-      && verificationUriDescriptor.value === GITHUB_DEVICE_VERIFICATION_URI;
-  } catch {
-    return false;
-  }
-}
-
-function createCloudVerificationCallback(owner: object): GitHubDeviceVerificationCallback {
-  if (!isLiveMainWindowSender(owner)) throw new Error("The cloud discovery owner is not active.");
-  const sender = owner;
-  return (prompt) => {
-    if (!isLiveMainWindowSender(sender) || !isDeviceVerificationPrompt(prompt)) {
-      throw new Error("The cloud verification prompt could not be delivered.");
-    }
-    sender.send(GITHUB_DEVICE_PROMPT_CHANNEL, {
-      userCode: prompt.userCode,
-      verificationUri: GITHUB_DEVICE_VERIFICATION_URI,
-    });
-  };
-}
-
-const cloudCoordinator = new RepositoryCloudCoordinator({
-  isLiveOwner: isLiveMainWindowSender,
-  registerOwnerLifecycle: (owner, onClose) => {
-    const sender = owner as WebContents;
-    sender.once("destroyed", onClose);
-    return () => sender.removeListener("destroyed", onClose);
-  },
-  discover: (request) => discoverAuthenticatedRestoreRepositories(request),
-});
-
-const cloudDiscoveryOperation: CloudDiscoveryOperation = (owner, onVerification) =>
-  cloudCoordinator.discoverForOwner(owner, onVerification);
-
-const cloudDiscoveryHandlers = createRepositoryCloudDiscoveryHandlers({
-  discover: cloudDiscoveryOperation,
-  createVerificationCallback: createCloudVerificationCallback,
-  catalog: cloudCoordinator.catalog,
-});
-
-const cloudCancellationHandlers = createRepositoryCloudDiscoveryCancellationHandlers({
-  isCurrentOwner: (owner) => cloudCoordinator.isCurrentOwner(owner),
-  cancelForOwner: (owner) => cloudCoordinator.cancelForOwner(owner),
-});
 
 app.on("second-instance", () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1128,10 +999,6 @@ function registerMarkdownIpc(): void {
   ipcMain.handle(OPEN_REPOSITORY_HISTORY_CHANNEL, repositoryHandlers.openRepositoryHistory);
   ipcMain.handle(OPEN_REPOSITORY_DOCUMENT_CHANNEL, repositoryHandlers.openRepositoryDocument);
   ipcMain.handle(USE_REPOSITORY_SHELF_CHANNEL, repositoryHandlers.useRepositoryShelf);
-  ipcMain.handle(DISCOVER_PRIVATE_WORKS_CHANNEL, (event, ...args) =>
-    cloudDiscoveryHandlers.discoverPrivateWorks(event, ...args));
-  ipcMain.handle(CANCEL_PRIVATE_WORKS_DISCOVERY_CHANNEL, (event, ...args) =>
-    cloudCancellationHandlers.cancelPrivateWorksDiscovery(event, ...args));
 }
 
 function unregisterMarkdownIpc(): void {
@@ -1179,9 +1046,6 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(OPEN_REPOSITORY_HISTORY_CHANNEL);
   ipcMain.removeHandler(OPEN_REPOSITORY_DOCUMENT_CHANNEL);
   ipcMain.removeHandler(USE_REPOSITORY_SHELF_CHANNEL);
-  ipcMain.removeHandler(DISCOVER_PRIVATE_WORKS_CHANNEL);
-  ipcMain.removeHandler(CANCEL_PRIVATE_WORKS_DISCOVERY_CHANNEL);
-  cloudCoordinator.dispose();
   markdownFileService.dispose();
   documentWorkspaceService.dispose();
   libraryService.dispose();
@@ -1205,7 +1069,6 @@ function createMainWindow(): BrowserWindow {
       || !smokeMode,
     webPreferences: createSecureWebPreferences(path.join(__dirname, "preload.js"))
   });
-  const cloudOwner = window.webContents;
   // Resolve once at window creation so an existing explicit registry is ready
   // for normal Shelf use. The shared binding also reloads it on demand.
   void getConfiguredPrivateShelf().getActive(window.webContents);
@@ -1315,8 +1178,7 @@ function createMainWindow(): BrowserWindow {
         void runQuotationSmoke(
           window,
           quotationSmoke.documentRoot!,
-          quotationSmoke.libraryRoot!,
-          () => quotationResolveCount
+          quotationSmoke.libraryRoot!
         ).then(
           () => completeQuotationSmoke(),
           (error: unknown) => failQuotationSmoke(error)
@@ -1629,7 +1491,6 @@ function createMainWindow(): BrowserWindow {
   });
 
   window.on("closed", () => {
-    cloudCoordinator.closeOwner(cloudOwner);
     if (writingSmoke.requested && !writingSmokeFinished) {
       failWritingSmoke(new Error("Writing smoke window closed before completion."));
     }

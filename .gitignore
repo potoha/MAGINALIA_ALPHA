@@ -1,5 +1,6 @@
 node_modules/
 apps/desktop/dist/
+packages/*/dist/
 *.log
 .venv/
 **/__pycache__/

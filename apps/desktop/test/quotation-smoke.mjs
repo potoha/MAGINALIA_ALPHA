@@ -15,23 +15,24 @@ const comment = "PRIVATE_COMMENT_SENTINEL";
 const attribution = "PRIVATE_ATTRIBUTION_SENTINEL";
 const unpublished = "PRIVATE_UNPUBLISHED_SENTINEL";
 const sourceId = "isbn:9781234567890";
-const annotationId = "ann:01J0A1B2C3D4E5F6G7H8J9K0M1";
+const annotationId = "2b6c4e0c-7268-4da0-9ad3-f5d1c8b7f2a1";
+const canonicalAnnotationId = "ann:01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const bookTitle = "Smoke Book Title";
 const author = "Smoke Author";
-const provenance = "出典: " + bookTitle
-  + " / 著者: " + author
-  + " / source: " + sourceId
-  + " / p. 17 / annotation: " + annotationId;
+const quoteRef = `<!-- maginalia:quote-ref v1 ${JSON.stringify({ quoteId: canonicalAnnotationId, mode: "normal" })} -->`;
 
 let temporaryDirectory;
 let documentRoot;
 let libraryRoot;
+let userDataRoot;
 try {
   temporaryDirectory = await mkdtemp(path.join(tmpdir(), "maginalia-quotation-smoke-"));
   documentRoot = path.join(temporaryDirectory, "document-root");
   libraryRoot = path.join(temporaryDirectory, "library-root");
+  userDataRoot = path.join(temporaryDirectory, "electron-user-data");
   await mkdir(documentRoot);
   await mkdir(libraryRoot);
+  await mkdir(userDataRoot);
   await writeFile(path.join(documentRoot, "manuscript.md"), Buffer.from(initialText, "utf8"));
   await writeFile(
     path.join(documentRoot, "notes.md"),
@@ -60,7 +61,7 @@ try {
   await writeFile(path.join(libraryRoot, "annotations", "smoke-annotation.json"), JSON.stringify({
     type: "annotation",
     version: "0.1",
-    id: annotationId,
+    id: canonicalAnnotationId,
     source: sourceId,
     location: { page: 17 },
     quote,
@@ -68,26 +69,51 @@ try {
     rawOcr,
     captureImage,
     localPath,
-    deviceMetadata: { sentinel: deviceMetadata },
+    deviceMetadata: {
+      sentinel: deviceMetadata,
+      maginaliaReviewer: {
+        version: 1,
+        annotationId,
+        digest: "sha256:quotation-smoke"
+      }
+    },
     comment,
     attribution,
     unpublishedComments: [unpublished]
   }, null, 2));
 
+  await writeFile(path.join(userDataRoot, "shelf_location.yml"), [
+    "version: 1",
+    "",
+    "private_shelf:",
+    `  registry: ${JSON.stringify(libraryRoot)}`,
+    "  urls:",
+    "    github: null",
+    "    homepage: null",
+    "    other: []",
+    "",
+    "public_shelf:",
+    "  registry: null",
+    "  urls:",
+    "    github: null",
+    "    homepage: null",
+    "    other: []",
+    "",
+  ].join("\n"), "utf8");
+
   const result = await runElectronSmoke({
-    userDataRoot: path.join(temporaryDirectory, "electron-user-data"),
+    userDataRoot,
     appArgs: ["--smoke-quotation", documentRoot, libraryRoot]
   });
   assertElectronSmokeMarker(result, marker, "Electron quotation smoke");
 
   const actualBytes = await readFile(path.join(documentRoot, "manuscript.md"));
   const actualText = actualBytes.toString("utf8");
-  if (!actualText.startsWith(initialText)
-    || !actualText.includes(quote)
-    || !actualText.includes(provenance)) {
-    throw new Error(
-      "Saved quotation text did not contain the expected quote and public provenance."
-    );
+  if (!actualText.startsWith(initialText) || !actualText.includes(quoteRef)) {
+    throw new Error("Saved manuscript did not contain the inserted opaque Shelf QuoteRef.");
+  }
+  if (actualText.includes(quote) || actualText.includes(annotationId)) {
+    throw new Error("Saved QuoteRef copied quotation content or the transient Reviewer alias.");
   }
   for (const privateValue of [
     memo,

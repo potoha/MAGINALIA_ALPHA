@@ -1,6 +1,6 @@
 ---
 id: architecture.core-invariants
-updated: 2026-10-04
+updated: 2026-10-06
 status: active
 kind: invariant
 canonical:
@@ -36,3 +36,7 @@ canonical:
 Production Git/GitHub fetch/pull/push/auth/conflict orchestration is frozen until a human programmer can review that state machine.
 
 OpenCode capability does not supersede D032.
+
+## D059
+
+Pre-installer cleanup removes completed migration machinery, stale duplicated context, frozen remote Git/GitHub product code, accidental backups, and reproducible tracked package outputs. Preserve the current Reviewer/Shelf, authoring, Mods, D044 export, portable formats, and local Git-backed History.

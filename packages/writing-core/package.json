@@ -6,9 +6,9 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "npm run build && tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "test": "vitest run"
+    "test": "npm run build && vitest run"
   },
   "devDependencies": {
     "typescript": "7.0.2",

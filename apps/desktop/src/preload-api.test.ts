@@ -52,11 +52,7 @@ import {
   OPEN_REPOSITORY_CHANNEL,
   OPEN_REPOSITORY_HISTORY_CHANNEL,
   OPEN_REPOSITORY_DOCUMENT_CHANNEL,
-  USE_REPOSITORY_SHELF_CHANNEL,
-  DISCOVER_PRIVATE_WORKS_CHANNEL,
-  CANCEL_PRIVATE_WORKS_DISCOVERY_CHANNEL,
-  GITHUB_DEVICE_PROMPT_CHANNEL,
-  GITHUB_DEVICE_VERIFICATION_URI
+  USE_REPOSITORY_SHELF_CHANNEL
 } from "./preload-api";
 
 describe("preload boundary", () => {
@@ -121,9 +117,6 @@ describe("preload boundary", () => {
       "openRepository",
       "openRepositoryDocument",
       "useRepositoryShelf",
-      "discoverPrivateWorks",
-      "cancelPrivateWorksDiscovery",
-      "onDevicePrompt",
       "onAutosaveFlushRequest"
     ]);
     await api.openMarkdown();
@@ -241,9 +234,6 @@ describe("preload boundary", () => {
     await api.useRepositoryShelf({
       repositoryId: "44444444-4444-4444-8444-444444444444"
     });
-    await api.discoverPrivateWorks();
-    await api.cancelPrivateWorksDiscovery();
-
     expect(calls).toEqual([
       { channel: OPEN_MARKDOWN_CHANNEL, args: [] },
       { channel: SAVE_MARKDOWN_CHANNEL, args: [{ sessionId: "opaque-session", text: "# Draft\r\n" }] },
@@ -430,69 +420,7 @@ describe("preload boundary", () => {
       {
         channel: USE_REPOSITORY_SHELF_CHANNEL,
         args: [{ repositoryId: "44444444-4444-4444-8444-444444444444" }]
-      },
-      { channel: DISCOVER_PRIVATE_WORKS_CHANNEL, args: [] },
-      { channel: CANCEL_PRIVATE_WORKS_DISCOVERY_CHANNEL, args: [] }
+      }
     ]);
-  });
-
-  it("subscribes only to the fixed Device Flow prompt channel and validates payloads", () => {
-    const listeners = new Map<string, (value: unknown) => void>();
-    const subscribeCalls: string[] = [];
-    const api = createMarkdownPreloadApi(
-      async () => ({ kind: "cancelled" }),
-      (channel, listener) => {
-        subscribeCalls.push(channel);
-        listeners.set(channel, listener);
-        return () => listeners.delete(channel);
-      },
-    );
-    const prompts: unknown[] = [];
-    const unsubscribe = api.onDevicePrompt((prompt) => prompts.push(prompt));
-    const listener = listeners.get(GITHUB_DEVICE_PROMPT_CHANNEL);
-    expect(listener).toBeDefined();
-    listener?.({
-      userCode: "ABCD-1234",
-      verificationUri: GITHUB_DEVICE_VERIFICATION_URI,
-    });
-    listener?.({
-      userCode: "ABCD-1234",
-      verificationUri: "https://evil.example/device",
-    });
-    listener?.({
-      userCode: "../../secret",
-      verificationUri: GITHUB_DEVICE_VERIFICATION_URI,
-    });
-    listener?.({
-      userCode: "A".repeat(65),
-      verificationUri: GITHUB_DEVICE_VERIFICATION_URI,
-    });
-    listener?.({
-      userCode: "ABCD-1234",
-      verificationUri: GITHUB_DEVICE_VERIFICATION_URI,
-      token: "secret",
-    });
-    expect(subscribeCalls).toEqual([GITHUB_DEVICE_PROMPT_CHANNEL]);
-    expect(prompts).toEqual([{
-      userCode: "ABCD-1234",
-      verificationUri: GITHUB_DEVICE_VERIFICATION_URI,
-    }]);
-    expect(Object.isFrozen(prompts[0])).toBe(true);
-
-    unsubscribe();
-    expect(listeners.has(GITHUB_DEVICE_PROMPT_CHANNEL)).toBe(false);
-  });
-
-  it("rejects an invalid prompt callback without subscribing", () => {
-    let subscriptions = 0;
-    const api = createMarkdownPreloadApi(
-      async () => ({ kind: "cancelled" }),
-      () => {
-        subscriptions += 1;
-        return () => undefined;
-      },
-    );
-    expect(() => api.onDevicePrompt(null as never)).toThrow(TypeError);
-    expect(subscriptions).toBe(0);
   });
 });

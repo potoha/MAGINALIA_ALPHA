@@ -1,42 +1,22 @@
 ---
 id: roadmap.distribution
-updated: 2026-09-28
+updated: 2026-10-06
 status: active
 kind: roadmap
 canonical:
-  - MAGINALIA_IDE/plan/22_WORKDESK_BROWSER_INSTALLER.md
-  - MAGINALIA_IDE/plan/23_POST_MVP_IMPLEMENTATION_ROADMAP.md
   - MAGINALIA_IDE/plan/09_DECISION_LOG.md
+  - MAGINALIA_IDE/plan/27_ALPHA_CLOSE_SLICE_SEQUENCE.md
 ---
 
 # Distribution roadmap
 
-Near-term order:
+The active pre-installer gate is I1 maintenance and release audit in the canonical MAGINALIA_IDE alpha-close sequence. D059 requires active-tree cleanup while preserving the supported local authoring, Reviewer/Shelf, Mods, local History, and D044 export paths.
 
-```text
-H.5 Reviewer integration/recovery
--> H.6 Renderer/editor quality
--> H.7 Authoring Architecture Freeze
--> Harness 01 Installer Readiness audit
--> Windows Installer + Japanese manual
-```
+After I1 evidence is complete, I2 covers the Windows Installer and Japanese documentation. The ordinary user path must not require a terminal, Node, Python, PATH, npm, or pip setup, and uninstall must preserve Workdesk, Projects, Private Shelf, and research files.
 
-Browser/Web View is not a mandatory Core blocker.
+Production Git/GitHub authentication, discovery, fetch, push, provisioning, and restore remain frozen under D032. Local Git-backed History remains supported. Browser/Web View remains an optional Mod under D039.
 
-Accepted D039:
-- Browser/Web View becomes an official optional Mod;
-- unchecked by default in ordinary installer;
-- external browser is fallback when Mod is absent.
+Canonical decisions and sequence:
 
-Installer normal-user path:
-- no terminal;
-- no Node/Python/PATH/npm/pip setup;
-- preserve Workdesk/Projects/Shelf/research files on uninstall.
-
-Alpha close direction:
-- ordinary authoring flow reaches resolved Markdown + PDF + DOCX export;
-- D032 production Git/GitHub Sync is not an alpha blocker.
-
-Post-alpha line:
-- beta 1.0 “Ethiopia”;
-- early Core focus includes Cross-surface Selection, Research Library/Shelf, Default Knowledge Importer, Floating Lookup, Research Discovery.
+- `MAGINALIA_IDE/plan/09_DECISION_LOG.md`
+- `MAGINALIA_IDE/plan/27_ALPHA_CLOSE_SLICE_SEQUENCE.md`

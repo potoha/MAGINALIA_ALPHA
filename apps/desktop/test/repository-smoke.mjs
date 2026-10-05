@@ -19,7 +19,7 @@ try {
 
   const parentEntries = await readdir(path.join(temporaryDirectory, "repository-parent"));
   const destinationEntries = await readdir(path.join(temporaryDirectory, "history-destination"));
-  if (parentEntries.length !== 2 || destinationEntries.length !== 1) {
+  if (parentEntries.length !== 1 || destinationEntries.length !== 1) {
     throw new Error(
       `Repository smoke left an unexpected temporary layout (${parentEntries.length} source entries, ${destinationEntries.length} copy entries).`
     );

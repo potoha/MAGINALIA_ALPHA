@@ -21,10 +21,12 @@ MAGINALIA は、学生・研究者・書き手が、Gitやターミナル、汎�
 - Monacoベースの編集
 - 必須のローカルAutosaveとローカル永続化
 - Shelf検索と構造化された引用挿入
+- Reviewerで承認した引用のcanonical Private Shelfへの反映
 - ISBN付き書籍に限定されない汎用Source参照
 - 参考文献の自動解決
 - 縦書きを含むリッチなMarkdownレンダリング
-- 参照解決済みMarkdownのエクスポート
+- 参照解決済みMarkdown・PDF・DOCXのエクスポート
+- Project / Workdesk / Private ShelfのローカルGit-backed History
 - 共通コマンド基盤とCommand Palette
 - 小規模なファイルシステムベースのModホストとfirst-party Modの実験
 - ホスト非依存のFormat / Repository / Source / Writing coreパッケージ
@@ -50,10 +52,11 @@ MAGINALIA_ALPHA/
 ├─ packages/repository-core/
 ├─ packages/source-core/
 ├─ packages/writing-core/
+├─ spec/                    # portable format schemaの正本
+├─ sidecars/reviewer/       # Python / FastAPI Reviewer
 ├─ mods/                    # first-party / 開発用Mods
-├─ plan/                    # 計画・引き継ぎ・実装履歴
-├─ readme-first.md          # salvage / sourceルール
-├─ requirements.yaml        # 依存関係の概要
+├─ docs/                    # 維持対象の実装・contractガイド
+├─ memory/                  # 検索型の開発コンテキスト
 ├─ package.json
 └─ package-lock.json
 ```
@@ -86,11 +89,11 @@ npm run smoke:export
 
 ## アーキテクチャを変更する前に読むもの
 
-- [`readme-first.md`](readme-first.md) — salvageルールと上流source map
-- [`requirements.yaml`](requirements.yaml) — 依存関係の概要。正本はpackage manifestとlockfile
-- [`plan/README.md`](plan/README.md) — 計画文書の索引
+- [`AGENTS.md`](AGENTS.md) — repository workflow、invariant、source authority
+- [MAGINALIA_IDE Decision Log](https://github.com/potoha/MAGINALIA_IDE/blob/main/plan/09_DECISION_LOG.md) — product横断のcanonical decision
+- [MAGINALIA_IDE Alpha Close Sequence](https://github.com/potoha/MAGINALIA_IDE/blob/main/plan/27_ALPHA_CLOSE_SLICE_SEQUENCE.md) — canonicalなalpha close計画
 
-プロダクト横断のcanonical decisionは引き続き `potoha/MAGINALIA_IDE` にあり、とくにAccepted ADRと `plan/09_DECISION_LOG.md` が重要です。古い実装とAccepted decisionが食い違う場合は、Accepted decisionを優先します。
+プロダクト横断のdecision、ADR、計画の正本は `potoha/MAGINALIA_IDE` にあります。依存関係の正本は各package manifestと `package-lock.json` です。古い実装とAccepted decisionが食い違う場合は、Accepted decisionを優先します。
 
 ## Salvage元
 
@@ -103,7 +106,7 @@ npm run smoke:export
 
 ## 現在の安全境界
 
-Git/GitHubのproduction同期実装は、人間のプログラマがstate machine、failure path、test、security boundaryをレビューできるようになるまで意図的にgateされています。ローカルAutosaveと永続化は、このgateとは独立して進められます。
+ProductionのGit/GitHub認証、discovery、fetch、push、provisioning、restoreはD032により凍結されています。ローカルGit-backed Historyは引き続きサポートします。Autosaveとローカル永続化はremote-sync gateとは独立しています。
 
 クラウド接続がなくてもローカル執筆は利用可能でなければならず、credentialをportableな研究リポジトリへ保存してはいけません。
 
