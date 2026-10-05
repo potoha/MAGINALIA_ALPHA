@@ -108,6 +108,8 @@ import {
   type ViewRegion
 } from "./workbench-core";
 import { CENTRAL_SERVICE_VIEW_MANIFEST, WORKBENCH_VIEW_MANIFEST } from "./workbench-views";
+import { shouldPromptForPrimaryWorkdesk } from "./workdesk-startup";
+import { workdeskProjectShortcutsForRoot, type WorkdeskProjectExplorerShortcut } from "./workdesk-project-explorer";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -121,53 +123,6 @@ app.innerHTML = `
       <div class="brand">
         <p class="eyebrow">MAGINALIA</p>
         <h1 id="title">Before Kaldi</h1>
-      </div>
-      <div class="document-controls">
-        <button id="open-markdown" type="button">Open</button>
-        <button id="save-markdown" data-command-id="maginalia.document.save" type="button" disabled>Save</button>
-        <button id="export-markdown" data-command-id="maginalia.document.export" type="button" disabled>Export Markdown</button>
-        <button id="export-pdf" data-command-id="maginalia.document.exportPdf" type="button" disabled>Export PDF</button>
-        <button id="export-docx" data-command-id="maginalia.document.exportDocx" type="button" disabled>Export DOCX</button>
-        <span id="document-name" class="document-name">No document open</span>
-        <span id="document-status" class="document-status" data-state="empty" role="status" aria-live="polite">No document open</span>
-        <span id="export-status" class="export-status" data-state="empty" role="status" aria-live="polite">Open a document to export.</span>
-      </div>
-      <details id="export-settings-panel" class="export-settings">
-        <summary>Export settings</summary>
-        <div class="export-settings-fields">
-          <label for="export-paper-size">Paper size</label>
-          <select id="export-paper-size">
-            ${EXPORT_PAPER_SIZES.map((size) => `<option value="${size}">${size.startsWith("B") ? `${size} (JIS)` : size}</option>`).join("")}
-          </select>
-          <label for="export-orientation">Orientation</label>
-          <select id="export-orientation">
-            <option value="portrait">Portrait</option>
-            <option value="landscape">Landscape</option>
-          </select>
-          <label class="export-settings-check" for="export-paragraph-indent">
-            <input id="export-paragraph-indent" type="checkbox">
-            First-line indent (1 em)
-          </label>
-          <fieldset class="export-header-fields">
-            <legend>Header text</legend>
-            <label for="export-header-left">Left<input id="export-header-left" type="text" autocomplete="off"></label>
-            <label for="export-header-center">Center<input id="export-header-center" type="text" autocomplete="off"></label>
-            <label for="export-header-right">Right<input id="export-header-right" type="text" autocomplete="off"></label>
-          </fieldset>
-          <label class="export-settings-check" for="export-page-number">
-            <input id="export-page-number" type="checkbox">
-            Centered page number in footer
-          </label>
-        </div>
-      </details>
-      <div id="workbench-layout-controls" class="layout-controls" aria-label="Workbench layout controls">
-        <button id="toolbar-toggle-activity-bar" data-workbench-command="maginalia.view.toggleActivityBar" type="button" title="Toggle activity bar">Activity</button>
-        <button id="toolbar-toggle-primary-sidebar" data-workbench-command="maginalia.view.togglePrimarySidebar" type="button" title="Toggle primary sidebar">Primary</button>
-        <button id="toolbar-toggle-secondary-sidebar" data-workbench-command="maginalia.view.toggleSecondarySidebar" type="button" title="Toggle secondary sidebar">Secondary</button>
-        <button id="toolbar-toggle-editor-only" data-workbench-command="maginalia.view.toggleEditorOnly" type="button" title="Toggle editor-only mode">Editor only</button>
-        <button id="open-mods-folder" type="button" title="Open the global Mods folder">Mods</button>
-        <button id="reload-mods" type="button" title="Reload installed Mods">Reload Mods</button>
-        <span id="mods-status" class="mods-status" role="status" aria-live="polite">Mods not loaded</span>
       </div>
     </header>
     <div class="workbench-body">
@@ -193,6 +148,10 @@ app.innerHTML = `
                 <button id="project-new" class="project-header-action" type="button" aria-label="New Markdown file" title="New Markdown file" aria-haspopup="menu" aria-controls="project-new-menu" aria-expanded="false">+</button>
                 <button id="project-overflow" class="project-header-action" type="button" aria-label="Project actions" title="Project actions" aria-haspopup="menu" aria-controls="project-overflow-menu" aria-expanded="false">…</button>
               </div>
+              <div id="workdesk-project-actions" class="project-header-actions" hidden aria-label="Workdesk Project actions">
+                <button id="workdesk-new-project" class="project-header-action" type="button" title="New Project" aria-label="New Project">+P</button>
+                <button id="workdesk-register-project" class="project-header-action" type="button" title="Register existing Project" aria-label="Register existing Project">Add</button>
+              </div>
             </div>
             <div id="project-new-menu" class="project-action-menu" role="menu" aria-label="New Markdown file" hidden>
               <span class="project-action-menu-label">New Markdown</span>
@@ -212,16 +171,6 @@ app.innerHTML = `
               <button id="project-create-cancel" type="button">Cancel</button>
             </form>
             <p id="workspace-error" class="workspace-error" role="alert" aria-live="assertive" hidden></p>
-            <section id="workdesk-projects" class="workdesk-projects" hidden aria-labelledby="workdesk-projects-heading">
-              <div class="workdesk-project-heading-row">
-                <h3 id="workdesk-projects-heading">Projects</h3>
-                <div class="project-header-actions">
-                  <button id="workdesk-new-project" class="project-header-action" type="button" title="New Project" aria-label="New Project">+</button>
-                  <button id="workdesk-register-project" class="project-header-action" type="button" title="Register existing Project" aria-label="Register existing Project">Add</button>
-                </div>
-              </div>
-              <ul id="workdesk-project-list" class="manuscript-list"></ul>
-            </section>
             <div id="project-inline-create" class="project-inline-create" hidden>
               <div class="project-inline-create-heading">
                 <span>New Markdown</span>
@@ -305,6 +254,7 @@ app.innerHTML = `
       </section>
       <aside id="secondary-sidebar" class="workbench-sidebar secondary-sidebar" data-workbench-region="secondary-sidebar" aria-label="Secondary sidebar">
         <div id="secondary-sidebar-resizer" class="sidebar-resizer" data-workbench-resize="secondary-sidebar" role="separator" aria-label="Resize secondary sidebar" aria-orientation="vertical" tabindex="0"></div>
+        <nav id="secondary-view-tabs" class="secondary-view-tabs" role="tablist" aria-label="Secondary sidebar views" aria-orientation="horizontal"></nav>
         <div class="view-container secondary-view-container">
           <section id="library-navigation" class="library-navigation view-panel" aria-labelledby="library-heading">
             <div class="library-heading-row">
@@ -348,6 +298,62 @@ app.innerHTML = `
             <p id="references-status" class="references-status" data-state="empty" role="status" aria-live="polite">Open a document to refresh References.</p>
             <p id="references-unresolved" class="references-unresolved">Unresolved: 0</p>
             <ul id="library-results" class="library-results" aria-label="Private Shelf quotations"></ul>
+          </section>
+          <section id="menu-navigation" class="menu-navigation view-panel" aria-labelledby="menu-heading">
+            <h2 id="menu-heading">Menu</h2>
+            <section class="menu-section" aria-labelledby="menu-document-heading">
+              <h3 id="menu-document-heading">Document</h3>
+              <div class="document-controls">
+                <button id="open-markdown" type="button">Open</button>
+                <button id="save-markdown" data-command-id="maginalia.document.save" type="button" disabled>Save</button>
+                <button id="export-markdown" data-command-id="maginalia.document.export" type="button" disabled>Export Markdown</button>
+                <button id="export-pdf" data-command-id="maginalia.document.exportPdf" type="button" disabled>Export PDF</button>
+                <button id="export-docx" data-command-id="maginalia.document.exportDocx" type="button" disabled>Export DOCX</button>
+              </div>
+              <span id="document-name" class="document-name">No document open</span>
+              <span id="document-status" class="document-status" data-state="empty" role="status" aria-live="polite">No document open</span>
+              <span id="export-status" class="export-status" data-state="empty" role="status" aria-live="polite">Open a document to export.</span>
+              <details id="export-settings-panel" class="export-settings">
+                <summary>Export settings</summary>
+                <div class="export-settings-fields">
+                  <label for="export-paper-size">Paper size</label>
+                  <select id="export-paper-size">
+                    ${EXPORT_PAPER_SIZES.map((size) => `<option value="${size}">${size.startsWith("B") ? `${size} (JIS)` : size}</option>`).join("")}
+                  </select>
+                  <label for="export-orientation">Orientation</label>
+                  <select id="export-orientation">
+                    <option value="portrait">Portrait</option>
+                    <option value="landscape">Landscape</option>
+                  </select>
+                  <label class="export-settings-check" for="export-paragraph-indent">
+                    <input id="export-paragraph-indent" type="checkbox">
+                    First-line indent (1 em)
+                  </label>
+                  <fieldset class="export-header-fields">
+                    <legend>Header text</legend>
+                    <label for="export-header-left">Left<input id="export-header-left" type="text" autocomplete="off"></label>
+                    <label for="export-header-center">Center<input id="export-header-center" type="text" autocomplete="off"></label>
+                    <label for="export-header-right">Right<input id="export-header-right" type="text" autocomplete="off"></label>
+                  </fieldset>
+                  <label class="export-settings-check" for="export-page-number">
+                    <input id="export-page-number" type="checkbox">
+                    Centered page number in footer
+                  </label>
+                </div>
+              </details>
+            </section>
+            <section class="menu-section" aria-labelledby="menu-workbench-heading">
+              <h3 id="menu-workbench-heading">Workbench</h3>
+              <div id="workbench-layout-controls" class="layout-controls" aria-label="Workbench layout controls">
+                <button id="toolbar-toggle-activity-bar" data-workbench-command="maginalia.view.toggleActivityBar" type="button" title="Toggle activity bar">Activity</button>
+                <button id="toolbar-toggle-primary-sidebar" data-workbench-command="maginalia.view.togglePrimarySidebar" type="button" title="Toggle primary sidebar">Primary</button>
+                <button id="toolbar-toggle-secondary-sidebar" data-workbench-command="maginalia.view.toggleSecondarySidebar" type="button" title="Toggle secondary sidebar">Secondary</button>
+                <button id="toolbar-toggle-editor-only" data-workbench-command="maginalia.view.toggleEditorOnly" type="button" title="Toggle editor-only mode">Editor only</button>
+                <button id="open-mods-folder" type="button" title="Open the global Mods folder">Mods</button>
+                <button id="reload-mods" type="button" title="Reload installed Mods">Reload Mods</button>
+              </div>
+              <span id="mods-status" class="mods-status" role="status" aria-live="polite">Mods not loaded</span>
+            </section>
           </section>
           <section id="properties-panel" class="properties-panel view-panel" aria-labelledby="properties-heading">
             <div class="properties-heading-row">
@@ -410,6 +416,28 @@ for (const view of WORKBENCH_VIEW_MANIFEST) {
   panel.dataset.workbenchViewPanel = view.id;
 }
 
+const secondaryViewTabHost = requiredElement<HTMLElement>("#secondary-view-tabs");
+const secondaryViewTabs: HTMLButtonElement[] = [];
+for (const view of WORKBENCH_VIEW_MANIFEST.filter((candidate) => candidate.defaultRegion === "secondary-sidebar")) {
+  const tab = document.createElement("button");
+  tab.id = `secondary-tab-${view.id}`;
+  tab.type = "button";
+  tab.className = "secondary-view-tab";
+  tab.dataset.secondaryViewTab = view.id;
+  tab.setAttribute("role", "tab");
+  tab.setAttribute("aria-controls", view.panelId);
+  tab.setAttribute("aria-selected", "false");
+  tab.tabIndex = -1;
+  tab.textContent = view.title;
+  secondaryViewTabHost.append(tab);
+  secondaryViewTabs.push(tab);
+
+  const panel = requiredElement<HTMLElement>(`#${view.panelId}`);
+  panel.setAttribute("role", "tabpanel");
+  panel.setAttribute("aria-labelledby", tab.id);
+  panel.tabIndex = 0;
+}
+
 const workbenchRoot = requiredElement<HTMLElement>(".workbench");
 const workbenchToolbar = requiredElement<HTMLElement>("#workbench-toolbar");
 const activityBar = requiredElement<HTMLElement>("#activity-bar");
@@ -455,8 +483,7 @@ const workspaceDocumentName = requiredElement<HTMLElement>("#workspace-document-
 const workspaceError = requiredElement<HTMLElement>("#workspace-error");
 const emptyDocumentMessage = requiredElement<HTMLElement>("#empty-document-message");
 const manuscriptList = requiredElement<HTMLUListElement>("#manuscript-list");
-const workdeskProjects = requiredElement<HTMLElement>("#workdesk-projects");
-const workdeskProjectList = requiredElement<HTMLUListElement>("#workdesk-project-list");
+const workdeskProjectActions = requiredElement<HTMLElement>("#workdesk-project-actions");
 const workdeskNewProjectButton = requiredElement<HTMLButtonElement>("#workdesk-new-project");
 const workdeskRegisterProjectButton = requiredElement<HTMLButtonElement>("#workdesk-register-project");
 const createProjectTitle = requiredElement<HTMLInputElement>("#create-project-title");
@@ -598,6 +625,11 @@ function updateViewPanels(state: LayoutState): void {
     button.classList.toggle("active-secondary", active && region === "secondary-sidebar");
     button.setAttribute("aria-pressed", String(active));
   }
+  for (const tab of secondaryViewTabs) {
+    const active = tab.dataset.secondaryViewTab === state.activeSecondaryView;
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+  }
 }
 
 function updateWorkbenchLayout(state: LayoutState): void {
@@ -633,14 +665,35 @@ function updateWorkbenchLayout(state: LayoutState): void {
 
 const removeWorkbenchListener = workbench.onDidChange(updateWorkbenchLayout);
 
+function showWorkbenchView(viewId: string): void {
+  const registered = workbench.getViews("primary-sidebar").some((view) => view.id === viewId)
+    || workbench.getViews("secondary-sidebar").some((view) => view.id === viewId);
+  if (!registered) return;
+  void executeCommand(`maginalia.view.show.${viewId}`);
+}
+
 for (const button of activityViewButtons) {
   button.addEventListener("click", () => {
     const viewId = button.dataset.workbenchView;
-    if (!viewId) return;
-    const registered = workbench.getViews("primary-sidebar").some((view) => view.id === viewId)
-      || workbench.getViews("secondary-sidebar").some((view) => view.id === viewId);
-    if (!registered) return;
-    void executeCommand(`maginalia.view.show.${viewId}`);
+    if (viewId) showWorkbenchView(viewId);
+  });
+}
+for (const [index, tab] of secondaryViewTabs.entries()) {
+  tab.addEventListener("click", () => {
+    const viewId = tab.dataset.secondaryViewTab;
+    if (viewId) showWorkbenchView(viewId);
+  });
+  tab.addEventListener("keydown", (event) => {
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % secondaryViewTabs.length;
+    else if (event.key === "ArrowLeft") nextIndex = (index + secondaryViewTabs.length - 1) % secondaryViewTabs.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = secondaryViewTabs.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const next = secondaryViewTabs[nextIndex];
+    next?.focus();
+    next?.click();
   });
 }
 togglePrimarySidebarButton.addEventListener("click", () => void executeCommand("maginalia.view.togglePrimarySidebar"));
@@ -844,6 +897,8 @@ function reloadPropertiesPanel(): void {
 // Declared before PreviewController's immediate initial render. Project
 // activation fills it later; previews without a Project show safe fallbacks.
 let projectController: ProjectNavigationController | undefined;
+type ActiveWorkdesk = Extract<WorkdeskOpenResult, { readonly kind: "opened" }>;
+let activeWorkdesk: ActiveWorkdesk | null = null;
 const rendererPreferences = createLocalStorageRendererPreferenceStore();
 let currentExportPresentationSettings = rendererPreferences.load().exportPresentationSettings;
 function restoreExportSettingsControls(): void {
@@ -1644,7 +1699,7 @@ for (const documentType of PROJECT_DOCUMENT_TYPES) {
     keywords: ["new", "markdown", documentType],
     when: "project.active"
   }, () => {
-    if (activeWorkdesk && documentType === "body") {
+    if (isLooseWorkdeskDocument() && documentType === "body") {
       projectView.setProjectError("Workdesk documents must be memo, draft, or other.");
       return;
     }
@@ -2078,8 +2133,6 @@ let selectedExplorerEntryId: string | null = null;
 let selectedExplorerFolderId: string | null = null;
 let explorerDocumentId: string | null = null;
 let explorerEntries: readonly ExplorerEntry[] = [];
-type ActiveWorkdesk = Extract<WorkdeskOpenResult, { readonly kind: "opened" }>;
-let activeWorkdesk: ActiveWorkdesk | null = null;
 let pendingWorkdeskProjectIdentityId: string | null = null;
 
 // The document controller can be empty during module construction. Hydrate the
@@ -2089,33 +2142,46 @@ queueMicrotask(() => {
   updateCommandContext();
 });
 
-function renderWorkdeskProjectNodes(state: ActiveWorkdesk): void {
-  workdeskProjectList.replaceChildren();
-  workdeskProjects.hidden = false;
-  for (const project of state.projects) {
+function renderWorkdeskProjectNodes(projects: readonly WorkdeskProjectExplorerShortcut[]): void {
+  for (const project of projects) {
     const item = document.createElement("li");
     item.className = "project-file-row workdesk-project-node";
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "manuscript-button";
-    button.disabled = !project.available;
-    button.textContent = project.available ? `📁 ${project.title}` : `📁 ${project.title} — unavailable on this PC`;
-    button.title = button.textContent;
+    button.className = "manuscript-button explorer-folder workdesk-project-shortcut";
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", "false");
+    button.setAttribute("aria-label", project.available
+      ? `Open Project ${project.title}`
+      : `Registered Project ${project.title}, unavailable on this PC. Select to retry opening.`);
+    button.dataset.workdeskProjectShortcut = project.projectIdentityId;
+    const title = document.createElement("span");
+    title.className = "project-file-title";
+    title.textContent = `📁 ${project.title}`;
+    const type = document.createElement("small");
+    type.className = "project-file-type";
+    type.textContent = project.available ? "Project" : "Unavailable";
+    button.append(title, type);
+    button.title = project.available ? `Project: ${project.title}` : `Project: ${project.title} (unavailable on this PC)`;
     button.addEventListener("click", () => {
       pendingWorkdeskProjectIdentityId = project.projectIdentityId;
       void commandRegistry.execute("maginalia.workdesk.openProject", commandContext.snapshot());
     });
+    const actions = document.createElement("div");
+    actions.className = "explorer-row-actions";
+    actions.setAttribute("aria-label", `Actions for ${project.title}`);
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.className = "project-header-action";
+    remove.className = "project-header-action explorer-row-action";
     remove.textContent = "Remove";
     remove.title = `Remove ${project.title} from this Workdesk`;
     remove.addEventListener("click", () => {
       pendingWorkdeskProjectIdentityId = project.projectIdentityId;
       void commandRegistry.execute("maginalia.workdesk.removeProject", commandContext.snapshot());
     });
-    item.append(button, remove);
-    workdeskProjectList.append(item);
+    actions.append(remove);
+    item.append(button, actions);
+    manuscriptList.append(item);
   }
 }
 
@@ -2137,11 +2203,11 @@ function entriesContainId(
 
 function renderProjectState(state: ProjectNavigationState): void {
   const desk = activeWorkdesk;
-  workspaceLabel.textContent = desk ? "Workdesk" : "Project";
-  workspaceDocumentName.textContent = desk?.workdesk.title ?? state.project?.displayName ?? "No Project open";
-  setWorkdeskDocumentTypes(desk !== null);
-  if (desk) renderWorkdeskProjectNodes(desk);
-  else workdeskProjects.hidden = true;
+  const workdeskRoot = desk !== null && state.project?.projectId === desk.workdesk.documentId ? desk : null;
+  workspaceLabel.textContent = workdeskRoot ? "Workdesk" : "Project";
+  workspaceDocumentName.textContent = workdeskRoot?.workdesk.title ?? state.project?.displayName ?? "No Project open";
+  setWorkdeskDocumentTypes(workdeskRoot !== null);
+  workdeskProjectActions.hidden = workdeskRoot === null;
   manuscriptList.setAttribute("role", "listbox");
   manuscriptList.dataset.navigationMode = "project";
   manuscriptList.replaceChildren();
@@ -2170,9 +2236,11 @@ function renderProjectState(state: ProjectNavigationState): void {
   if (selectedExplorerEntryId === null || !entriesContainId(explorerEntries, state.files, selectedExplorerEntryId)) {
     selectedExplorerEntryId = selectedProjectFileId;
   }
-  if (state.files.length === 0 && explorerEntries.length === 0) {
-    emptyDocumentMessage.textContent = desk
-      ? "This Workdesk has no loose Markdown documents yet. Use + to create one."
+  const workdeskShortcuts = workdeskProjectShortcutsForRoot(workdeskRoot, state.project.projectId);
+  renderWorkdeskProjectNodes(workdeskShortcuts);
+  if (state.files.length === 0 && explorerEntries.length === 0 && workdeskShortcuts.length === 0) {
+    emptyDocumentMessage.textContent = workdeskRoot
+      ? "This Workdesk has no loose Markdown documents or registered Projects yet. Use + to create one."
       : "This Project has no Markdown files yet. Use + to create one.";
     emptyDocumentMessage.hidden = false;
     return;
@@ -2229,7 +2297,7 @@ function renderProjectState(state: ProjectNavigationState): void {
       });
       const remove = document.createElement("button");
       remove.type = "button";
-      remove.className = "project-header-action explorer-delete";
+      remove.className = "project-header-action explorer-delete explorer-row-action";
       remove.textContent = "Delete";
       remove.title = `Delete ${entry.displayName}`;
       remove.addEventListener("click", () => {
@@ -2237,7 +2305,11 @@ function renderProjectState(state: ProjectNavigationState): void {
         selectedProjectFileId = null;
         void commandRegistry.execute("maginalia.explorer.delete", commandContext.snapshot());
       });
-      item.append(button, remove);
+      const actions = document.createElement("div");
+      actions.className = "explorer-row-actions";
+      actions.setAttribute("aria-label", `Actions for ${entry.displayName}`);
+      actions.append(remove);
+      item.append(button, actions);
       manuscriptList.append(item);
       continue;
     }
@@ -2273,7 +2345,7 @@ function renderProjectState(state: ProjectNavigationState): void {
     item.setAttribute("role", "none");
     const insertSynced = document.createElement("button");
     insertSynced.type = "button";
-    insertSynced.className = "project-header-action";
+    insertSynced.className = "project-header-action explorer-row-action";
     insertSynced.textContent = "Sync";
     insertSynced.title = `Insert ${file.displayName} as a Synced Block`;
     insertSynced.addEventListener("click", () => {
@@ -2282,7 +2354,7 @@ function renderProjectState(state: ProjectNavigationState): void {
     });
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.className = "project-header-action explorer-delete";
+    remove.className = "project-header-action explorer-delete explorer-row-action";
     remove.textContent = "Delete";
     remove.title = `Delete ${file.displayName}`;
     remove.addEventListener("click", () => {
@@ -2290,7 +2362,11 @@ function renderProjectState(state: ProjectNavigationState): void {
       selectedExplorerEntryId = file.fileId;
       void commandRegistry.execute("maginalia.explorer.delete", commandContext.snapshot());
     });
-    item.append(button, insertSynced, remove);
+    const actions = document.createElement("div");
+    actions.className = "explorer-row-actions";
+    actions.setAttribute("aria-label", `Actions for ${file.title}`);
+    actions.append(insertSynced, remove);
+    item.append(button, actions);
     manuscriptList.append(item);
   }
 }
@@ -2363,7 +2439,7 @@ async function createSelectedProjectFile(): Promise<void> {
     )
     : newFileName.value;
   newFileName.value = fileName;
-  if (activeWorkdesk) {
+  if (activeWorkdesk && isLooseWorkdeskDocument()) {
     const desk = activeWorkdesk;
     if (documentType === "body") {
       projectView.setProjectError("Workdesk documents must be memo, draft, or other.");
@@ -2930,7 +3006,7 @@ async function refreshExplorer(projectId: string): Promise<void> {
     return;
   }
   explorerDocumentId = projectId;
-  explorerEntries = activeWorkdesk
+  explorerEntries = activeWorkdesk?.workdesk.documentId === projectId
     ? result.entries.filter((entry) => entry.relativeName !== "projects" && !entry.relativeName.startsWith("projects/"))
     : result.entries;
   projectView.setProjectState(projectController?.getState() ?? { project: null, files: [], activeFileId: null });
@@ -3360,7 +3436,7 @@ if (legacyWorkspaceMode) {
           // A missing primary Workdesk is a normal first-run state. Ask for
           // one explicit local folder and let the existing IPC open path bind
           // it as primary; cancellation keeps the current authoring state.
-          if (result.kind === "none" && !projectLikeSmokeMode && !workbenchSmokeMode) {
+          if (shouldPromptForPrimaryWorkdesk(result.kind, !projectLikeSmokeMode && !workbenchSmokeMode)) {
             const selected = await workdeskApi.openWorkdesk();
             if (selected.kind === "opened") {
               await activateWorkdesk(selected);

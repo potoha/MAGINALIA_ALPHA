@@ -151,7 +151,11 @@ async function exerciseProjectMenuKeyboard(window: BrowserWindow): Promise<void>
     const overflowItems = items(overflowMenu);
     // H adds Workdesk create/open beside the established Project actions;
     // both menus remain keyboard-addressable through the same menu surface.
-    if (newItems.length !== 4 || overflowItems.length !== 4) return fail("menu-items");
+    const documentTypes = newItems.map((item) => item.getAttribute("data-document-type")).filter(Boolean).sort();
+    if (documentTypes.join(",") !== "body,draft,memo,other"
+      || !newMenu.querySelector("#explorer-new-folder")
+      || newItems.length !== 5
+      || overflowItems.length !== 4) return fail("menu-items");
 
     plus.focus();
     keydown(plus, "ArrowDown");
@@ -201,6 +205,41 @@ async function exerciseProjectRowKeyboard(window: BrowserWindow): Promise<void> 
   })()`);
 }
 
+async function exerciseExplorerActions(window: BrowserWindow): Promise<void> {
+  const result = await window.webContents.executeJavaScript(`(() => {
+    const file = document.querySelector('#manuscript-list button[data-manuscript-id]');
+    const row = file?.closest('.project-file-row');
+    const actions = row?.querySelector('.explorer-row-actions');
+    if (!(file instanceof HTMLButtonElement) || !(row instanceof HTMLLIElement) || !(actions instanceof HTMLElement)) return null;
+    const labels = [...actions.querySelectorAll('button')].map((button) => button.textContent?.trim());
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    const hiddenByDefault = getComputedStyle(actions).display === 'none';
+    file.focus();
+    const fileRect = file.getBoundingClientRect();
+    const actionsRect = actions.getBoundingClientRect();
+    return {
+      labels,
+      hiddenByDefault,
+      visibleOnFocusWithin: getComputedStyle(actions).display === 'flex',
+      noOverlap: fileRect.right <= actionsRect.left + 1,
+      compact: [...actions.querySelectorAll('button')].every((button) => Number.parseFloat(getComputedStyle(button).fontSize) <= 12)
+    };
+  })()`, true) as {
+    labels: readonly (string | undefined)[];
+    hiddenByDefault: boolean;
+    visibleOnFocusWithin: boolean;
+    noOverlap: boolean;
+    compact: boolean;
+  } | null;
+  if (!result) throw new Error("Project smoke could not locate the real Project Explorer row actions.");
+  if (JSON.stringify(result.labels) !== JSON.stringify(["Sync", "Delete"])) {
+    throw new Error(`Project Explorer row actions changed unexpectedly: ${JSON.stringify(result.labels)}.`);
+  }
+  if (!result.hiddenByDefault || !result.visibleOnFocusWithin || !result.noOverlap || !result.compact) {
+    throw new Error(`Project Explorer row action layout failed: ${JSON.stringify(result)}.`);
+  }
+}
+
 export async function runProjectSmoke(window: BrowserWindow, fixtureRoot: string): Promise<void> {
   const rootName = path.basename(path.resolve(fixtureRoot));
   const fixture = path.join(fixtureRoot, "starter.md");
@@ -229,6 +268,7 @@ export async function runProjectSmoke(window: BrowserWindow, fixtureRoot: string
 
   const saved = await readFile(path.join(fixtureRoot, "Smoke memo.md"), "utf8");
   if (!saved.includes("type: memo") || !saved.includes("追記")) throw new Error("Project smoke saved file did not retain metadata and edit.");
+  await exerciseExplorerActions(window);
   await exerciseProjectRowKeyboard(window);
   await runScript(window, `(() => { const button = [...document.querySelectorAll("#manuscript-list button[data-manuscript-id]")].find((candidate) => candidate.dataset.manuscriptName === "starter.md"); if (!(button instanceof HTMLButtonElement)) return false; button.focus(); button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); return true; })()`);
   await waitForState(window, (state) => state.activeFile === "starter.md" && state.text === initialText && state.status === "saved", "existing file reopen");

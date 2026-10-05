@@ -80,12 +80,14 @@ async function runParent() {
 
 async function waitFor(window, predicate, description) {
   const deadline = Date.now() + 15_000;
+  let lastValue;
   while (Date.now() < deadline) {
     const value = await window.webContents.executeJavaScript(predicate, true);
     if (value) return;
+    lastValue = value;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  throw new Error(`Workbench UI smoke timed out while waiting for ${description}.`);
+  throw new Error(`Workbench UI smoke timed out while waiting for ${description}; last value: ${JSON.stringify(lastValue)}.`);
 }
 
 async function reload(window) {
@@ -118,6 +120,8 @@ async function readState(window) {
     const secondaryResizer = region('#secondary-sidebar-resizer');
     const editor = region('.editor-area');
     const repositoryPanel = region('#repository-navigation');
+    const menuPanel = region('#menu-navigation');
+    const secondaryViewTabs = [...document.querySelectorAll('#secondary-view-tabs [role="tab"]')];
     if (!root || !toolbar || !activity || !primary || !secondary || !secondaryResizer || !editor || !repositoryPanel) return null;
     return {
       preloadBridge: typeof window.maginalia?.openMarkdown === 'function',
@@ -134,6 +138,11 @@ async function readState(window) {
       secondaryResizer: visual(secondaryResizer),
       editor: visual(editor),
       activityViewIds: [...document.querySelectorAll('[data-workbench-view]')].map((button) => button.dataset.workbenchView),
+      secondaryTabIds: secondaryViewTabs.map((tab) => tab.dataset.secondaryViewTab),
+      selectedSecondaryTab: secondaryViewTabs.find((tab) => tab.getAttribute('aria-selected') === 'true')?.dataset.secondaryViewTab ?? null,
+      menuPanelVisible: visual(menuPanel).visible,
+      menuContainsDocumentActions: Boolean(menuPanel?.querySelector('#open-markdown, #save-markdown, #export-pdf')),
+      toolbarContainsDocumentActions: Boolean(toolbar.querySelector('#open-markdown, #save-markdown, #export-pdf')),
       repositoryActivityButton: Boolean(document.querySelector('[data-workbench-view="repository"]')),
       repositoryPanelVisible: visual(repositoryPanel).visible,
       activePrimaryPanel: primary.querySelector('.view-panel-active')?.dataset.workbenchViewPanel ?? null,
@@ -159,6 +168,74 @@ async function clickCommand(window, command) {
     return true;
   })()`, true);
   assertTrue(clicked, `Workbench UI smoke could not click ${command}.`);
+}
+
+async function clickSecondaryTab(window, viewId) {
+  const clicked = await window.webContents.executeJavaScript(`(() => {
+    const tab = document.querySelector('#secondary-view-tabs [data-secondary-view-tab=${JSON.stringify(viewId)}]');
+    if (!(tab instanceof HTMLButtonElement)) return false;
+    tab.click();
+    return true;
+  })()`, true);
+  assertTrue(clicked, `Workbench UI smoke could not select the ${viewId} secondary tab.`);
+  try {
+    await waitFor(window,
+      `document.querySelector('#secondary-view-tabs [data-secondary-view-tab=${JSON.stringify(viewId)}]')?.getAttribute('aria-selected') === 'true'`,
+      `${viewId} secondary tab selection`);
+  } catch (error) {
+    const state = await window.webContents.executeJavaScript(`(() => ({
+      tabs: [...document.querySelectorAll('#secondary-view-tabs [role="tab"]')].map((tab) => ({
+        id: tab.dataset.secondaryViewTab, selected: tab.getAttribute('aria-selected')
+      })),
+      activityMenuPressed: document.querySelector('#activity-view-menu')?.getAttribute('aria-pressed') ?? null,
+      documentStatus: document.querySelector('#document-status')?.textContent ?? null,
+      activePanel: document.querySelector('#secondary-sidebar .view-panel-active')?.dataset.workbenchViewPanel ?? null,
+      storedLayout: window.localStorage.getItem(${JSON.stringify(storageKey)})
+    }))()`, true);
+    throw new Error(`${error instanceof Error ? error.message : String(error)} Diagnostic: ${JSON.stringify(state)}`);
+  }
+}
+
+async function checkExplorerActionLayout(window) {
+  const result = await window.webContents.executeJavaScript(`(() => {
+    const list = document.createElement('ul');
+    list.className = 'manuscript-list';
+    list.dataset.navigationMode = 'project';
+    list.style.cssText = 'position:fixed;left:0;top:0;width:260px;z-index:9999;background:#fff';
+    const row = document.createElement('li');
+    row.className = 'project-file-row';
+    const file = document.createElement('button');
+    file.className = 'manuscript-button';
+    file.type = 'button';
+    file.innerHTML = '<span class="project-file-title">A very long Unicode filename — 日本語の文書タイトル.md</span><small class="project-file-type">MEMO</small>';
+    const actions = document.createElement('div');
+    actions.className = 'explorer-row-actions';
+    const sync = document.createElement('button');
+    sync.className = 'project-header-action explorer-row-action';
+    sync.type = 'button';
+    sync.textContent = 'Sync';
+    const remove = document.createElement('button');
+    remove.className = 'project-header-action explorer-row-action';
+    remove.type = 'button';
+    remove.textContent = 'Delete';
+    actions.append(sync, remove);
+    row.append(file, actions);
+    list.append(row);
+    document.body.append(list);
+    const hiddenByDefault = getComputedStyle(actions).display === 'none';
+    file.focus();
+    const visibleOnFocusWithin = getComputedStyle(actions).display === 'flex';
+    const fileRect = file.getBoundingClientRect();
+    const actionRect = actions.getBoundingClientRect();
+    const noOverlap = fileRect.right <= actionRect.left + 1;
+    const compactActions = [...actions.querySelectorAll('button')].every((button) => Number.parseFloat(getComputedStyle(button).fontSize) <= 12);
+    list.remove();
+    return { hiddenByDefault, visibleOnFocusWithin, noOverlap, compactActions };
+  })()`, true);
+  assertTrue(result.hiddenByDefault, 'Explorer row actions must be quiet by default.');
+  assertTrue(result.visibleOnFocusWithin, 'Explorer row actions must appear for keyboard focus within the row.');
+  assertTrue(result.noOverlap, 'Explorer row actions must not overlap the file button.');
+  assertTrue(result.compactActions, 'Explorer row action typography must remain compact.');
 }
 
 async function resize(window, region, startX, endX) {
@@ -201,6 +278,7 @@ async function runChild(userDataPath) {
       query: { smoke: "workbench" }
     });
     await waitFor(window, "Boolean(document.querySelector('#workbench'))", "the workbench");
+    await waitFor(window, "Boolean(document.querySelector('.command-palette'))", "Workbench command registration");
 
     let state = await readState(window);
     assertTrue(state?.preloadBridge, "Workbench did not receive the existing preload bridge.");
@@ -211,9 +289,31 @@ async function runChild(userDataPath) {
     assertEqual(state.primary.visible, true, "Initial primary sidebar visibility");
     assertEqual(state.secondary.visible, true, "Initial secondary sidebar visibility");
     assertTrue(state.editor.visible && state.editor.width > 0, "Initial editor area must have visible width.");
-    assertEqual(JSON.stringify(state.activityViewIds), JSON.stringify(["workspace", "library"]), "Normal Activity Bar views");
+    assertEqual(JSON.stringify(state.activityViewIds), JSON.stringify(["workspace", "library", "menu", "properties"]), "Normal Activity Bar views");
+    assertEqual(JSON.stringify(state.secondaryTabIds), JSON.stringify(["library", "menu", "properties"]), "Secondary sidebar tabs");
+    assertEqual(state.selectedSecondaryTab, "library", "Initial Shelf tab selection");
+    assertEqual(state.menuContainsDocumentActions, true, "Document operations must be mounted in Menu");
+    assertEqual(state.toolbarContainsDocumentActions, false, "The top toolbar must not duplicate document operations");
     assertEqual(state.repositoryActivityButton, false, "Repository must not have a normal Activity Bar button");
     assertEqual(state.repositoryPanelVisible, false, "Repository panel must be hidden from normal UI");
+
+    await clickSecondaryTab(window, "menu");
+    state = await readState(window);
+    assertEqual(state.activeSecondaryPanel, "menu", "Menu tab must activate the Menu view");
+    assertEqual(state.menuPanelVisible, true, "Menu tab must display its panel");
+    await window.webContents.executeJavaScript(`(() => {
+      const tab = document.querySelector('#secondary-view-tabs [data-secondary-view-tab="menu"]');
+      tab.focus();
+      tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+    })()`, true);
+    await waitFor(window, `document.querySelector('#secondary-view-tabs [data-secondary-view-tab="properties"]')?.getAttribute('aria-selected') === 'true'`, "keyboard tab navigation to Properties");
+    await window.webContents.executeJavaScript(`(() => {
+      const tab = document.querySelector('#secondary-view-tabs [data-secondary-view-tab="properties"]');
+      tab.focus();
+      tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+    })()`, true);
+    await waitFor(window, `document.querySelector('#secondary-view-tabs [data-secondary-view-tab="library"]')?.getAttribute('aria-selected') === 'true'`, "keyboard tab navigation back to Shelf");
+    await checkExplorerActionLayout(window);
 
     await setStoredLayout(window, {
       activityBarVisible: true,

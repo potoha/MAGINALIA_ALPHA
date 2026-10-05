@@ -38,6 +38,20 @@ describe("Workdesk portable and local state", () => {
     expect(await readFile(path.join(desk.root, ".maginalia", "repository.json"))).toEqual(before);
   });
 
+  it("restores a remembered valid Workdesk and treats a missing remembered folder as first run", async () => {
+    const desk = await fixture("workbench", "Primary Desk");
+    const localRoot = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-primary-"));
+    roots.push(localRoot);
+    const service = new WorkdeskService(new FileWorkdeskPathStore(path.join(localRoot, "workdesk-paths.json")));
+    const opened = await service.open(desk.root);
+
+    await service.setPrimary(opened);
+    expect((await service.restorePrimary())?.canonicalRoot).toBe(opened.canonicalRoot);
+
+    await import("node:fs/promises").then(({ rm }) => rm(desk.root, { recursive: true, force: true }));
+    expect(await service.restorePrimary()).toBeUndefined();
+  });
+
   it("treats absent and corrupt optional project indexes as empty", async () => {
     const desk = await fixture("workbench", "Desk");
     const service = new WorkdeskService(new FileWorkdeskPathStore(path.join(desk.root, "local.json")));
