@@ -575,7 +575,7 @@ const exportHandlers = createExportHandlers({
       ? dialog.showSaveDialog(options)
       : dialog.showSaveDialog(ownerWindow, options);
   },
-  writePdf: (outputPath, text, settings) => writePdfWithVivliostyle(outputPath, text, settings)
+  writePdf: (outputPath, document, settings) => writePdfWithVivliostyle(outputPath, document, settings)
 });
 const repositoryHandlers = createRepositoryHandlers({
   pickParentFolder: () => repositorySmoke.requested

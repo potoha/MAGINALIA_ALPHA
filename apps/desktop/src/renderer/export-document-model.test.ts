@@ -18,6 +18,11 @@ describe("Export Document Model", () => {
     expect(model.blocks.find((item) => item.kind === "heading")).toMatchObject({ level: 1 });
     expect(model.blocks.find((item) => item.kind === "list")).toMatchObject({ ordered: false });
     expect(model.blocks.find((item) => item.kind === "code")?.markdown).toContain("日本語");
+    expect(model.blocks.find((item) => item.kind === "table")?.table).toEqual({
+      header: ["A", "B"],
+      rows: [["1", "2"]],
+      alignments: ["none", "none"]
+    });
     expect(serializeExportDocumentModel(model)).toBe(source);
   });
 

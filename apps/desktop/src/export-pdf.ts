@@ -1,11 +1,12 @@
 import { access, copyFile, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { collectMarkdownTables } from "./renderer/markdown-table-commands";
+import { parseMarkdownInlines, type MarkdownInline } from "./renderer/markdown-inline";
 import { isMarkdownFenceClosing, openingMarkdownFence, parseMarkdownHeading } from "./renderer/markdown-fence";
 import { parseMarkdownListItem } from "./renderer/markdown-structure";
-import { createExportDocumentModel, type ExportDocumentBlock } from "./renderer/export-document-model";
+import type { ExportDocumentBlock, ExportDocumentModel, ExportDocumentTable } from "./renderer/export-document-model";
 import type { ExportPresentationSettings, ExportPaperSize } from "./export-presentation-settings";
 
 const PAGE_DIMENSIONS: Readonly<Record<ExportPaperSize, readonly [number, number]>> = Object.freeze({
@@ -34,28 +35,33 @@ function cssString(value: string): string {
   return `"${value.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"').replace(/[\r\n]/gu, " ").replace(/</gu, "\\3c ")}"`;
 }
 
-function inline(value: string): string {
-  // Escape plain text once, after finding Markdown tokens. Performing regex
-  // replacements on generated HTML would let later tokens rewrite attributes.
-  const tokens = /!\[([^\]]*)\]\(([^\s)]+)\)|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|\*([^*]+)\*/giu;
-  let result = "";
-  let cursor = 0;
-  for (const match of value.matchAll(tokens)) {
-    result += html(value.slice(cursor, match.index));
-    if (match[1] !== undefined) result += `<span class="media-reference">${html(match[1] || match[2]!)}</span>`;
-    else if (match[3] !== undefined) result += `<a href="${html(match[4]!)}">${inline(match[3])}</a>`;
-    else if (match[5] !== undefined) result += `<code>${html(match[5])}</code>`;
-    else if (match[6] !== undefined) result += `<strong>${inline(match[6])}</strong>`;
-    else result += `<em>${inline(match[7]!)}</em>`;
-    cursor = match.index + match[0].length;
-  }
-  result += html(value.slice(cursor));
-  return result;
+function renderInlines(nodes: readonly MarkdownInline[]): string {
+  return nodes.map((node): string => {
+    if (node.kind === "text") {
+      if (/!\[\[|!\[[^\]]*\]\(/u.test(node.text)) throw new Error("PDF export cannot resolve Project media in this document.");
+      if (node.text.includes("maginalia:synced-block") || node.text.includes("maginalia:quote-ref")) {
+        throw new Error("PDF export contains an unresolved MAGINALIA marker.");
+      }
+      return html(node.text);
+    }
+    if (node.kind === "code") return `<code>${html(node.text)}</code>`;
+    if (node.kind === "strong") return `<strong>${renderInlines(node.children)}</strong>`;
+    if (node.kind === "emphasis") return `<em>${renderInlines(node.children)}</em>`;
+    if (node.kind === "link") return `<a href="${html(node.href)}">${renderInlines(node.label)}</a>`;
+    if (node.kind === "internal-link") return renderInlines(node.label);
+    if (node.kind === "local-media") throw new Error("PDF export cannot resolve Project media in this document.");
+    throw new Error("PDF export contains an unresolved quotation marker.");
+  }).join("");
 }
 
-function tableHtml(markdown: string): string {
-  const table = collectMarkdownTables(markdown)[0];
-  if (table === undefined) return `<pre>${html(markdown)}</pre>`;
+function inline(value: string): string {
+  return renderInlines(parseMarkdownInlines(value));
+}
+
+function tableHtml(table: ExportDocumentTable | undefined): string {
+  // Tables are parsed once while constructing ExportDocumentModel. The PDF
+  // adapter consumes that typed projection and must not parse table grammar.
+  if (table === undefined) throw new Error("PDF export received a table block without its Export Document Model projection.");
   const row = (cells: readonly string[], tag: "th" | "td"): string =>
     `<tr>${cells.map((cell) => `<${tag}>${inline(cell)}</${tag}>`).join("")}</tr>`;
   return `<table><thead>${row(table.header, "th")}</thead><tbody>${table.rows.map((cells) => row(cells, "td")).join("")}</tbody></table>`;
@@ -83,7 +89,9 @@ function blockHtml(block: ExportDocumentBlock): string {
     if (opener !== null && content.length > 0 && isMarkdownFenceClosing(content.at(-1)!, opener)) content.pop();
     return `<pre><code>${html(content.join("\n"))}</code></pre>`;
   }
-  if (block.kind === "table") return tableHtml(block.markdown);
+  if (block.kind === "table") {
+    return tableHtml(block.table);
+  }
   const lines = block.markdown.split(/\r?\n/gu).filter((line) => line.length > 0);
   const items = lines.map((line) => {
     const item = parseMarkdownListItem(line);
@@ -98,7 +106,7 @@ function pageSize(settings: ExportPresentationSettings): string {
 }
 
 /** Convert the format-neutral model into Vivliostyle input HTML. */
-export function renderExportDocumentHtml(markdown: string, settings: ExportPresentationSettings): string {
+export function renderExportDocumentHtml(model: ExportDocumentModel, settings: ExportPresentationSettings): string {
   const header = settings.header;
   const headerCss = [
     `@top-left { content: ${cssString(header.left)}; }`,
@@ -106,7 +114,7 @@ export function renderExportDocumentHtml(markdown: string, settings: ExportPrese
     `@top-right { content: ${cssString(header.right)}; }`,
     settings.pageNumber ? `@bottom-center { content: counter(page); }` : ""
   ].join("\n");
-  const body = createExportDocumentModel(markdown).blocks.map(blockHtml).join("\n");
+  const body = model.blocks.map(blockHtml).join("\n");
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><style>
 @page { size: ${pageSize(settings)}; margin: 18mm 16mm 20mm; ${headerCss} }
 html { font-family: sans-serif; }
@@ -163,10 +171,11 @@ async function vivliostyleCommand(executable: string, args: readonly string[]): 
   return { executable: resolved, args, env: process.env };
 }
 
-async function runVivliostyle(executable: string, args: readonly string[]): Promise<void> {
+async function runVivliostyle(executable: string, args: readonly string[], workingDirectory: string): Promise<void> {
   const command = await vivliostyleCommand(executable, args);
   return new Promise((resolve, reject) => {
     const child = spawn(command.executable, [...command.args], {
+      cwd: workingDirectory,
       stdio: ["ignore", "pipe", "pipe"],
       env: command.env,
       shell: false,
@@ -183,57 +192,89 @@ async function runVivliostyle(executable: string, args: readonly string[]): Prom
   });
 }
 
-function errorCode(error: unknown): string | undefined {
-  return error !== null && typeof error === "object" && "code" in error && typeof error.code === "string"
-    ? error.code
-    : undefined;
+interface PdfCommitFileSystem {
+  copyFile(source: string, destination: string, mode?: number): Promise<void>;
+  rename(source: string, destination: string): Promise<void>;
+  rm(target: string, options?: { readonly force?: boolean }): Promise<void>;
+  stat(target: string): Promise<{ isFile(): boolean }>;
 }
 
-async function commitPdf(stagedPdfPath: string, outputPath: string): Promise<void> {
+const pdfCommitFileSystem: PdfCommitFileSystem = { copyFile, rename, rm, stat };
+
+export async function commitPdf(stagedPdfPath: string, outputPath: string, fileSystem: PdfCommitFileSystem = pdfCommitFileSystem): Promise<void> {
   // The Vivliostyle staging root may be on a different volume from the
   // user's destination. Copy into a same-directory temporary file first so
   // the final replace remains atomic on that destination volume.
   const temporaryPath = path.join(path.dirname(outputPath), `.${path.basename(outputPath)}.maginalia-${randomUUID()}.tmp`);
+  const backupPath = path.join(path.dirname(outputPath), `.${path.basename(outputPath)}.maginalia-${randomUUID()}.bak`);
   let temporaryCreated = false;
+  let backupCreated = false;
+  let installed = false;
   try {
-    await copyFile(stagedPdfPath, temporaryPath, 0);
+    await fileSystem.copyFile(stagedPdfPath, temporaryPath, 0);
     temporaryCreated = true;
+    const destination = await fileSystem.stat(outputPath).catch((error: unknown) => {
+      if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (destination !== null) {
+      if (!destination.isFile()) throw new Error("PDF destination is not a file.");
+      await fileSystem.rename(outputPath, backupPath);
+      backupCreated = true;
+    }
     try {
-      await rename(temporaryPath, outputPath);
+      await fileSystem.rename(temporaryPath, outputPath);
       temporaryCreated = false;
+      installed = true;
     } catch (error: unknown) {
-      if (!(["EEXIST", "EPERM", "ENOTEMPTY"] as readonly string[]).includes(errorCode(error) ?? "")) throw error;
-      const destination = await stat(outputPath);
-      if (!destination.isFile()) throw error;
-      await rm(outputPath, { force: false });
-      await rename(temporaryPath, outputPath);
-      temporaryCreated = false;
+      if (backupCreated) {
+        try {
+          await fileSystem.rename(backupPath, outputPath);
+          backupCreated = false;
+        } catch (rollbackError: unknown) {
+          try {
+            await fileSystem.copyFile(backupPath, outputPath);
+            await fileSystem.rm(backupPath, { force: true });
+            backupCreated = false;
+          } catch (restoreError: unknown) {
+            throw new AggregateError([error, rollbackError, restoreError], "PDF replacement failed and the previous artifact could not be restored.");
+          }
+        }
+        throw error;
+      }
+      throw error;
     }
   } finally {
-    if (temporaryCreated) await rm(temporaryPath, { force: true }).catch(() => undefined);
+    if (temporaryCreated) await fileSystem.rm(temporaryPath, { force: true }).catch(() => undefined);
+    if (installed && backupCreated) await fileSystem.rm(backupPath, { force: true }).catch(() => undefined);
   }
 }
 
 /** Main-process adapter. Vivliostyle owns the actual PDF/typesetting boundary. */
 export async function writePdfWithVivliostyle(
   outputPath: string,
-  markdown: string,
+  model: ExportDocumentModel,
   settings: ExportPresentationSettings,
   executable = process.env.MAGINALIA_VIVLIOSTYLE_BIN ?? "vivliostyle"
 ): Promise<void> {
-  // Keep the staged artifact as a file in the process workspace rather than a
-  // directory under the manuscript context; the CLI rejects output paths that
-  // are interpreted as its input/workspace directory.
-  const temporaryDirectory = await mkdtemp(path.join(process.cwd(), ".maginalia-vivliostyle-"));
-  const inputPath = path.join(temporaryDirectory, "resolved.html");
-  const stagingRoot = process.cwd();
-  const stagedPdfPath = path.join(stagingRoot, `.maginalia-vivliostyle-${randomUUID()}.pdf`);
+  // The installed app directory may be read-only; keep all Vivliostyle
+  // intermediate artifacts in the operating system's writable temp root.
+  const inputDirectory = await mkdtemp(path.join(tmpdir(), "maginalia-vivliostyle-input-"));
+  let stagingDirectory: string;
   try {
-    await writeFile(inputPath, renderExportDocumentHtml(markdown, settings), "utf8");
+    stagingDirectory = await mkdtemp(path.join(tmpdir(), "maginalia-vivliostyle-output-"));
+  } catch (error: unknown) {
+    await rm(inputDirectory, { recursive: true, force: true });
+    throw error;
+  }
+  const inputPath = path.join(inputDirectory, "resolved.html");
+  const stagedPdfPath = path.join(stagingDirectory, "resolved.pdf");
+  try {
+    await writeFile(inputPath, renderExportDocumentHtml(model, settings), "utf8");
     const commandArgs = /(?:^|[\\/])npx(?:\.cmd)?$/iu.test(executable)
       ? ["--yes", "@vivliostyle/cli", "build", inputPath, "-o", stagedPdfPath, "-d", "--no-enable-static-serve"]
       : ["build", inputPath, "-o", stagedPdfPath, "-d", "--no-enable-static-serve"];
-    await runVivliostyle(executable, commandArgs);
+    await runVivliostyle(executable, commandArgs, inputDirectory);
     const output = await stat(stagedPdfPath);
     if (!output.isFile() || output.size < 5 || !(await readFile(stagedPdfPath)).subarray(0, 5).equals(Buffer.from("%PDF-"))) {
       throw new Error("Vivliostyle did not create a valid PDF.");
@@ -242,7 +283,9 @@ export async function writePdfWithVivliostyle(
     // cannot leave a truncated artifact at the user's selected destination.
     await commitPdf(stagedPdfPath, outputPath);
   } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
-    await rm(stagedPdfPath, { force: true });
+    await Promise.all([
+      rm(inputDirectory, { recursive: true, force: true }),
+      rm(stagingDirectory, { recursive: true, force: true })
+    ]);
   }
 }

@@ -9,7 +9,7 @@
 
 import { scanFrontMatter } from "./document-properties";
 import { isMarkdownFenceClosing, openingMarkdownFence } from "./markdown-fence";
-import { collectMarkdownTables } from "./markdown-table-commands";
+import { collectMarkdownTables, type TableAlignment } from "./markdown-table-commands";
 import { isMarkdownBlockquoteLine, parseMarkdownHeading, parseMarkdownListItem } from "./markdown-structure";
 
 export type ExportDocumentBlockKind =
@@ -27,6 +27,14 @@ export interface ExportDocumentBlock {
   readonly markdown: string;
   readonly level?: number;
   readonly ordered?: boolean;
+  /** Canonical parsed table data, populated by the shared table parser. */
+  readonly table?: ExportDocumentTable;
+}
+
+export interface ExportDocumentTable {
+  readonly header: readonly string[];
+  readonly rows: readonly (readonly string[])[];
+  readonly alignments: readonly TableAlignment[];
 }
 
 export interface ExportDocumentModel {
@@ -69,7 +77,7 @@ function block(
   start: number,
   end: number,
   kind: ExportDocumentBlockKind,
-  attributes: { readonly level?: number; readonly ordered?: boolean } = {}
+  attributes: { readonly level?: number; readonly ordered?: boolean; readonly table?: ExportDocumentTable } = {}
 ): ExportDocumentBlock {
   return Object.freeze({
     kind,
@@ -127,7 +135,13 @@ export function createExportDocumentModel(markdown: string): ExportDocumentModel
       const start = index;
       while (index < lines.length && lines[index]!.end < table.end) index += 1;
       if (index < lines.length) index += 1;
-      blocks.push(block(markdown, lines, start, index, "table"));
+      blocks.push(block(markdown, lines, start, index, "table", {
+        table: Object.freeze({
+          header: Object.freeze([...table.header]),
+          rows: Object.freeze(table.rows.map((row) => Object.freeze([...row]))),
+          alignments: Object.freeze([...table.alignments])
+        })
+      }));
       continue;
     }
 

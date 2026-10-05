@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { MAX_MARKDOWN_BYTES } from "./markdown-ipc";
 import type { MarkdownFileService, MarkdownSessionInfo } from "./markdown-file-service";
 import type { ReviewerResolutionResult } from "./reviewer-resolution";
+import { createExportDocumentModel, type ExportDocumentModel } from "./renderer/export-document-model";
 import {
   DEFAULT_EXPORT_PRESENTATION_SETTINGS,
   isExportPresentationSettings,
@@ -115,7 +116,7 @@ export interface ExportHandlerDependencies {
   ) => ExportSaveDialogResult | Promise<ExportSaveDialogResult>;
   readonly writePdf?: (
     outputPath: string,
-    text: string,
+    document: ExportDocumentModel,
     settings: ExportPresentationSettings
   ) => Promise<void>;
 }
@@ -417,7 +418,7 @@ export class ExportService {
             message: "PDF export is unavailable because the Vivliostyle adapter is not configured."
           };
         }
-        await this.dependencies.writePdf(outputPath, request.text, settings);
+        await this.dependencies.writePdf(outputPath, createExportDocumentModel(request.text), settings);
       } else {
         await atomicWrite(outputPath, request.text);
       }

@@ -164,8 +164,9 @@ describe("resolved Markdown export IPC boundary", () => {
     const { root, source, service } = await fixture("# 日本語\n");
     const sessionId = await open(service, source, "# 日本語\n");
     const output = path.join(root, "draft.resolved.pdf");
-    const writePdf = vi.fn(async (outputPath: string, text: string) => {
-      expect(text).toContain("日本語");
+    const writePdf = vi.fn(async (outputPath: string, document: { readonly kind: string; readonly blocks: readonly { readonly kind: string; readonly markdown: string }[] }) => {
+      expect(document.kind).toBe("export-document");
+      expect(document.blocks.some((block) => block.kind === "heading" && block.markdown.includes("日本語"))).toBe(true);
       await writeFile(outputPath, Buffer.from("%PDF-1.7\n", "ascii"));
     });
     const handlers = createExportHandlers({
