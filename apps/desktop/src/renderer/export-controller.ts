@@ -6,7 +6,12 @@ import type {
   WriteExportRequest,
   WriteExportResult
 } from "../export-ipc";
-import { DEFAULT_EXPORT_PRESENTATION_SETTINGS } from "../export-presentation-settings";
+import {
+  createExportPresentationSettings,
+  DEFAULT_EXPORT_PRESENTATION_SETTINGS,
+  isExportPresentationSettings,
+  type ExportPresentationSettings
+} from "../export-presentation-settings";
 import { renderResolvedMarkdown } from "./export-renderer";
 import type { ComposedMarkdownProjection } from "./synced-block";
 
@@ -37,6 +42,8 @@ export interface ExportControllerOptions {
   readonly writing: ExportWritingPort;
   readonly view: ExportControllerView;
   readonly compose?: (document: ResolveExportRequest) => Promise<ComposedMarkdownProjection>;
+  /** Read the current persisted UI selection when a PDF/DOCX export starts. */
+  readonly getPresentationSettings?: () => ExportPresentationSettings;
 }
 
 const EMPTY_STATE: ExportViewState = Object.freeze({
@@ -77,6 +84,7 @@ export class ExportController {
   private readonly writing: ExportWritingPort;
   private readonly view: ExportControllerView;
   private readonly compose: ((document: ResolveExportRequest) => Promise<ComposedMarkdownProjection>) | null;
+  private readonly getPresentationSettings: () => ExportPresentationSettings;
   private readonly removeDocumentListener: () => void;
   private state: ExportViewState;
   private exporting = false;
@@ -86,6 +94,7 @@ export class ExportController {
     this.writing = options.writing;
     this.view = options.view;
     this.compose = options.compose ?? null;
+    this.getPresentationSettings = options.getPresentationSettings ?? (() => DEFAULT_EXPORT_PRESENTATION_SETTINGS);
     this.state = this.writing.getDocumentState() === null ? EMPTY_STATE : READY_STATE;
     this.removeDocumentListener = this.writing.onDocumentChange((document) => {
       // The in-flight operation intentionally keeps its original snapshot and
@@ -114,6 +123,10 @@ export class ExportController {
 
   private async export(format: ExportFormat): Promise<void> {
     if (this.exporting) return;
+
+    // Snapshot the settings with the document before asynchronous resolution.
+    // A UI change during export applies to the next export, not this one.
+    const presentationSettings = format === "markdown" ? undefined : this.readPresentationSettings();
 
     const document = this.writing.getDocumentState();
     if (document === null) {
@@ -211,8 +224,10 @@ export class ExportController {
       documentId: snapshot.documentId,
       revision: snapshot.revision,
       text: rendered.text,
-      format,
-      settings: DEFAULT_EXPORT_PRESENTATION_SETTINGS
+      ...(format === "markdown" ? {} : {
+        format,
+        settings: presentationSettings ?? DEFAULT_EXPORT_PRESENTATION_SETTINGS
+      })
     });
 
     let written: WriteExportResult;
@@ -250,6 +265,17 @@ export class ExportController {
 
   public dispose(): void {
     this.removeDocumentListener();
+  }
+
+  private readPresentationSettings(): ExportPresentationSettings {
+    try {
+      const settings: unknown = this.getPresentationSettings();
+      return isExportPresentationSettings(settings)
+        ? createExportPresentationSettings(settings)
+        : DEFAULT_EXPORT_PRESENTATION_SETTINGS;
+    } catch {
+      return DEFAULT_EXPORT_PRESENTATION_SETTINGS;
+    }
   }
 
   private finish(state: ExportViewState): void {

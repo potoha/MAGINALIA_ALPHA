@@ -7,6 +7,7 @@ import {
   scanQuoteMarkersFromText
 } from "./markdown-renderer";
 import { restoreRendererPreferences } from "./renderer-preferences";
+import { DEFAULT_EXPORT_PRESENTATION_SETTINGS } from "../export-presentation-settings";
 import { collectMarkdownTables } from "./markdown-table-commands";
 import { projectMarkdownBody } from "./document-properties";
 import { scanSyncedBlockMarkers, serializeSyncedBlock } from "./synced-block";
@@ -222,7 +223,8 @@ describe("Renderer preferences", () => {
     expect(restoreRendererPreferences("not-json")).toEqual({
       version: 1,
       defaultWritingDirection: "horizontal",
-      optimizeDroppedImages: true
+      optimizeDroppedImages: true,
+      exportPresentationSettings: DEFAULT_EXPORT_PRESENTATION_SETTINGS
     });
     expect(restoreRendererPreferences({ version: 1, defaultWritingDirection: "vertical", optimizeDroppedImages: false }))
       .toMatchObject({ defaultWritingDirection: "vertical", optimizeDroppedImages: false });

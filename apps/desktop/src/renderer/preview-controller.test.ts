@@ -1,6 +1,7 @@
 import { openDocument, type DocumentState } from "@maginalia/writing-core";
 import { describe, expect, it, vi } from "vitest";
 import type { ResolveReferencesResult } from "../reference-ipc";
+import { DEFAULT_EXPORT_PRESENTATION_SETTINGS } from "../export-presentation-settings";
 import { PreviewController, type PreviewView, type PreviewWritingPort } from "./preview-controller";
 import type { RendererPreferenceStore } from "./renderer-preferences";
 
@@ -23,7 +24,12 @@ class FakeWriting implements PreviewWritingPort {
 }
 
 const preferences: RendererPreferenceStore = {
-  load: () => ({ version: 1, defaultWritingDirection: "horizontal", optimizeDroppedImages: true }),
+  load: () => ({
+    version: 1,
+    defaultWritingDirection: "horizontal",
+    optimizeDroppedImages: true,
+    exportPresentationSettings: DEFAULT_EXPORT_PRESENTATION_SETTINGS
+  }),
   save: vi.fn()
 };
 

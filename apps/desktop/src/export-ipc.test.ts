@@ -11,7 +11,7 @@ import {
   type WriteExportRequest
 } from "./export-ipc";
 import { MarkdownFileService } from "./markdown-file-service";
-import { DEFAULT_EXPORT_PRESENTATION_SETTINGS } from "./export-presentation-settings";
+import { createExportPresentationSettings, type ExportPresentationSettings } from "./export-presentation-settings";
 
 const owner = {};
 const otherOwner = {};
@@ -164,9 +164,20 @@ describe("resolved Markdown export IPC boundary", () => {
     const { root, source, service } = await fixture("# 日本語\n");
     const sessionId = await open(service, source, "# 日本語\n");
     const output = path.join(root, "draft.resolved.pdf");
-    const writePdf = vi.fn(async (outputPath: string, document: { readonly kind: string; readonly blocks: readonly { readonly kind: string; readonly markdown: string }[] }) => {
+    const selectedSettings = createExportPresentationSettings({
+      paperSize: "A5",
+      orientation: "landscape",
+      header: { left: "左", center: "中央", right: "右" },
+      pageNumber: false
+    });
+    const writePdf = vi.fn(async (
+      outputPath: string,
+      document: { readonly kind: string; readonly blocks: readonly { readonly kind: string; readonly markdown: string }[] },
+      settings: ExportPresentationSettings
+    ) => {
       expect(document.kind).toBe("export-document");
       expect(document.blocks.some((block) => block.kind === "heading" && block.markdown.includes("日本語"))).toBe(true);
+      expect(settings).toEqual(selectedSettings);
       await writeFile(outputPath, Buffer.from("%PDF-1.7\n", "ascii"));
     });
     const handlers = createExportHandlers({
@@ -186,7 +197,7 @@ describe("resolved Markdown export IPC boundary", () => {
       revision: prepared.revision,
       text: "# 日本語\n",
       format: "pdf",
-      settings: DEFAULT_EXPORT_PRESENTATION_SETTINGS
+      settings: selectedSettings
     })).resolves.toEqual({ kind: "exported", fileName: "draft.resolved.pdf" });
     expect(writePdf).toHaveBeenCalledOnce();
     expect((await readFile(output)).toString("ascii")).toContain("%PDF-1.7");
@@ -197,9 +208,21 @@ describe("resolved Markdown export IPC boundary", () => {
     const { root, source, service } = await fixture("# 日本語\n");
     const sessionId = await open(service, source, "# 日本語\n");
     const output = path.join(root, "draft.resolved.docx");
-    const writeDocx = vi.fn(async (outputPath: string, document: { readonly kind: string; readonly blocks: readonly { readonly kind: string; readonly markdown: string }[] }) => {
+    const selectedSettings = createExportPresentationSettings({
+      paperSize: "B4",
+      orientation: "landscape",
+      paragraphIndent: false,
+      header: { left: "左", center: "中央", right: "右" },
+      pageNumber: false
+    });
+    const writeDocx = vi.fn(async (
+      outputPath: string,
+      document: { readonly kind: string; readonly blocks: readonly { readonly kind: string; readonly markdown: string }[] },
+      settings: ExportPresentationSettings
+    ) => {
       expect(document.kind).toBe("export-document");
       expect(document.blocks.some((block) => block.kind === "heading" && block.markdown.includes("日本語"))).toBe(true);
+      expect(settings).toEqual(selectedSettings);
       await writeFile(outputPath, Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from("pandoc fixture")]));
     });
     const handlers = createExportHandlers({
@@ -219,7 +242,7 @@ describe("resolved Markdown export IPC boundary", () => {
       revision: prepared.revision,
       text: "# 日本語\n",
       format: "docx",
-      settings: DEFAULT_EXPORT_PRESENTATION_SETTINGS
+      settings: selectedSettings
     })).resolves.toEqual({ kind: "exported", fileName: "draft.resolved.docx" });
     expect(writeDocx).toHaveBeenCalledOnce();
     expect((await readFile(output)).subarray(0, 2).toString("ascii")).toBe("PK");

@@ -133,6 +133,101 @@ button:disabled {
   background: #f8dddd;
 }
 
+.export-settings {
+  flex: 1 1 100%;
+  min-width: 0;
+  padding: 0.35rem 0.55rem;
+  border-top: 1px solid #e2dcd2;
+}
+
+.export-settings > summary {
+  width: fit-content;
+  color: #4e5b65;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.export-settings-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(12rem, 32rem);
+  align-items: center;
+  gap: 0.45rem 0.75rem;
+  max-width: 52rem;
+  padding: 0.65rem 0 0.25rem;
+}
+
+.export-settings-fields > label:not(.export-settings-check) {
+  color: #4e5b65;
+  font-size: 0.88rem;
+}
+
+.export-settings-fields select,
+.export-header-fields input {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  border: 1px solid #c9c1b7;
+  border-radius: 0.35rem;
+  padding: 0.35rem 0.5rem;
+  color: #24313d;
+  background: #fffdf8;
+  font: inherit;
+}
+
+.export-settings-check {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #4e5b65;
+  font-size: 0.88rem;
+}
+
+.export-settings-check input {
+  margin: 0;
+  accent-color: #9b4b36;
+}
+
+.export-header-fields {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem 0.65rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0.45rem 0.65rem 0.65rem;
+  border: 1px solid #d5cec3;
+  border-radius: 0.45rem;
+}
+
+.export-header-fields legend {
+  padding: 0 0.25rem;
+  color: #4e5b65;
+  font-size: 0.88rem;
+}
+
+.export-header-fields label {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+  color: #4e5b65;
+  font-size: 0.82rem;
+}
+
+@media (max-width: 640px) {
+  .export-settings-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .export-settings-fields > label:not(.export-settings-check) {
+    margin-top: 0.2rem;
+  }
+
+  .export-header-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
 .workspace-navigation {
   display: flex;
   flex-direction: column;
