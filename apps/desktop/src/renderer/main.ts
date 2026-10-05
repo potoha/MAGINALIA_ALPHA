@@ -110,6 +110,7 @@ import {
 import { CENTRAL_SERVICE_VIEW_MANIFEST, WORKBENCH_VIEW_MANIFEST } from "./workbench-views";
 import { shouldPromptForPrimaryWorkdesk } from "./workdesk-startup";
 import { workdeskProjectShortcutsForRoot, type WorkdeskProjectExplorerShortcut } from "./workdesk-project-explorer";
+import { routeCreateProjectAction } from "./project-creation-routing";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -3294,8 +3295,12 @@ explorerNewFolderButton.addEventListener("click", () => {
 projectCreateButton.addEventListener("click", () => {
   cancelProjectFileCreation(false);
   setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
-  projectCreateForm.hidden = false;
-  createProjectTitle.focus();
+  routeCreateProjectAction(activeWorkdesk !== null,
+    () => { void commandRegistry.execute("maginalia.workdesk.createProject", commandContext.snapshot()); },
+    () => {
+      projectCreateForm.hidden = false;
+      createProjectTitle.focus();
+    });
 });
 
 projectCreateCancelButton.addEventListener("click", () => cancelProjectCreation());
