@@ -125,6 +125,7 @@ app.innerHTML = `
         <button id="open-markdown" type="button">Open</button>
         <button id="save-markdown" data-command-id="maginalia.document.save" type="button" disabled>Save</button>
         <button id="export-markdown" data-command-id="maginalia.document.export" type="button" disabled>Export Markdown</button>
+        <button id="export-pdf" data-command-id="maginalia.document.exportPdf" type="button" disabled>Export PDF</button>
         <span id="document-name" class="document-name">No document open</span>
         <span id="document-status" class="document-status" data-state="empty" role="status" aria-live="polite">No document open</span>
         <span id="export-status" class="export-status" data-state="empty" role="status" aria-live="polite">Open a document to export.</span>
@@ -408,6 +409,7 @@ const openWorkdeskButton = requiredElement<HTMLButtonElement>("#open-workdesk");
 const createWorkdeskButton = requiredElement<HTMLButtonElement>("#workdesk-create");
 const saveButton = requiredElement<HTMLButtonElement>("#save-markdown");
 const exportButton = requiredElement<HTMLButtonElement>("#export-markdown");
+const exportPdfButton = requiredElement<HTMLButtonElement>("#export-pdf");
 const documentName = requiredElement<HTMLElement>("#document-name");
 const documentStatus = requiredElement<HTMLElement>("#document-status");
 const exportStatus = requiredElement<HTMLElement>("#export-status");
@@ -1146,6 +1148,7 @@ registerCoreCommands(commandRegistry, {
   },
   refreshReferences: () => referencesController?.refresh(),
   exportMarkdown: () => exportController?.exportMarkdown(),
+  exportPdf: () => exportController?.exportPdf(),
   saveDocument: () => controller.save(),
   contextKeys: commandContext
 });
@@ -3488,6 +3491,7 @@ if (referencesApi) {
 const exportView: ExportControllerView = {
   setExportState(state: ExportViewState): void {
     exportButton.disabled = !state.enabled;
+    exportPdfButton.disabled = !state.enabled;
     exportStatus.dataset.state = state.status;
     exportStatus.textContent = state.message;
   }
@@ -3503,8 +3507,10 @@ if (exportApi) {
     compose: (document) => composeSyncedMarkdown(document.currentText, document.documentId)
   });
   exportButton.addEventListener("click", () => void executeCommand("maginalia.document.export"));
+  exportPdfButton.addEventListener("click", () => void executeCommand("maginalia.document.exportPdf"));
 } else {
   exportButton.disabled = true;
+  exportPdfButton.disabled = true;
   exportStatus.dataset.state = "error";
   exportStatus.textContent = "Markdown export is unavailable.";
 }

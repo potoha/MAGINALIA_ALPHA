@@ -1,10 +1,12 @@
 import type { DocumentState } from "@maginalia/writing-core";
 import type {
+  ExportFormat,
   ResolveExportRequest,
   ResolveExportResult,
   WriteExportRequest,
   WriteExportResult
 } from "../export-ipc";
+import { DEFAULT_EXPORT_PRESENTATION_SETTINGS } from "../export-presentation-settings";
 import { renderResolvedMarkdown } from "./export-renderer";
 import type { ComposedMarkdownProjection } from "./synced-block";
 
@@ -99,6 +101,14 @@ export class ExportController {
   }
 
   public async exportMarkdown(): Promise<void> {
+    return this.export("markdown");
+  }
+
+  public async exportPdf(): Promise<void> {
+    return this.export("pdf");
+  }
+
+  private async export(format: ExportFormat): Promise<void> {
     if (this.exporting) return;
 
     const document = this.writing.getDocumentState();
@@ -116,7 +126,7 @@ export class ExportController {
     });
 
     this.exporting = true;
-    this.setState(EXPORTING_STATE);
+    this.setState({ ...EXPORTING_STATE, message: format === "pdf" ? "Exporting PDF…" : EXPORTING_STATE.message });
 
     let composedText = snapshot.currentText;
     let compositionCurrent = (): boolean => true;
@@ -195,7 +205,9 @@ export class ExportController {
       exportId: resolved.exportId,
       documentId: snapshot.documentId,
       revision: snapshot.revision,
-      text: rendered.text
+      text: rendered.text,
+      format,
+      settings: DEFAULT_EXPORT_PRESENTATION_SETTINGS
     });
 
     let written: WriteExportResult;
@@ -213,7 +225,7 @@ export class ExportController {
     if (written.kind === "exported") {
       this.finish({
         status: "success",
-        message: `Exported Markdown: ${written.fileName}`,
+        message: `${format === "pdf" ? "Exported PDF" : "Exported Markdown"}: ${written.fileName}`,
         enabled: true
       });
     } else if (written.kind === "cancelled") {

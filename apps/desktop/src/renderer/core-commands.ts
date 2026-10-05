@@ -8,6 +8,7 @@ export interface CoreCommandActions {
   readonly setPreviewDirection: (direction: "horizontal" | "vertical") => void;
   readonly refreshReferences: () => void | Promise<void>;
   readonly exportMarkdown: () => void | Promise<void>;
+  readonly exportPdf: () => void | Promise<void>;
   readonly saveDocument: () => void | Promise<void>;
   readonly contextKeys: ContextKeyService;
 }
@@ -45,4 +46,5 @@ export function registerCoreCommands(registry: CommandRegistry, actions: CoreCom
   register("maginalia.renderer.setVertical", "Set Vertical Writing", () => actions.setPreviewDirection("vertical"), "Renderer", ["vertical", "orientation"]);
   register("maginalia.references.refresh", "Refresh References", actions.refreshReferences, "References", ["bibliography", "quote"], "editor.hasDocument");
   register("maginalia.document.export", "Export Markdown", actions.exportMarkdown, "Document", ["export", "markdown"], "editor.hasDocument");
+  register("maginalia.document.exportPdf", "Export PDF", actions.exportPdf, "Document", ["export", "pdf"], "editor.hasDocument");
 }

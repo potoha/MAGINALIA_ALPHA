@@ -11,6 +11,7 @@ import {
   type WriteExportRequest
 } from "./export-ipc";
 import { MarkdownFileService } from "./markdown-file-service";
+import { DEFAULT_EXPORT_PRESENTATION_SETTINGS } from "./export-presentation-settings";
 
 const owner = {};
 const otherOwner = {};
@@ -157,6 +158,38 @@ describe("resolved Markdown export IPC boundary", () => {
     })).resolves.toEqual({ kind: "exported", fileName: "draft.resolved.md" });
     expect(await readFile(output, "utf8")).toBe("# exported\n");
     expect(await readFile(source, "utf8")).toBe("# disk\n");
+  });
+
+  it("routes PDF output through the injected Vivliostyle adapter and keeps source untouched", async () => {
+    const { root, source, service } = await fixture("# 日本語\n");
+    const sessionId = await open(service, source, "# 日本語\n");
+    const output = path.join(root, "draft.resolved.pdf");
+    const writePdf = vi.fn(async (outputPath: string, text: string) => {
+      expect(text).toContain("日本語");
+      await writeFile(outputPath, Buffer.from("%PDF-1.7\n", "ascii"));
+    });
+    const handlers = createExportHandlers({
+      sessions: service,
+      resolve: async () => resolution,
+      showSaveDialog: async (defaultPath, _event, format) => {
+        expect(defaultPath).toBe(output);
+        expect(format).toBe("pdf");
+        return { canceled: false, filePath: output };
+      },
+      writePdf
+    });
+    const prepared = await resolve(handlers, sessionId, "# 日本語\n");
+    await expect(handlers.writeExport(event, {
+      exportId: prepared.exportId,
+      documentId: sessionId,
+      revision: prepared.revision,
+      text: "# 日本語\n",
+      format: "pdf",
+      settings: DEFAULT_EXPORT_PRESENTATION_SETTINGS
+    })).resolves.toEqual({ kind: "exported", fileName: "draft.resolved.pdf" });
+    expect(writePdf).toHaveBeenCalledOnce();
+    expect((await readFile(output)).toString("ascii")).toContain("%PDF-1.7");
+    expect(await readFile(source, "utf8")).toBe("# 日本語\n");
   });
 
   it("rejects exact source overwrite and stale or cross-owner transactions", async () => {

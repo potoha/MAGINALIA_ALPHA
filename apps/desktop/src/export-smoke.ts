@@ -24,6 +24,7 @@ interface ExportRendererState {
   readonly exportStatus: string;
   readonly exportMessage: string;
   readonly exportEnabled: boolean;
+  readonly exportPdfEnabled: boolean;
   readonly tabs: readonly { readonly name: string; readonly active: boolean }[];
 }
 
@@ -71,9 +72,10 @@ const READ_STATE_SCRIPT = `(() => {
   const status = document.querySelector("#document-status");
   const save = document.querySelector("#save-markdown");
   const exportButton = document.querySelector("#export-markdown");
+  const exportPdfButton = document.querySelector("#export-pdf");
   const exportStatus = document.querySelector("#export-status");
   if (!editor || editor.dataset.smokeReady !== "project" || !project || !manuscriptList
-    || !status || !save || !exportButton || !exportStatus) return null;
+    || !status || !save || !exportButton || !exportPdfButton || !exportStatus) return null;
   const active = [...manuscriptList.querySelectorAll("button[data-manuscript-id]")]
     .find((button) => button.getAttribute("aria-current") === "page");
   const tabs = [...document.querySelectorAll("#document-tabs .document-tab")].map((tab) => ({
@@ -90,6 +92,7 @@ const READ_STATE_SCRIPT = `(() => {
     exportStatus: exportStatus.dataset.state ?? "",
     exportMessage: exportStatus.textContent ?? "",
     exportEnabled: !exportButton.disabled,
+    exportPdfEnabled: !exportPdfButton.disabled,
     tabs
   };
 })()`;
@@ -466,4 +469,17 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
     assert(!outputB.includes(forbidden), `second export used inactive document content ${forbidden}`);
   }
   assert(await readFile(secondPath, "utf8") === initialSecond, "second export changed its authoring file");
+
+  await clickButton(window, "#export-pdf", "export the active document as PDF");
+  const exportedPdf = await waitForState(
+    window,
+    (state) => state.exportStatus === "success"
+      && state.activeFile === "b.md"
+      && state.exportMessage.includes("export-3.resolved.pdf"),
+    "the PDF export"
+  );
+  assert(exportedPdf.exportPdfEnabled, "PDF export was not available for the active document");
+  const pdf = await readFile(path.join(root, "export-3.resolved.pdf"));
+  assert(pdf.length > 4 && pdf.subarray(0, 4).toString("ascii") === "%PDF", "PDF export did not create a real PDF artifact");
+  assert(await readFile(secondPath, "utf8") === initialSecond, "PDF export changed its authoring file");
 }

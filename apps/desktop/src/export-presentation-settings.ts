@@ -57,6 +57,25 @@ export function isExportOrientation(value: unknown): value is ExportOrientation 
   return typeof value === "string" && (EXPORT_ORIENTATIONS as readonly string[]).includes(value);
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  try { return Object.getPrototypeOf(value) === Object.prototype; } catch { return false; }
+}
+
+/** Runtime guard for values crossing the renderer/main export boundary. */
+export function isExportPresentationSettings(value: unknown): value is ExportPresentationSettings {
+  if (!isPlainRecord(value)) return false;
+  const header = value.header;
+  return isExportPaperSize(value.paperSize)
+    && isExportOrientation(value.orientation)
+    && typeof value.paragraphIndent === "boolean"
+    && typeof value.pageNumber === "boolean"
+    && isPlainRecord(header)
+    && typeof header.left === "string"
+    && typeof header.center === "string"
+    && typeof header.right === "string";
+}
+
 export interface ExportPresentationSettingsInput {
   readonly paperSize?: unknown;
   readonly orientation?: unknown;
