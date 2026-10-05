@@ -7,6 +7,7 @@ import type {
   WriteExportResult
 } from "../export-ipc";
 import type { ReviewerResolutionResult } from "../reviewer-resolution";
+import { DEFAULT_EXPORT_PRESENTATION_SETTINGS } from "../export-presentation-settings";
 import {
   ExportController,
   type ExportControllerApi,
@@ -37,8 +38,8 @@ function success(exportId = "export-1"): ResolveExportResult {
   };
 }
 
-function exported(): WriteExportResult {
-  return { kind: "exported", fileName: "draft.resolved.md" };
+function exported(fileName = "draft.resolved.md"): WriteExportResult {
+  return { kind: "exported", fileName };
 }
 
 class FakeWriting implements ExportWritingPort {
@@ -133,6 +134,21 @@ describe("ExportController", () => {
     expect(write).toHaveBeenCalledTimes(1);
     expect(states.at(-1)).toMatchObject({ status: "cancelled", message: "Export canceled." });
     expect(writing.getDocumentState()?.currentText).toBe("# A\n");
+  });
+
+  it("routes DOCX through the same resolved snapshot with shared presentation settings", async () => {
+    const write = vi.fn(async () => exported("draft.resolved.docx"));
+    const { controller, states } = createHarness({ write });
+
+    await controller.exportDocx();
+
+    expect(write).toHaveBeenCalledWith(expect.objectContaining({
+      documentId: "a",
+      revision: 1,
+      format: "docx",
+      settings: DEFAULT_EXPORT_PRESENTATION_SETTINGS
+    }));
+    expect(states.at(-1)).toMatchObject({ status: "success", message: "Exported DOCX: draft.resolved.docx" });
   });
 
   it("blocks unresolved output before asking the host to write", async () => {

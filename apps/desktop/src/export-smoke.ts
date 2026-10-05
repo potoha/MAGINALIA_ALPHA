@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { BrowserWindow } from "electron";
+import { validateDocxArtifactFile } from "./export-docx";
 
 const POLL_INTERVAL_MS = 25;
 const STATE_TIMEOUT_MS = 20_000;
@@ -25,6 +26,7 @@ interface ExportRendererState {
   readonly exportMessage: string;
   readonly exportEnabled: boolean;
   readonly exportPdfEnabled: boolean;
+  readonly exportDocxEnabled: boolean;
   readonly tabs: readonly { readonly name: string; readonly active: boolean }[];
 }
 
@@ -73,9 +75,10 @@ const READ_STATE_SCRIPT = `(() => {
   const save = document.querySelector("#save-markdown");
   const exportButton = document.querySelector("#export-markdown");
   const exportPdfButton = document.querySelector("#export-pdf");
+  const exportDocxButton = document.querySelector("#export-docx");
   const exportStatus = document.querySelector("#export-status");
   if (!editor || editor.dataset.smokeReady !== "project" || !project || !manuscriptList
-    || !status || !save || !exportButton || !exportPdfButton || !exportStatus) return null;
+    || !status || !save || !exportButton || !exportPdfButton || !exportDocxButton || !exportStatus) return null;
   const active = [...manuscriptList.querySelectorAll("button[data-manuscript-id]")]
     .find((button) => button.getAttribute("aria-current") === "page");
   const tabs = [...document.querySelectorAll("#document-tabs .document-tab")].map((tab) => ({
@@ -93,6 +96,7 @@ const READ_STATE_SCRIPT = `(() => {
     exportMessage: exportStatus.textContent ?? "",
     exportEnabled: !exportButton.disabled,
     exportPdfEnabled: !exportPdfButton.disabled,
+    exportDocxEnabled: !exportDocxButton.disabled,
     tabs
   };
 })()`;
@@ -279,6 +283,10 @@ function assertWideTable(state: PreviewRendererState, direction: string): void {
 /** Verify dirty active-session projection, ordinary Markdown output, and tab selection. */
 export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string): Promise<void> {
   const root = path.resolve(fixtureRoot);
+  // Some developer hosts do not have Vivliostyle installed. This opt-in keeps
+  // the Electron DOCX flow testable independently; the normal smoke still
+  // requires and validates a real PDF.
+  const skipPdf = process.env.MAGINALIA_EXPORT_SMOKE_SKIP_PDF === "1";
   const firstPath = path.join(root, "a.md");
   const secondPath = path.join(root, "b.md");
   const childPath = path.join(root, "child.md");
@@ -470,16 +478,31 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
   }
   assert(await readFile(secondPath, "utf8") === initialSecond, "second export changed its authoring file");
 
-  await clickButton(window, "#export-pdf", "export the active document as PDF");
-  const exportedPdf = await waitForState(
+  if (!skipPdf) {
+    await clickButton(window, "#export-pdf", "export the active document as PDF");
+    const exportedPdf = await waitForState(
+      window,
+      (state) => state.exportStatus === "success"
+        && state.activeFile === "b.md"
+        && state.exportMessage.includes("export-3.resolved.pdf"),
+      "the PDF export"
+    );
+    assert(exportedPdf.exportPdfEnabled, "PDF export was not available for the active document");
+    const pdf = await readFile(path.join(root, "export-3.resolved.pdf"));
+    assert(pdf.length > 4 && pdf.subarray(0, 4).toString("ascii") === "%PDF", "PDF export did not create a real PDF artifact");
+    assert(await readFile(secondPath, "utf8") === initialSecond, "PDF export changed its authoring file");
+  }
+
+  await clickButton(window, "#export-docx", "export the active document as DOCX");
+  const docxNumber = skipPdf ? 3 : 4;
+  const exportedDocx = await waitForState(
     window,
     (state) => state.exportStatus === "success"
       && state.activeFile === "b.md"
-      && state.exportMessage.includes("export-3.resolved.pdf"),
-    "the PDF export"
+      && state.exportMessage.includes(`export-${docxNumber}.resolved.docx`),
+    "the DOCX export"
   );
-  assert(exportedPdf.exportPdfEnabled, "PDF export was not available for the active document");
-  const pdf = await readFile(path.join(root, "export-3.resolved.pdf"));
-  assert(pdf.length > 4 && pdf.subarray(0, 4).toString("ascii") === "%PDF", "PDF export did not create a real PDF artifact");
-  assert(await readFile(secondPath, "utf8") === initialSecond, "PDF export changed its authoring file");
+  assert(exportedDocx.exportDocxEnabled, "DOCX export was not available for the active document");
+  await validateDocxArtifactFile(path.join(root, `export-${docxNumber}.resolved.docx`));
+  assert(await readFile(secondPath, "utf8") === initialSecond, "DOCX export changed its authoring file");
 }

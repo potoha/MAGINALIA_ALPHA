@@ -269,6 +269,7 @@ describe("WritingController", () => {
       refreshReferences: () => undefined,
       exportMarkdown: () => undefined,
       exportPdf: () => undefined,
+      exportDocx: () => undefined,
       saveDocument: () => undefined,
       contextKeys: new ContextKeyService()
     });
@@ -292,6 +293,7 @@ describe("WritingController", () => {
       refreshReferences: () => undefined,
       exportMarkdown: () => undefined,
       exportPdf: () => undefined,
+      exportDocx: () => undefined,
       saveDocument: () => undefined,
       contextKeys: new ContextKeyService()
     });

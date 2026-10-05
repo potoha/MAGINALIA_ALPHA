@@ -193,6 +193,39 @@ describe("resolved Markdown export IPC boundary", () => {
     expect(await readFile(source, "utf8")).toBe("# 日本語\n");
   });
 
+  it("routes DOCX output through the injected Pandoc adapter and keeps source untouched", async () => {
+    const { root, source, service } = await fixture("# 日本語\n");
+    const sessionId = await open(service, source, "# 日本語\n");
+    const output = path.join(root, "draft.resolved.docx");
+    const writeDocx = vi.fn(async (outputPath: string, document: { readonly kind: string; readonly blocks: readonly { readonly kind: string; readonly markdown: string }[] }) => {
+      expect(document.kind).toBe("export-document");
+      expect(document.blocks.some((block) => block.kind === "heading" && block.markdown.includes("日本語"))).toBe(true);
+      await writeFile(outputPath, Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from("pandoc fixture")]));
+    });
+    const handlers = createExportHandlers({
+      sessions: service,
+      resolve: async () => resolution,
+      showSaveDialog: async (defaultPath, _event, format) => {
+        expect(defaultPath).toBe(output);
+        expect(format).toBe("docx");
+        return { canceled: false, filePath: output };
+      },
+      writeDocx
+    });
+    const prepared = await resolve(handlers, sessionId, "# 日本語\n");
+    await expect(handlers.writeExport(event, {
+      exportId: prepared.exportId,
+      documentId: sessionId,
+      revision: prepared.revision,
+      text: "# 日本語\n",
+      format: "docx",
+      settings: DEFAULT_EXPORT_PRESENTATION_SETTINGS
+    })).resolves.toEqual({ kind: "exported", fileName: "draft.resolved.docx" });
+    expect(writeDocx).toHaveBeenCalledOnce();
+    expect((await readFile(output)).subarray(0, 2).toString("ascii")).toBe("PK");
+    expect(await readFile(source, "utf8")).toBe("# 日本語\n");
+  });
+
   it("rejects exact source overwrite and stale or cross-owner transactions", async () => {
     const { source, service } = await fixture();
     const sessionId = await open(service, source);

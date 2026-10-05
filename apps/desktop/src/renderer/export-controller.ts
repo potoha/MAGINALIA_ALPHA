@@ -108,6 +108,10 @@ export class ExportController {
     return this.export("pdf");
   }
 
+  public async exportDocx(): Promise<void> {
+    return this.export("docx");
+  }
+
   private async export(format: ExportFormat): Promise<void> {
     if (this.exporting) return;
 
@@ -126,7 +130,8 @@ export class ExportController {
     });
 
     this.exporting = true;
-    this.setState({ ...EXPORTING_STATE, message: format === "pdf" ? "Exporting PDF…" : EXPORTING_STATE.message });
+    const formatName = format === "markdown" ? "Markdown" : format.toUpperCase();
+    this.setState({ ...EXPORTING_STATE, message: `Exporting ${formatName}…` });
 
     let composedText = snapshot.currentText;
     let compositionCurrent = (): boolean => true;
@@ -225,7 +230,7 @@ export class ExportController {
     if (written.kind === "exported") {
       this.finish({
         status: "success",
-        message: `${format === "pdf" ? "Exported PDF" : "Exported Markdown"}: ${written.fileName}`,
+        message: `Exported ${formatName}: ${written.fileName}`,
         enabled: true
       });
     } else if (written.kind === "cancelled") {

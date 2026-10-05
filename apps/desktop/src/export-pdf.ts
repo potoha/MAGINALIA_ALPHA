@@ -1,8 +1,8 @@
-import { access, copyFile, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { commitStagedArtifact } from "./export-artifact-transaction";
 import { parseMarkdownInlines, type MarkdownInline } from "./renderer/markdown-inline";
 import { isMarkdownFenceClosing, openingMarkdownFence, parseMarkdownHeading } from "./renderer/markdown-fence";
 import { parseMarkdownListItem } from "./renderer/markdown-structure";
@@ -192,63 +192,8 @@ async function runVivliostyle(executable: string, args: readonly string[], worki
   });
 }
 
-interface PdfCommitFileSystem {
-  copyFile(source: string, destination: string, mode?: number): Promise<void>;
-  rename(source: string, destination: string): Promise<void>;
-  rm(target: string, options?: { readonly force?: boolean }): Promise<void>;
-  stat(target: string): Promise<{ isFile(): boolean }>;
-}
-
-const pdfCommitFileSystem: PdfCommitFileSystem = { copyFile, rename, rm, stat };
-
-export async function commitPdf(stagedPdfPath: string, outputPath: string, fileSystem: PdfCommitFileSystem = pdfCommitFileSystem): Promise<void> {
-  // The Vivliostyle staging root may be on a different volume from the
-  // user's destination. Copy into a same-directory temporary file first so
-  // the final replace remains atomic on that destination volume.
-  const temporaryPath = path.join(path.dirname(outputPath), `.${path.basename(outputPath)}.maginalia-${randomUUID()}.tmp`);
-  const backupPath = path.join(path.dirname(outputPath), `.${path.basename(outputPath)}.maginalia-${randomUUID()}.bak`);
-  let temporaryCreated = false;
-  let backupCreated = false;
-  let installed = false;
-  try {
-    await fileSystem.copyFile(stagedPdfPath, temporaryPath, 0);
-    temporaryCreated = true;
-    const destination = await fileSystem.stat(outputPath).catch((error: unknown) => {
-      if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
-      throw error;
-    });
-    if (destination !== null) {
-      if (!destination.isFile()) throw new Error("PDF destination is not a file.");
-      await fileSystem.rename(outputPath, backupPath);
-      backupCreated = true;
-    }
-    try {
-      await fileSystem.rename(temporaryPath, outputPath);
-      temporaryCreated = false;
-      installed = true;
-    } catch (error: unknown) {
-      if (backupCreated) {
-        try {
-          await fileSystem.rename(backupPath, outputPath);
-          backupCreated = false;
-        } catch (rollbackError: unknown) {
-          try {
-            await fileSystem.copyFile(backupPath, outputPath);
-            await fileSystem.rm(backupPath, { force: true });
-            backupCreated = false;
-          } catch (restoreError: unknown) {
-            throw new AggregateError([error, rollbackError, restoreError], "PDF replacement failed and the previous artifact could not be restored.");
-          }
-        }
-        throw error;
-      }
-      throw error;
-    }
-  } finally {
-    if (temporaryCreated) await fileSystem.rm(temporaryPath, { force: true }).catch(() => undefined);
-    if (installed && backupCreated) await fileSystem.rm(backupPath, { force: true }).catch(() => undefined);
-  }
-}
+/** Backwards-compatible PDF entry point over the shared export transaction. */
+export const commitPdf = commitStagedArtifact;
 
 /** Main-process adapter. Vivliostyle owns the actual PDF/typesetting boundary. */
 export async function writePdfWithVivliostyle(
