@@ -948,6 +948,11 @@ button:disabled {
 }
 
 .project-file-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  width: 100%;
   min-width: 0;
 }
 
@@ -968,6 +973,8 @@ button:disabled {
   justify-content: space-between;
   gap: 0.5rem;
   width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   max-width: 100%;
   min-height: 1.75rem;
   padding: 0.2rem 0.35rem;
@@ -990,6 +997,30 @@ button:disabled {
   color: #7f6b5f;
   font-size: 0.72rem;
   text-transform: uppercase;
+}
+
+.explorer-row-actions {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.project-file-row:hover .explorer-row-actions,
+.project-file-row:focus-within .explorer-row-actions {
+  display: flex;
+}
+
+.project-file-row .project-header-action.explorer-row-action {
+  box-sizing: border-box;
+  width: auto;
+  min-width: 1.4rem;
+  min-height: 1.4rem;
+  padding: 0.12rem 0.28rem;
+  border-radius: 0.25rem;
+  font-size: 0.68rem;
+  font-weight: 550;
+  line-height: 1.1;
 }
 
 .project-file-row:hover .manuscript-button,
@@ -1079,6 +1110,10 @@ button:focus-visible {
   padding: 0.5rem 0.85rem;
   border-width: 0 0 1px;
   border-radius: 0;
+}
+
+.workbench .toolbar .brand {
+  min-width: 0;
 }
 
 .workbench .toolbar[hidden],
@@ -1193,7 +1228,43 @@ button:focus-visible {
 .secondary-sidebar {
   flex-basis: var(--secondary-sidebar-width);
   width: var(--secondary-sidebar-width);
+  display: flex;
+  flex-direction: column;
   border-left: 1px solid #d5cec3;
+}
+
+.secondary-view-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.2rem;
+  padding: 0.45rem 0.55rem 0;
+  border-bottom: 1px solid #d5cec3;
+  background: #f1ede6;
+}
+
+.secondary-view-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 1.9rem;
+  padding: 0.3rem 0.2rem;
+  border-color: transparent;
+  border-radius: 0.3rem 0.3rem 0 0;
+  color: #5f3b2d;
+  background: transparent;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.secondary-view-tab:hover,
+.secondary-view-tab:focus-visible {
+  border-color: #c69b86;
+  outline: none;
+}
+
+.secondary-view-tab[aria-selected="true"] {
+  border-color: #9b4b36;
+  color: #fffdf8;
+  background: #9b4b36;
 }
 
 .primary-sidebar {
@@ -1207,6 +1278,103 @@ button:focus-visible {
   min-width: 0;
   min-height: 100%;
   padding: 0.65rem;
+}
+
+.secondary-view-container {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.menu-navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.menu-navigation > h2,
+.menu-section > h3 {
+  margin: 0;
+}
+
+.menu-section {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
+  min-width: 0;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid #e2dcd2;
+}
+
+.menu-section > h3 {
+  color: #5f3b2d;
+  font-size: 0.88rem;
+}
+
+.menu-navigation .document-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  justify-content: stretch;
+  gap: 0.35rem;
+}
+
+.menu-navigation .document-controls button {
+  min-width: 0;
+  padding: 0.32rem 0.38rem;
+  font-size: 0.76rem;
+}
+
+.menu-navigation #export-docx {
+  grid-column: 1 / -1;
+}
+
+.menu-navigation .document-name,
+.menu-navigation .document-status,
+.menu-navigation .export-status,
+.menu-navigation .mods-status {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.menu-navigation .document-name {
+  padding: 0.25rem 0;
+}
+
+.menu-navigation .document-status,
+.menu-navigation .export-status,
+.menu-navigation .mods-status {
+  padding: 0.25rem 0.35rem;
+}
+
+.menu-navigation .export-settings {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 0.35rem 0;
+}
+
+.menu-navigation .export-settings-fields {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.35rem;
+}
+
+.menu-navigation .export-header-fields {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.menu-navigation .layout-controls {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 0.3rem;
+  margin-left: 0;
+}
+
+.menu-navigation .layout-controls button {
+  flex: 1 1 calc(50% - 0.3rem);
+  min-width: 0;
+  padding: 0.32rem 0.38rem;
+  font-size: 0.72rem;
 }
 
 .view-panel {

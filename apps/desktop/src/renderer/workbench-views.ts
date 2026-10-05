@@ -38,6 +38,13 @@ export const WORKBENCH_VIEW_MANIFEST = [
     panelId: "library-navigation"
   },
   {
+    id: "menu",
+    title: "Menu",
+    defaultRegion: "secondary-sidebar",
+    activityButtonId: "activity-view-menu",
+    panelId: "menu-navigation"
+  },
+  {
     id: "properties",
     title: "Properties",
     defaultRegion: "secondary-sidebar",
