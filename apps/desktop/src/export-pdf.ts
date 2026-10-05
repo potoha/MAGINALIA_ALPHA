@@ -216,9 +216,11 @@ export async function writePdfWithVivliostyle(
   const stagedPdfPath = path.join(stagingDirectory, "resolved.pdf");
   try {
     await writeFile(inputPath, renderExportDocumentHtml(model, settings), "utf8");
+    const relativeInputPath = path.relative(inputDirectory, inputPath);
+    const relativeStagedPdfPath = path.relative(inputDirectory, stagedPdfPath);
     const commandArgs = /(?:^|[\\/])npx(?:\.cmd)?$/iu.test(executable)
-      ? ["--yes", "@vivliostyle/cli", "build", inputPath, "-o", stagedPdfPath, "-d", "--no-enable-static-serve"]
-      : ["build", inputPath, "-o", stagedPdfPath, "-d", "--no-enable-static-serve"];
+      ? ["--yes", "@vivliostyle/cli", "build", relativeInputPath, "-o", relativeStagedPdfPath, "-d", "--no-enable-static-serve"]
+      : ["build", relativeInputPath, "-o", relativeStagedPdfPath, "-d", "--no-enable-static-serve"];
     await runVivliostyle(executable, commandArgs, inputDirectory);
     const output = await stat(stagedPdfPath);
     if (!output.isFile() || output.size < 5 || !(await readFile(stagedPdfPath)).subarray(0, 5).equals(Buffer.from("%PDF-"))) {

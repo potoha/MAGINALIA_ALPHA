@@ -171,16 +171,25 @@ describe("Vivliostyle process transaction", () => {
     expect(await readFile(output, "utf8")).toBe("previous artifact");
   });
 
-  it("keeps Vivliostyle work files under the OS temp root, independently of CWD", async () => {
+  it("passes relative manuscript and output paths from its OS-temp working directory", async () => {
     const { entry, output } = await fixture("");
     const argvPath = path.join(path.dirname(entry), "argv.json");
     await writeFile(entry, `const fs = require("node:fs"); const args = process.argv.slice(2); fs.writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify({ args, cwd: process.cwd() })); fs.writeFileSync(args[args.indexOf("-o") + 1], "%PDF-1.7\\nfixture");`, "utf8");
     await writePdfWithVivliostyle(output, model("cwd-independent"), createExportPresentationSettings({}), entry);
     const result = JSON.parse(await readFile(argvPath, "utf8")) as { readonly args: string[]; readonly cwd: string };
     const args = result.args;
-    const input = path.resolve(args[1]!);
-    const staged = path.resolve(args[args.indexOf("-o") + 1]!);
+    const inputArgument = args[1]!;
+    const outputArgument = args[args.indexOf("-o") + 1]!;
+    const input = path.resolve(result.cwd, inputArgument);
+    const staged = path.resolve(result.cwd, outputArgument);
     const cwd = path.resolve(process.cwd());
+    expect(path.isAbsolute(inputArgument)).toBe(false);
+    expect(path.isAbsolute(outputArgument)).toBe(false);
+    expect(inputArgument).toBe("resolved.html");
+    expect(outputArgument).toMatch(/^\.\.[\\/]/u);
+    expect(inputArgument).not.toContain(path.resolve(os.tmpdir()));
+    expect(outputArgument).not.toContain(path.resolve(os.tmpdir()));
+    expect(args).toContain("--no-enable-static-serve");
     expect(path.resolve(result.cwd).startsWith(path.resolve(os.tmpdir()))).toBe(true);
     expect(path.resolve(result.cwd).startsWith(cwd)).toBe(false);
     expect(input.startsWith(path.resolve(os.tmpdir()))).toBe(true);
