@@ -134,7 +134,7 @@ async function executableOnPath(executable: string): Promise<string> {
   if (path.isAbsolute(executable)) return executable;
   if (executable.includes("/") || executable.includes("\\")) return path.resolve(executable);
   const names = process.platform === "win32" && path.extname(executable) === ""
-    ? [executable, `${executable}.exe`, `${executable}.cmd`]
+    ? [`${executable}.cmd`, `${executable}.exe`, executable]
     : [executable];
   for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
     if (!directory) continue;
