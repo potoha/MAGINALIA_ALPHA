@@ -4,9 +4,11 @@ import {
   FORMAT_VERSION,
   generateEntityId,
   parseAndValidate,
+  parseShelfEntity,
   toPublishedAnnotation,
   toPublishedBook,
   validateEntity,
+  validateShelfEntity,
   type Annotation,
   type Book
 } from "../index";
@@ -93,6 +95,24 @@ describe("MAGINALIA Format v0.1", () => {
     expect(parseAndValidate("book", JSON.stringify(book))).toMatchObject({ valid: true });
     expect(parseAndValidate("library", JSON.stringify(validEntities.library))).toMatchObject({ valid: true });
     expect(parseAndValidate("annotation", JSON.stringify(annotation))).toMatchObject({ valid: true });
+  });
+
+  it("dispatches Shelf v0.1 and v0.4 explicitly and rejects future or malformed current entities", () => {
+    const shelfBook = {
+      type: "book", version: "0.4", id: `book:${ulid}`,
+      source: { kind: "website" }, get: { date: "202608301245" },
+      url: "https://example.test/research", title: "日本語の資料"
+    };
+    const shelfAnnotation = {
+      type: "annotation", version: "0.4", id: `ann:${ulid}`,
+      source: { id: `book:${ulid}`, kind: "website" }, get: { date: "202608301245" },
+      url: "https://example.test/research", quote: "引用"
+    };
+    expect(validateShelfEntity("book", shelfBook)).toMatchObject({ valid: true });
+    expect(validateShelfEntity("annotation", shelfAnnotation)).toMatchObject({ valid: true });
+    expect(parseShelfEntity("annotation", JSON.stringify(annotation))).toMatchObject({ valid: true });
+    expect(validateShelfEntity("book", { ...shelfBook, version: "0.5" })).toMatchObject({ valid: false });
+    expect(validateShelfEntity("book", { ...shelfBook, url: undefined })).toMatchObject({ valid: false });
   });
 
   it("rejects invalid entities and unknown additional properties", () => {

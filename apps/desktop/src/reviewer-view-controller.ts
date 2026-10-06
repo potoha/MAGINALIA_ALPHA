@@ -1,8 +1,9 @@
 /**
  * A narrow main-process controller for the central Reviewer View.
  *
- * This intentionally has no DocumentSession, Markdown, preload, or Node API
- * surface. The caller supplies a hardened BrowserWindow-like host and the
+ * This intentionally has no DocumentSession, Markdown, or Node API surface.
+ * Its preload callback only reports an approval; the caller supplies a
+ * hardened BrowserWindow-like host and the
  * main-process-managed Reviewer endpoint; renderer content cannot select an
  * origin or turn this into a general-purpose browser.
  */
@@ -13,6 +14,7 @@ export const OPEN_REVIEWER_COMMAND = "maginalia.shelf.openReviewer";
 export const OPEN_REVIEWER_VIEW_CHANNEL = "maginalia:open-reviewer-view";
 export const CLOSE_REVIEWER_VIEW_CHANNEL = "maginalia:close-reviewer-view";
 export const SET_REVIEWER_VIEW_BOUNDS_CHANNEL = "maginalia:set-reviewer-view-bounds";
+export const REVIEWER_APPROVAL_NOTIFICATION_CHANNEL = "maginalia:reviewer-capture-approved";
 
 export interface ReviewerViewBounds {
   readonly x: number;
@@ -129,6 +131,11 @@ export class ReviewerViewController {
 
   public hasOpenView(): boolean {
     return this.host !== undefined && !this.host.isDestroyed();
+  }
+
+  /** Accept approval notifications only from the owned, fixed-origin Reviewer view. */
+  public ownsWebContents(sender: object): boolean {
+    return this.host !== undefined && !this.host.isDestroyed() && this.host.webContents === sender;
   }
 
   /** Detach the service View and reveal the unchanged central editor surface. */

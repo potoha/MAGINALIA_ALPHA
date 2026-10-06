@@ -6,6 +6,8 @@
  * exposed to the renderer.
  */
 
+import type { ShelfSourceFileV04, ShelfSourceKind } from "@maginalia/format" with { "resolution-mode": "import" };
+
 export const SEARCH_SHELF_CHANNEL = "maginalia:search-shelf";
 export const MAX_SHELF_QUERY_CHARS = 500;
 export const REVIEWER_SEARCH_STATUS = "APPROVED" as const;
@@ -28,6 +30,15 @@ export interface ReviewerQuotation {
   readonly comment: string;
   readonly reviewState: string;
   readonly reviewedAtMs: number | null;
+  readonly packageId?: string | null;
+  readonly sourceKind?: ShelfSourceKind | null;
+  readonly getDate?: string | null;
+  readonly url?: string | null;
+  readonly publisher?: string | null;
+  readonly year?: number | null;
+  readonly circleName?: string | null;
+  readonly eventName?: string | null;
+  readonly sourceFiles?: readonly ShelfSourceFileV04[];
 }
 
 export interface SearchShelfSuccess {
@@ -125,6 +136,31 @@ function copyAuthors(value: unknown): readonly string[] {
   return Object.freeze(value.filter((author): author is string => typeof author === "string"));
 }
 
+const SOURCE_KINDS = new Set<ShelfSourceKind>([
+  "book", "selfpublish", "website", "bookwithoutisbn", "Handwritten"
+]);
+
+function copySourceFiles(value: unknown): readonly ShelfSourceFileV04[] | null | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return null;
+  const files: ShelfSourceFileV04[] = [];
+  for (const item of value) {
+    if (!isPlainRecord(item)
+      || typeof item.path !== "string"
+      || (item.mediaType !== "image/jpeg" && item.mediaType !== "application/pdf")
+      || typeof item.sha256 !== "string"
+      || !/^[0-9a-f]{64}$/u.test(item.sha256)
+      || (item.originalName !== undefined && typeof item.originalName !== "string")) return null;
+    files.push(Object.freeze({
+      path: item.path,
+      mediaType: item.mediaType,
+      sha256: item.sha256,
+      ...(typeof item.originalName === "string" ? { originalName: item.originalName } : {})
+    }));
+  }
+  return Object.freeze(files);
+}
+
 function copyQuotation(value: unknown): ReviewerQuotation | null {
   if (!isPlainRecord(value)) return null;
   const requiredString = (key: string): string | null =>
@@ -140,6 +176,20 @@ function copyQuotation(value: unknown): ReviewerQuotation | null {
   const reviewedAtMs = typeof value.reviewedAtMs === "number" && Number.isFinite(value.reviewedAtMs)
     ? value.reviewedAtMs
     : null;
+  const sourceFiles = copySourceFiles(value.sourceFiles);
+  if (sourceFiles === null) return null;
+  const sourceKind = value.sourceKind === undefined || value.sourceKind === null
+    ? value.sourceKind as null | undefined
+    : typeof value.sourceKind === "string" && SOURCE_KINDS.has(value.sourceKind as ShelfSourceKind)
+      ? value.sourceKind as ShelfSourceKind
+      : null;
+  if (value.sourceKind !== undefined && value.sourceKind !== null && sourceKind === null) return null;
+  const year = value.year === undefined || value.year === null
+    ? value.year as null | undefined
+    : typeof value.year === "number" && Number.isInteger(value.year) && value.year >= 0
+      ? value.year
+      : undefined;
+  if (value.year !== undefined && value.year !== null && year === undefined) return null;
   return Object.freeze({
     annotationId,
     captureId,
@@ -152,7 +202,16 @@ function copyQuotation(value: unknown): ReviewerQuotation | null {
     pageLabel,
     comment,
     reviewState,
-    reviewedAtMs
+    reviewedAtMs,
+    ...(typeof value.packageId === "string" ? { packageId: value.packageId } : {}),
+    ...(sourceKind === undefined || sourceKind === null ? {} : { sourceKind }),
+    ...(typeof value.getDate === "string" ? { getDate: value.getDate } : {}),
+    ...(typeof value.url === "string" ? { url: value.url } : {}),
+    ...(typeof value.publisher === "string" ? { publisher: value.publisher } : {}),
+    ...(year === undefined || year === null ? {} : { year }),
+    ...(typeof value.circleName === "string" ? { circleName: value.circleName } : {}),
+    ...(typeof value.eventName === "string" ? { eventName: value.eventName } : {}),
+    ...(sourceFiles === undefined ? {} : { sourceFiles })
   });
 }
 

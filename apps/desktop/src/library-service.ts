@@ -3,17 +3,25 @@ import type { Dirent } from "node:fs";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import * as path from "node:path";
 
-import type { Annotation, Book, Library } from "@maginalia/format" with { "resolution-mode": "import" };
+import type {
+  Annotation,
+  Book,
+  Library,
+  ShelfAnnotation,
+  ShelfBook,
+  ShelfAnnotationV04,
+  ShelfBookV04
+} from "@maginalia/format" with { "resolution-mode": "import" };
 
-type ParseAndValidate = typeof import("@maginalia/format", { with: { "resolution-mode": "import" } })["parseAndValidate"];
+type FormatCore = typeof import("@maginalia/format", { with: { "resolution-mode": "import" } });
 
-let parseAndValidatePromise: Promise<ParseAndValidate> | undefined;
+let formatCorePromise: Promise<FormatCore> | undefined;
 
-async function loadParseAndValidate(): Promise<ParseAndValidate> {
+async function loadFormatCore(): Promise<FormatCore> {
   // The desktop main bundle remains CommonJS for Electron's existing entry
   // point; load the ESM format package at the adapter boundary.
-  parseAndValidatePromise ??= import("@maginalia/format").then((format) => format.parseAndValidate);
-  return parseAndValidatePromise;
+  formatCorePromise ??= import("@maginalia/format");
+  return formatCorePromise;
 }
 
 export interface LibrarySummary {
@@ -208,8 +216,8 @@ interface CandidateFile {
 
 type ParsedEntity =
   | { readonly kind: "library"; readonly value: Library; readonly candidate: CandidateFile }
-  | { readonly kind: "book"; readonly value: Book; readonly candidate: CandidateFile }
-  | { readonly kind: "annotation"; readonly value: Annotation; readonly candidate: CandidateFile }
+  | { readonly kind: "book"; readonly value: ShelfBook; readonly candidate: CandidateFile }
+  | { readonly kind: "annotation"; readonly value: ShelfAnnotation; readonly candidate: CandidateFile }
   | { readonly kind: "invalid-library"; readonly candidate: CandidateFile };
 
 interface IssueCounter {
@@ -248,8 +256,8 @@ type OwnedLibrarySnapshot = LibrarySnapshot | PrivateShelfLibrarySnapshot;
 
 /** Format entities retained only for main-process QuoteRef resolution. */
 export interface CanonicalShelfEntities {
-  readonly annotations: readonly Annotation[];
-  readonly books: readonly Book[];
+  readonly annotations: readonly ShelfAnnotation[];
+  readonly books: readonly ShelfBook[];
 }
 
 /** Main-process-only view of the currently selected Private Shelf. */
@@ -469,12 +477,12 @@ async function parseCandidate(candidate: CandidateFile, issues: IssueCounter): P
 
   const hint = entityKindHint(text);
   try {
-    const parseAndValidate = await loadParseAndValidate();
-    const library = parseAndValidate("library", text);
+    const format = await loadFormatCore();
+    const library = format.parseAndValidate("library", text);
     if (library.valid) return { kind: "library", value: library.value, candidate };
-    const book = parseAndValidate("book", text);
+    const book = format.parseShelfEntity("book", text);
     if (book.valid) return { kind: "book", value: book.value, candidate };
-    const annotation = parseAndValidate("annotation", text);
+    const annotation = format.parseShelfEntity("annotation", text);
     if (annotation.valid) return { kind: "annotation", value: annotation.value, candidate };
     if (hint === "library") return { kind: "invalid-library", candidate };
     if (hint !== undefined) issues.value += 1;
@@ -553,7 +561,20 @@ function removeDuplicateIds<T extends { value: { id: string } }>(
   return entities.filter((entity) => !duplicateIds.has(entity.value.id));
 }
 
-function toSnapshotRecord(annotation: Annotation, book: Book): LibraryRecord {
+function annotationSourceId(annotation: ShelfAnnotation): string {
+  return annotation.version === "0.4" ? annotation.source.id : annotation.source;
+}
+
+function titleForBook(book: ShelfBook): string {
+  if (book.version === "0.1") return book.title;
+  return book.title ?? book.isbn13 ?? book.url ?? book.id;
+}
+
+function authorsForBook(book: ShelfBook): readonly string[] {
+  return book.authors ?? [];
+}
+
+function toSnapshotRecord(annotation: ShelfAnnotation, book: ShelfBook): LibraryRecord {
   const record: {
     annotationId: string;
     sourceId: string;
@@ -564,17 +585,18 @@ function toSnapshotRecord(annotation: Annotation, book: Book): LibraryRecord {
     page?: number;
   } = {
     annotationId: annotation.id,
-    sourceId: annotation.source,
+    sourceId: annotationSourceId(annotation),
     quote: annotation.quote,
-    title: book.title,
-    authors: Object.freeze([...book.authors]),
+    title: titleForBook(book),
+    authors: Object.freeze([...authorsForBook(book)]),
   };
   if (annotation.privateMemo !== undefined) record.privateMemo = annotation.privateMemo;
-  if (annotation.location.page !== undefined) record.page = annotation.location.page;
+  const location = annotation.location;
+  if (location?.page !== undefined) record.page = location.page;
   return Object.freeze(record);
 }
 
-function reviewerAnnotationAlias(annotation: Annotation): string | undefined {
+function reviewerAnnotationAlias(annotation: ShelfAnnotation): string | undefined {
   const deviceMetadata = annotation.deviceMetadata;
   if (deviceMetadata === undefined) return undefined;
   const reviewer = deviceMetadata.maginaliaReviewer;
@@ -583,7 +605,19 @@ function reviewerAnnotationAlias(annotation: Annotation): string | undefined {
   return typeof alias === "string" && REVIEWER_ANNOTATION_UUID.test(alias) ? alias : undefined;
 }
 
-function toCanonicalShelfAnnotation(annotation: Annotation): Annotation {
+function toCanonicalShelfAnnotation(annotation: ShelfAnnotation): ShelfAnnotation {
+  if (annotation.version === "0.4") {
+    return Object.freeze({
+      ...annotation,
+      source: Object.freeze({
+        ...annotation.source,
+        ...(annotation.source.files === undefined ? {} : { files: Object.freeze(annotation.source.files.map((file) => Object.freeze({ ...file }))) })
+      }),
+      get: Object.freeze({ ...annotation.get }),
+      ...(annotation.location === undefined ? {} : { location: Object.freeze({ ...annotation.location }) }),
+      ...(annotation.deviceMetadata === undefined ? {} : { deviceMetadata: Object.freeze({ ...annotation.deviceMetadata }) })
+    });
+  }
   // The canonical snapshot is an in-memory projection, not a normalization
   // pass. Preserve either legal Format v0.1 location representation exactly;
   // in particular, an existing stable path must not be converted to `{}`.
@@ -608,7 +642,18 @@ function toCanonicalShelfAnnotation(annotation: Annotation): Annotation {
   return Object.freeze(canonical);
 }
 
-function toCanonicalShelfBook(book: Book): Book {
+function toCanonicalShelfBook(book: ShelfBook): ShelfBook {
+  if (book.version === "0.4") {
+    return Object.freeze({
+      ...book,
+      source: Object.freeze({
+        ...book.source,
+        ...(book.source.files === undefined ? {} : { files: Object.freeze(book.source.files.map((file) => Object.freeze({ ...file }))) })
+      }),
+      get: Object.freeze({ ...book.get }),
+      ...(book.authors === undefined ? {} : { authors: Object.freeze([...book.authors]) })
+    });
+  }
   const canonical: Book = {
     type: "book",
     version: "0.1",
@@ -623,8 +668,8 @@ function toCanonicalShelfBook(book: Book): Book {
 }
 
 function toCanonicalShelfEntities(
-  annotations: readonly Annotation[],
-  books: readonly Book[],
+  annotations: readonly ShelfAnnotation[],
+  books: readonly ShelfBook[],
 ): CanonicalShelfEntities {
   return Object.freeze({
     annotations: Object.freeze(annotations.map(toCanonicalShelfAnnotation)),
@@ -806,10 +851,10 @@ export class LibraryService {
         entity.kind === "annotation" && isInScope(entity.candidate, annotationsScope.scope)),
       issues,
     );
-    const booksById = new Map(books.map((book) => [book.value.id, book.value] as const));
+    const booksById = new Map<string, ShelfBook>(books.map((book) => [book.value.id, book.value] as const));
     const records: LibraryRecord[] = [];
     for (const annotation of annotations) {
-      const book = booksById.get(annotation.value.source);
+      const book = booksById.get(annotationSourceId(annotation.value));
       if (!book) {
         issues.value += 1;
         continue;

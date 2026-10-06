@@ -19,7 +19,7 @@ export const EntityKind = {
 } as const;
 
 export type EntityKind = (typeof EntityKind)[keyof typeof EntityKind];
-export type EntityIdPrefix = "ann" | "pub" | "project" | "note" | "capture";
+export type EntityIdPrefix = "ann" | "book" | "pub" | "project" | "note" | "capture";
 
 export interface Project {
   type: "project";
@@ -120,6 +120,62 @@ export interface PublishedBook {
   year?: number;
 }
 
+export type ShelfSourceKind = "book" | "selfpublish" | "website" | "bookwithoutisbn" | "Handwritten";
+
+export interface ShelfSourceFileV04 {
+  readonly path: string;
+  readonly mediaType: "image/jpeg" | "application/pdf";
+  readonly sha256: string;
+  readonly originalName?: string;
+}
+
+export interface ShelfBookV04 {
+  readonly type: "book";
+  readonly version: "0.4";
+  readonly id: `book:${string}`;
+  readonly source: { readonly kind: ShelfSourceKind; readonly files?: readonly ShelfSourceFileV04[] };
+  readonly get: { readonly date: string };
+  readonly isbn13?: string;
+  readonly url?: string;
+  readonly title?: string;
+  readonly authors?: readonly string[];
+  readonly circleName?: string;
+  readonly eventName?: string;
+  readonly publisher?: string;
+  readonly year?: number;
+  readonly coverImage?: string;
+  readonly titleReading?: string;
+  readonly authorReadings?: readonly string[];
+}
+
+export interface ShelfAnnotationV04 {
+  readonly type: "annotation";
+  readonly version: "0.4";
+  readonly id: `ann:${string}`;
+  readonly source: {
+    readonly id: `book:${string}`;
+    readonly kind: ShelfSourceKind;
+    readonly files?: readonly ShelfSourceFileV04[];
+  };
+  readonly get: { readonly date: string };
+  readonly quote: string;
+  readonly isbn13?: string;
+  readonly url?: string;
+  readonly location?: { readonly page?: number; readonly path?: string };
+  readonly comment?: string;
+  readonly attribution?: string;
+  readonly captureImage?: string;
+  readonly rawOcr?: string;
+  readonly localPath?: string;
+  readonly deviceMetadata?: Record<string, unknown>;
+  readonly privateMemo?: string;
+  readonly unpublishedComments?: readonly string[];
+}
+
+export type ShelfBook = Book | ShelfBookV04;
+export type ShelfAnnotation = Annotation | ShelfAnnotationV04;
+export type ShelfEntity = ShelfBook | ShelfAnnotation;
+
 export type Entity =
   | Project
   | Library
@@ -157,6 +213,11 @@ const schemaFiles: Record<EntityKind, string> = {
   "published-book": "published-book.schema.json"
 };
 
+const shelfSchemaFiles = {
+  book: "shelf-book.schema.json",
+  annotation: "shelf-annotation.schema.json"
+} as const;
+
 // Schemas are copied from the authoritative repository spec during build. The
 // artifact-relative lookup is used first so the packed package stays self-contained;
 // the source-tree fallback keeps clean source tests independent of a prior build.
@@ -177,6 +238,18 @@ for (const file of Object.values(schemaFiles)) ajv.addSchema(readSchema(file));
 const validators = Object.fromEntries(
   Object.entries(schemaFiles).map(([kind, file]) => [kind, ajv.getSchema(`https://maginalia.app/spec/${file}`)!])
 ) as Record<EntityKind, ValidateFunction>;
+// The accepted Shelf schemas use valid JSON Schema conditionals whose nested
+// `properties` clauses intentionally omit redundant `type: object` keywords.
+// Keep runtime validation strict while disabling Ajv's compile-time type hint
+// check for these externally maintained schemas only.
+const shelfAjv = new Ajv2020({ allErrors: true, strict: true, strictTypes: false, strictRequired: false });
+addFormats(shelfAjv);
+shelfAjv.addSchema(readSchema("common.schema.json"));
+for (const file of Object.values(shelfSchemaFiles)) shelfAjv.addSchema(readSchema(file));
+const shelfValidators = {
+  book: shelfAjv.getSchema("https://maginalia.app/spec/shelf-book.schema.json")!,
+  annotation: shelfAjv.getSchema("https://maginalia.app/spec/shelf-annotation.schema.json")!
+};
 
 function errorsFor(errors: ErrorObject[] | null | undefined): string[] {
   return (errors ?? []).map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`);
@@ -208,6 +281,35 @@ export function parseAndValidate<K extends EntityKind>(
   const document = parseDocument(yamlText, { prettyErrors: false });
   if (document.errors.length > 0) return { valid: false, errors: document.errors.map((error) => error.message) };
   return validateEntity(kind, document.toJS());
+}
+
+/** Explicit version-aware reader for Shelf Book/Annotation files only. */
+export function validateShelfEntity<K extends "book" | "annotation">(
+  kind: K,
+  value: unknown
+): ValidationResult<K extends "book" ? ShelfBook : ShelfAnnotation> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { valid: false, errors: ["/ must be an object"] };
+  }
+  const version = (value as { version?: unknown }).version;
+  if (version === FORMAT_VERSION) {
+    return validateEntity(kind, value) as ValidationResult<K extends "book" ? ShelfBook : ShelfAnnotation>;
+  }
+  if (version !== "0.4") {
+    return { valid: false, errors: [`/version unsupported Shelf entity version: ${String(version)}`] };
+  }
+  const validator = shelfValidators[kind];
+  if (!validator(value)) return { valid: false, errors: errorsFor(validator.errors) };
+  return { valid: true, value: value as K extends "book" ? ShelfBookV04 : ShelfAnnotationV04 };
+}
+
+export function parseShelfEntity<K extends "book" | "annotation">(
+  kind: K,
+  yamlText: string
+): ValidationResult<K extends "book" ? ShelfBook : ShelfAnnotation> {
+  const document = parseDocument(yamlText, { prettyErrors: false });
+  if (document.errors.length > 0) return { valid: false, errors: document.errors.map((error) => error.message) };
+  return validateShelfEntity(kind, document.toJS());
 }
 
 /** Publication boundaries are explicit allowlists, never object spreads. */

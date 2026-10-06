@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -15,6 +16,45 @@ MAX_SEARCH_BOOK_LENGTH = 200
 MAX_SEARCH_ISBN_LENGTH = 32
 MAX_SEARCH_LIMIT = 100
 MAX_SEARCH_OFFSET = 100_000
+PACKAGE_ID = re.compile(r"^capkg:[0-7][0-9A-HJKMNP-TV-Z]{25}$")
+
+
+def _manifest_provenance(value: object) -> dict[str, Any]:
+    if not isinstance(value, str):
+        return {}
+    try:
+        manifest = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(manifest, dict):
+        return {}
+    source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+    legacy_book = manifest.get("book") if isinstance(manifest.get("book"), dict) else {}
+    get_value = manifest.get("get") if isinstance(manifest.get("get"), dict) else {}
+    authors = source.get("authors", legacy_book.get("authors"))
+    files = source.get("files")
+    result: dict[str, Any] = {
+        "packageId": manifest.get("packageId"),
+    }
+    fields = {
+        "sourceKind": source.get("kind"),
+        "getDate": get_value.get("date"),
+        "isbn13": source.get("isbn13") or legacy_book.get("isbn13"),
+        "url": source.get("url"),
+        "title": source.get("title") or legacy_book.get("title"),
+        "publisher": source.get("publisher") or legacy_book.get("publisher"),
+        "year": source.get("year", legacy_book.get("year")),
+        "circleName": source.get("circleName"),
+        "eventName": source.get("eventName"),
+    }
+    result.update({key: value for key, value in fields.items() if value is not None})
+    if isinstance(authors, str):
+        authors = [authors]
+    if isinstance(authors, list) and authors:
+        result["authors"] = [item for item in authors if isinstance(item, str)]
+    if isinstance(files, list):
+        result["sourceFiles"] = files
+    return result
 
 
 def now_iso() -> str:
@@ -56,7 +96,8 @@ class Workspace:
                     source_name TEXT NOT NULL,
                     root_path TEXT NOT NULL,
                     manifest_json TEXT NOT NULL,
-                    imported_at TEXT NOT NULL
+                    imported_at TEXT NOT NULL,
+                    package_id TEXT
                 );
                 CREATE TABLE IF NOT EXISTS books (
                     id TEXT PRIMARY KEY,
@@ -109,6 +150,25 @@ class Workspace:
                 CREATE INDEX IF NOT EXISTS idx_annotations_page ON annotations(page_id);
                 """
             )
+            import_columns = {row[1] for row in db.execute("PRAGMA table_info(imports)")}
+            if "package_id" not in import_columns:
+                db.execute("ALTER TABLE imports ADD COLUMN package_id TEXT")
+            # Index valid package identities from already-imported manifests.
+            # If historical duplicate imports exist, keep their rows intact and
+            # index the first one; every future retry will still be blocked.
+            for row in db.execute(
+                "SELECT id, manifest_json FROM imports WHERE package_id IS NULL ORDER BY imported_at, id"
+            ).fetchall():
+                try:
+                    manifest = json.loads(row["manifest_json"])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                package_id = manifest.get("packageId") if isinstance(manifest, dict) else None
+                if not isinstance(package_id, str) or not PACKAGE_ID.fullmatch(package_id):
+                    continue
+                if db.execute("SELECT 1 FROM imports WHERE package_id=? LIMIT 1", (package_id,)).fetchone():
+                    continue
+                db.execute("UPDATE imports SET package_id=? WHERE id=?", (package_id, row["id"]))
             columns = {row[1] for row in db.execute("PRAGMA table_info(annotations)")}
             if "reviewed_at_ms" not in columns:
                 db.execute("ALTER TABLE annotations ADD COLUMN reviewed_at_ms INTEGER")
@@ -132,11 +192,21 @@ class Workspace:
             if "ocr_orientation_override" not in page_columns:
                 db.execute("ALTER TABLE pages ADD COLUMN ocr_orientation_override TEXT NOT NULL DEFAULT 'AUTO'")
             db.execute("CREATE INDEX IF NOT EXISTS idx_books_isbn13 ON books(isbn13)")
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_imports_package_id_unique "
+                "ON imports(package_id) WHERE package_id IS NOT NULL"
+            )
             db.execute("CREATE INDEX IF NOT EXISTS idx_pages_book_status_updated ON pages(book_id, status, updated_at)")
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_annotations_review_state_reviewed "
                 "ON annotations(review_state, reviewed_at_ms, updated_at)"
             )
+
+    def has_package_id(self, package_id: str) -> bool:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT 1 FROM imports WHERE package_id=? LIMIT 1", (package_id,)
+            ).fetchone() is not None
 
     def recover_interrupted(self) -> int:
         with self.connect() as db:
@@ -163,8 +233,10 @@ class Workspace:
     def get_page(self, page_id: str) -> dict[str, Any] | None:
         with self.connect() as db:
             page = db.execute(
-                """SELECT pages.*, books.isbn13, books.title, books.authors_json, books.orientation
-                   FROM pages JOIN books ON books.id=pages.book_id WHERE pages.id=?""",
+                """SELECT pages.*, books.isbn13, books.title, books.authors_json, books.orientation,
+                          imports.package_id, imports.manifest_json
+                   FROM pages JOIN books ON books.id=pages.book_id
+                   JOIN imports ON imports.id=books.import_id WHERE pages.id=?""",
                 (page_id,),
             ).fetchone()
             if page is None:
@@ -184,6 +256,7 @@ class Workspace:
         result["page_ocr_orientation"] = page_orientation
         result["page_ocr_transcription"] = ocr_transcription(result["ocr_regions"], page_orientation)
         result["authors"] = json.loads(result.pop("authors_json"))
+        result["source_provenance"] = _manifest_provenance(result.pop("manifest_json", None))
         result["annotations"] = []
         candidate_regions = result["ocr_regions"] or result["mobile_ocr_regions"]
         for row in annotations:
@@ -414,6 +487,7 @@ class Workspace:
             "FROM annotations "
             "JOIN pages ON pages.id = annotations.page_id "
             "JOIN books ON books.id = pages.book_id "
+            "JOIN imports ON imports.id = books.import_id "
             "WHERE " + " AND ".join(conditions)
         )
         if query:
@@ -438,6 +512,7 @@ class Workspace:
                               books.isbn13 AS isbn13,
                               books.title AS title,
                               books.authors_json AS authors_json,
+                              imports.manifest_json AS manifest_json,
                               annotations.highlight_quote AS quote,
                               annotations.page_label AS page_label,
                               annotations.comment AS comment,
@@ -456,6 +531,7 @@ class Workspace:
             except (TypeError, json.JSONDecodeError):
                 parsed_authors = []
             authors_list = [item for item in parsed_authors if isinstance(item, str)] if isinstance(parsed_authors, list) else []
+            provenance = _manifest_provenance(row["manifest_json"])
             results.append(
                 {
                     "annotationId": row["annotation_id"],
@@ -470,6 +546,7 @@ class Workspace:
                     "comment": row["comment"],
                     "reviewState": row["review_state"],
                     "reviewedAtMs": row["reviewed_at_ms"],
+                    **provenance,
                 }
             )
         return results, total

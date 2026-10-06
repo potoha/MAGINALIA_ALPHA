@@ -23,7 +23,15 @@ from .db import (
     MAX_SEARCH_QUERY_LENGTH,
     Workspace,
 )
-from .importer import BundleImporter, BundleValidationError, ImportLimits, MagicapImporter, is_magicap_filename
+from .importer import (
+    BundleImporter,
+    BundleValidationError,
+    DuplicateCapturePackageError,
+    ImportLimits,
+    MagicapImporter,
+    UnsupportedCapturePackageVersion,
+    is_magicap_filename,
+)
 from .ocr import NdlocrLiteAdapter
 from .publisher import (
     GitHubContentsClient,
@@ -234,12 +242,32 @@ def create_app(
                     import_id = importer.import_zip(temporary, source_name)
                 else:
                     raise BundleValidationError("select a .magicap, .magicap.zip, or legacy .zip package")
+            except DuplicateCapturePackageError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            except UnsupportedCapturePackageVersion as exc:
+                raise HTTPException(415, str(exc)) from exc
             except (BundleValidationError, OSError, json.JSONDecodeError) as exc:
                 raise HTTPException(400, str(exc)) from exc
             return {"importId": import_id}
         finally:
             await bundle.close()
             temporary.unlink(missing_ok=True)
+
+    @app.get("/api/captures/{annotation_id}/source-file")
+    def canonical_source_file(
+        annotation_id: str,
+        request: Request,
+        asset_path: str = Query(min_length=1, max_length=2048),
+    ) -> FileResponse:
+        token = settings.desktop_shutdown_token
+        supplied = request.headers.get("X-Maginalia-Reviewer-Desktop-Token")
+        if token is None or supplied is None or not secrets.compare_digest(supplied, token):
+            raise HTTPException(403, "Desktop source access is unavailable")
+        resolved = magicap_importer.source_asset_for_annotation(annotation_id, asset_path)
+        if resolved is None:
+            raise HTTPException(404, "canonical source file not found")
+        file_path, media_type = resolved
+        return FileResponse(file_path, media_type=media_type, filename=file_path.name)
 
     @app.get("/api/pages")
     def pages() -> list[dict[str, object]]:

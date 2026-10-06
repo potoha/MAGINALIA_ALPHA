@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import uuid
 import zipfile
@@ -27,6 +28,20 @@ MAGICAP_MEDIA_TYPES = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/
 
 class BundleValidationError(ValueError):
     pass
+
+
+class UnsupportedCapturePackageVersion(BundleValidationError):
+    pass
+
+
+class DuplicateCapturePackageError(BundleValidationError):
+    def __init__(self, package_id: str) -> None:
+        super().__init__(
+            "この Capture Package はすでに取り込まれています。\n"
+            f"packageId: {package_id}\n"
+            "既存のReviewerデータを確認してください。"
+        )
+        self.package_id = package_id
 
 
 @dataclass(frozen=True)
@@ -251,7 +266,7 @@ class BundleImporter:
         global_annotations = _as_list(manifest.get("annotations"))
         with self.workspace.connect() as db:
             db.execute(
-                "INSERT INTO imports VALUES(?,?,?,?,?)",
+                "INSERT INTO imports(id,source_name,root_path,manifest_json,imported_at,package_id) VALUES(?,?,?,?,?,NULL)",
                 (import_id, source_name, str(root.resolve()), json.dumps(manifest, ensure_ascii=False), now_iso()),
             )
             authors = metadata.get("authors", [])
@@ -330,7 +345,7 @@ def is_magicap_filename(name: str) -> bool:
 
 
 class MagicapImporter:
-    """Strict, transaction-safe importer for the Android/miniapp .magicap v1 contract."""
+    """Version-dispatched, transaction-safe importer for .magicap v1-v3."""
 
     def __init__(self, workspace: Workspace, imports_root: Path, limits: ImportLimits) -> None:
         self.workspace = workspace
@@ -342,11 +357,20 @@ class MagicapImporter:
             raise BundleValidationError("Capture packages must use a .magicap or .magicap.zip filename")
         if zip_path.stat().st_size > self.limits.max_zip_bytes:
             raise BundleValidationError("Capture package exceeds configured size limit")
+        manifest = self._read_manifest(zip_path)
+        package_id = manifest["packageId"]
+        if self.workspace.has_package_id(package_id):
+            raise DuplicateCapturePackageError(package_id)
         import_id = str(uuid.uuid4())
         destination = self.imports_root / import_id
         try:
-            manifest, captures = self._validate_and_extract(zip_path, destination)
+            manifest, captures = self._validate_and_extract(zip_path, destination, manifest)
             self._persist(import_id, source_name, destination, manifest, captures)
+        except sqlite3.IntegrityError as exc:
+            shutil.rmtree(destination, ignore_errors=True)
+            if self.workspace.has_package_id(package_id):
+                raise DuplicateCapturePackageError(package_id) from exc
+            raise
         except Exception:
             shutil.rmtree(destination, ignore_errors=True)
             raise
@@ -398,22 +422,56 @@ class MagicapImporter:
             raise BundleValidationError(f"{label} must be a finite number")
         return float(value)
 
-    def _validate_manifest(self, manifest: dict[str, Any]) -> str:
-        if manifest.get("format") != "maginalia-capture-package" or manifest.get("version") != 1:
-            raise BundleValidationError("unsupported Capture Package format or version")
-        if not isinstance(manifest.get("packageId"), str) or not MAGICAP_PACKAGE_ID.fullmatch(manifest["packageId"]):
-            raise BundleValidationError("manifest.packageId is invalid")
-        if not isinstance(manifest.get("createdAt"), str):
-            raise BundleValidationError("manifest.createdAt must be a string")
-        book = self._record(manifest.get("book"), "manifest.book")
-        isbn = book.get("isbn13")
-        if not isinstance(isbn, str) or not _valid_isbn13(isbn):
-            raise BundleValidationError("manifest.book.isbn13 has an invalid ISBN-13 check digit")
-        if isinstance(manifest.get("captureCount"), bool) or not isinstance(manifest.get("captureCount"), int) or manifest["captureCount"] < 0:
-            raise BundleValidationError("manifest.captureCount must be a non-negative integer")
-        return isbn
+    def _validate_manifest(self, manifest: dict[str, Any]) -> int:
+        version = manifest.get("version")
+        if manifest.get("format") != "maginalia-capture-package":
+            raise BundleValidationError("manifest.format is unsupported")
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise BundleValidationError("manifest.version must be an integer")
+        if version not in {1, 2, 3}:
+            raise UnsupportedCapturePackageVersion(f"Unsupported Capture Package version: {version}")
+        if version == 1:
+            try:
+                validate_contract(manifest, "magicap-v1-manifest.schema.json")
+            except ContractValidationError as exc:
+                raise BundleValidationError(str(exc)) from exc
+            book = self._record(manifest.get("book"), "manifest.book")
+            isbn = book.get("isbn13")
+            if not isinstance(isbn, str) or not _valid_isbn13(isbn):
+                raise BundleValidationError("manifest.book.isbn13 has an invalid ISBN-13 check digit")
+            return version
 
-    def _validate_capture(self, capture: object, isbn: str, entries: set[str]) -> dict[str, Any]:
+        schema = f"magicap-v{version}-manifest.schema.json"
+        try:
+            validate_contract(manifest, schema)
+        except ContractValidationError as exc:
+            raise BundleValidationError(str(exc)) from exc
+        source = self._record(manifest.get("source"), "manifest.source")
+        isbn = source.get("isbn13")
+        if isinstance(isbn, str) and not _valid_isbn13(isbn):
+            raise BundleValidationError("manifest.source.isbn13 has an invalid ISBN-13 check digit")
+        for item in source.get("files", []):
+            file_record = self._record(item, "manifest.source.files item")
+            try:
+                _safe_member(str(file_record.get("path", "")))
+            except BundleValidationError as exc:
+                raise BundleValidationError("manifest.source.files contains an unsafe path") from exc
+        return version
+
+    def _read_manifest(self, zip_path: Path) -> dict[str, Any]:
+        with zipfile.ZipFile(zip_path) as archive:
+            infos, _ = self._safe_infos(archive)
+            if not any(info.filename == "manifest.json" and not info.is_dir() for info in infos):
+                raise BundleValidationError("manifest.json is required at the ZIP root")
+            try:
+                value = json.loads(archive.read("manifest.json").decode("utf-8-sig"))
+            except (UnicodeDecodeError, json.JSONDecodeError, KeyError) as exc:
+                raise BundleValidationError("manifest.json must be valid UTF-8 JSON") from exc
+            manifest = self._record(value, "manifest.json")
+            self._validate_manifest(manifest)
+            return manifest
+
+    def _validate_capture(self, capture: object, entries: set[str], version: int) -> dict[str, Any]:
         item = self._record(capture, "capture")
         capture_id = item.get("id")
         if not isinstance(capture_id, str) or not MAGICAP_SAFE_ID.fullmatch(capture_id):
@@ -423,6 +481,12 @@ class MagicapImporter:
         comment = item.get("comment")
         if not isinstance(comment, str):
             raise BundleValidationError(f"capture {capture_id}.comment must be text")
+        # The v1 importer historically ignored optional fields on captures.
+        # Keep that compatibility without treating an extra v1 value as a
+        # current Capture quote.
+        quote = "" if version == 1 else item.get("quote", "")
+        if not isinstance(quote, str):
+            raise BundleValidationError(f"capture {capture_id}.quote must be text")
         page_number = item.get("pageNumber")
         if page_number is not None and (isinstance(page_number, bool) or not isinstance(page_number, int) or page_number <= 0):
             raise BundleValidationError(f"capture {capture_id}.pageNumber must be null or a positive integer")
@@ -449,20 +513,49 @@ class MagicapImporter:
         width, height = page.get("width"), page.get("height")
         if isinstance(width, bool) or isinstance(height, bool) or not isinstance(width, int) or not isinstance(height, int) or width <= 0 or height <= 0:
             raise BundleValidationError(f"capture {capture_id} has invalid image dimensions")
-        return {"id": capture_id, "bookId": item["bookId"], "pageImage": {"id": page_id, "path": path, "mediaType": media_type, "width": width, "height": height}, "selectedRegion": region, "pageNumber": page_number, "comment": comment, "createdAt": item["createdAt"]}
+        return {
+            "id": capture_id,
+            "bookId": item["bookId"],
+            "pageImage": {"id": page_id, "path": path, "mediaType": media_type, "width": width, "height": height},
+            "selectedRegion": region,
+            "pageNumber": page_number,
+            "comment": comment,
+            "quote": quote,
+            "createdAt": item["createdAt"],
+        }
 
-    def _validate_and_extract(self, zip_path: Path, destination: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    def _validate_and_extract(
+        self,
+        zip_path: Path,
+        destination: Path,
+        manifest: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         with zipfile.ZipFile(zip_path) as archive:
             infos, names = self._safe_infos(archive)
             regular = {PurePosixPath(info.filename).as_posix() for info in infos if not info.is_dir()}
             if "manifest.json" not in regular:
                 raise BundleValidationError("manifest.json is required at the ZIP root")
             try:
-                manifest_value = json.loads(archive.read("manifest.json").decode("utf-8-sig"))
+                archive_manifest = json.loads(archive.read("manifest.json").decode("utf-8-sig"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise BundleValidationError("manifest.json must be valid UTF-8 JSON") from exc
-            manifest = self._record(manifest_value, "manifest.json")
-            isbn = self._validate_manifest(manifest)
+            archive_manifest = self._record(archive_manifest, "manifest.json")
+            version = self._validate_manifest(archive_manifest)
+            if archive_manifest != manifest:
+                raise BundleValidationError("manifest.json changed during validation")
+            source = archive_manifest.get("source") if version >= 2 else archive_manifest.get("book")
+            source = self._record(source, "manifest.source" if version >= 2 else "manifest.book")
+            declared_source_files: dict[str, dict[str, Any]] = {}
+            if version == 3:
+                seen_source_paths: set[str] = set()
+                for index, item in enumerate(source.get("files", [])):
+                    file_record = self._record(item, f"manifest.source.files[{index}]")
+                    if file_record["path"] in seen_source_paths:
+                        raise BundleValidationError("manifest.source.files contains a duplicate path")
+                    seen_source_paths.add(file_record["path"])
+                    declared_source_files[file_record["path"]] = file_record
+                    if file_record["path"] not in regular:
+                        raise BundleValidationError(f"canonical source file is missing: {file_record['path']}")
             capture_names = sorted(name for name in regular if MAGICAP_CAPTURE_PATH.fullmatch(name))
             if any(name.startswith("captures/") and name not in capture_names for name in regular):
                 raise BundleValidationError("captures must be JSON files directly under captures/")
@@ -477,7 +570,7 @@ class MagicapImporter:
                     parsed = json.loads(archive.read(name).decode("utf-8-sig"))
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise BundleValidationError(f"{name} must be valid UTF-8 JSON") from exc
-                capture = self._validate_capture(parsed, isbn, regular)
+                capture = self._validate_capture(parsed, regular, version)
                 if PurePosixPath(name).stem != capture["id"]:
                     raise BundleValidationError(f"capture filename does not match capture id: {name}")
                 if capture["id"] in capture_ids:
@@ -493,10 +586,17 @@ class MagicapImporter:
                     raise BundleValidationError(f"conflicting metadata for shared page image id: {page['id']}")
                 page_images[page["id"]] = page
                 captures.append(capture)
-            image_names = set(images)
-            if any(name.startswith("images/") and name not in image_names for name in regular):
+            image_names = {
+                PurePosixPath(info.filename).as_posix()
+                for info in infos
+                if not info.is_dir() and PurePosixPath(info.filename).suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+            }
+            allowed_images = set(images) | set(declared_source_files)
+            if any(name.startswith("images/") and name not in allowed_images for name in regular):
                 raise BundleValidationError("Capture package contains undeclared image files")
-            expected = {"manifest.json", *capture_names, *image_names}
+            if image_names - allowed_images:
+                raise BundleValidationError("Capture package contains undeclared image files")
+            expected = {"manifest.json", *capture_names, *images, *declared_source_files}
             if regular != expected:
                 raise BundleValidationError("Capture package contains undeclared files")
             for path, page in images.items():
@@ -512,6 +612,31 @@ class MagicapImporter:
                     raise
                 except (UnidentifiedImageError, OSError, ValueError) as exc:
                     raise BundleValidationError(f"invalid source image: {path}") from exc
+            for file_path, file_record in declared_source_files.items():
+                digest = hashlib.sha256()
+                try:
+                    with archive.open(file_path) as source_stream:
+                        prefix = source_stream.read(8)
+                        digest.update(prefix)
+                        for chunk in iter(lambda: source_stream.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                except (KeyError, OSError, RuntimeError) as exc:
+                    raise BundleValidationError(f"canonical source file could not be read: {file_path}") from exc
+                if digest.hexdigest() != file_record["sha256"]:
+                    raise BundleValidationError(f"SHA-256 mismatch for canonical source file: {file_path}")
+                if file_record["mediaType"] == "application/pdf":
+                    if not prefix.startswith(b"%PDF-"):
+                        raise BundleValidationError(f"canonical source file is not a PDF: {file_path}")
+                else:
+                    try:
+                        with archive.open(file_path) as source_stream, Image.open(source_stream) as decoded:
+                            if decoded.format != "JPEG":
+                                raise BundleValidationError(f"canonical source file is not JPEG: {file_path}")
+                            decoded.verify()
+                    except BundleValidationError:
+                        raise
+                    except (UnidentifiedImageError, OSError, ValueError) as exc:
+                        raise BundleValidationError(f"invalid canonical JPEG source file: {file_path}") from exc
             destination.mkdir(parents=True, exist_ok=False)
             for info in infos:
                 if info.is_dir():
@@ -521,15 +646,82 @@ class MagicapImporter:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(info) as source, target.open("xb") as output:
                     shutil.copyfileobj(source, output, length=1024 * 1024)
-            return manifest, captures
+            return archive_manifest, captures
+
+    def source_asset_for_annotation(self, annotation_id: str, asset_path: str) -> tuple[Path, str] | None:
+        """Resolve only a declared v3 canonical asset for an approved capture."""
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", annotation_id):
+            return None
+        try:
+            safe_path = _safe_member(asset_path).as_posix()
+        except BundleValidationError:
+            return None
+        with self.workspace.connect() as db:
+            row = db.execute(
+                """SELECT imports.root_path, imports.manifest_json
+                   FROM annotations
+                   JOIN pages ON pages.id=annotations.page_id
+                   JOIN books ON books.id=pages.book_id
+                   JOIN imports ON imports.id=books.import_id
+                   WHERE annotations.id=? AND annotations.review_state='APPROVED'
+                     AND annotations.selected_region_json IS NOT NULL""",
+                (annotation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            manifest = json.loads(row["manifest_json"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(manifest, dict) or manifest.get("version") != 3:
+            return None
+        source = manifest.get("source")
+        files = source.get("files") if isinstance(source, dict) else None
+        if not isinstance(files, list):
+            return None
+        item = next(
+            (entry for entry in files if isinstance(entry, dict) and entry.get("path") == safe_path),
+            None,
+        )
+        if item is None:
+            return None
+        root = Path(row["root_path"]).resolve(strict=True)
+        candidate = root.joinpath(*PurePosixPath(safe_path).parts)
+        try:
+            resolved = candidate.resolve(strict=True)
+            if root not in resolved.parents or candidate.is_symlink() or not resolved.is_file():
+                return None
+            digest_state = hashlib.sha256()
+            with resolved.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    digest_state.update(chunk)
+            digest = digest_state.hexdigest()
+        except (OSError, RuntimeError):
+            return None
+        if digest != item.get("sha256"):
+            return None
+        media_type = item.get("mediaType")
+        if media_type not in {"image/jpeg", "application/pdf"}:
+            return None
+        return resolved, media_type
 
     def _persist(self, import_id: str, source_name: str, root: Path, manifest: dict[str, Any], captures: list[dict[str, Any]]) -> None:
-        isbn = manifest["book"]["isbn13"]
+        version = manifest["version"]
+        source = manifest["source"] if version >= 2 else manifest["book"]
+        isbn = source.get("isbn13")
+        title = source.get("title")
+        authors = source.get("authors", [])
         book_id = str(uuid.uuid4())
         page_ids: dict[str, str] = {}
         with self.workspace.connect() as db:
-            db.execute("INSERT INTO imports VALUES(?,?,?,?,?)", (import_id, source_name, str(root.resolve()), json.dumps(manifest, ensure_ascii=False), now_iso()))
-            db.execute("INSERT INTO books(id,import_id,isbn13,title,authors_json,orientation,source_json) VALUES(?,?,?,?,?,?,?)", (book_id, import_id, isbn, None, "[]", None, json.dumps(manifest["book"], ensure_ascii=False)))
+            db.execute(
+                "INSERT INTO imports(id,source_name,root_path,manifest_json,imported_at,package_id) VALUES(?,?,?,?,?,?)",
+                (import_id, source_name, str(root.resolve()), json.dumps(manifest, ensure_ascii=False), now_iso(), manifest["packageId"]),
+            )
+            db.execute(
+                "INSERT INTO books(id,import_id,isbn13,title,authors_json,orientation,source_json) VALUES(?,?,?,?,?,?,?)",
+                (book_id, import_id, isbn, title, json.dumps(authors, ensure_ascii=False), None, json.dumps(source, ensure_ascii=False)),
+            )
             for capture in captures:
                 page = capture["pageImage"]
                 page_id = page_ids.get(page["id"])
@@ -539,4 +731,4 @@ class MagicapImporter:
                     if root.resolve() not in image_path.parents or not image_path.is_file():
                         raise BundleValidationError(f"invalid image path for page {page['id']}")
                     db.execute("""INSERT INTO pages(id,book_id,source_page_id,image_path,image_media_type,width,height,captured_at,status,mobile_ocr_regions_json,ocr_regions_json,ocr_provenance_json,error_summary,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (page_id, book_id, page["id"], str(image_path), page["mediaType"], page["width"], page["height"], capture["createdAt"], "PENDING", "[]", "[]", None, None, now_iso()))
-                db.execute("""INSERT INTO annotations(id,page_id,source_annotation_id,geometry_json,highlight_quote,sentence_before,sentence_after,page_label,chapter_label,comment,created_at,source_capture_id,source_book_id,selected_region_json,phone_comment,review_state,reviewed_at_ms,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (str(uuid.uuid4()), page_id, capture["id"], "[]", "", "", "", str(capture["pageNumber"]) if capture["pageNumber"] is not None else "", "", capture["comment"], capture["createdAt"], capture["id"], capture["bookId"], json.dumps(capture["selectedRegion"]), capture["comment"], "PENDING", None, now_iso()))
+                db.execute("""INSERT INTO annotations(id,page_id,source_annotation_id,geometry_json,highlight_quote,sentence_before,sentence_after,page_label,chapter_label,comment,created_at,source_capture_id,source_book_id,selected_region_json,phone_comment,review_state,reviewed_at_ms,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (str(uuid.uuid4()), page_id, capture["id"], "[]", capture["quote"], "", "", str(capture["pageNumber"]) if capture["pageNumber"] is not None else "", "", capture["comment"], capture["createdAt"], capture["id"], capture["bookId"], json.dumps(capture["selectedRegion"]), capture["comment"], "PENDING", None, now_iso()))
