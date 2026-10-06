@@ -1,0 +1,7 @@
+{
+  "type": "library",
+  "version": "0.1",
+  "name": "MAGINALIA Private Shelf",
+  "booksPath": "books",
+  "annotationsPath": "annotations"
+}

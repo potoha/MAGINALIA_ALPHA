@@ -1,0 +1,10 @@
+{
+  "type": "annotation",
+  "version": "0.1",
+  "id": "ann:01JABCDEFGHJKMNPQRSTVWXYZ2",
+  "source": "isbn:9784101019031",
+  "location": {"path": "aozora/000218/card50535/二"},
+  "quote": "読書は一種の技術である。",
+  "comment": "読むことを才能ではなく、身につけていく技術として考えるためのサンプル引用。",
+  "attribution": "三木清「如何に読書すべきか」（底本『読書と人生』新潮文庫）"
+}

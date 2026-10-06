@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "id": "${GENERATED_REPOSITORY_UUID}",
+  "kind": "project",
+  "title": "MAGINALIA はじめてのプロジェクト",
+  "templateVersion": 1
+}

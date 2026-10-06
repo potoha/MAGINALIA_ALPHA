@@ -1,0 +1,9 @@
+{
+  "type": "project",
+  "version": "0.1",
+  "id": "project:${GENERATED_PROJECT_ULID}",
+  "title": "MAGINALIA はじめてのプロジェクト",
+  "description": "MAGINALIAの基本操作を、マキナが残したサンプルを使って一周するチュートリアルProject。",
+  "visibility": "private",
+  "readme": "README.md"
+}

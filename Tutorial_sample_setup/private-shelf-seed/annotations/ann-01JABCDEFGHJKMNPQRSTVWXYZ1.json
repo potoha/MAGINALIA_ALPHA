@@ -1,0 +1,10 @@
+{
+  "type": "annotation",
+  "version": "0.1",
+  "id": "ann:01JABCDEFGHJKMNPQRSTVWXYZ1",
+  "source": "isbn:9784101092058",
+  "location": {"path": "aozora/000081/card456/銀河鉄道の夜"},
+  "quote": "けれどもほんとうのさいわいは一体何だろう。",
+  "comment": "答えではなく問いの形で残される「さいわい」に注目するためのサンプル引用。",
+  "attribution": "宮沢賢治「銀河鉄道の夜」（底本『新編 銀河鉄道の夜』新潮文庫）"
+}

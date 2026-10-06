@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "tutorialProjectTemplate": "project-template",
+  "privateShelfSeed": "private-shelf-seed",
+  "entryDocument": "sample-a_マキナの置き手紙.md",
+  "downloads": [
+    {
+      "source": "resources/MAGINALIA_チュートリアル_宮沢賢治.jpg",
+      "targetFileName": "MAGINALIA_チュートリアル_宮沢賢治.jpg",
+      "windowsTarget": "KnownFolder:Downloads",
+      "linuxTarget": "XDG_DOWNLOAD_DIR",
+      "overwrite": false
+    }
+  ],
+  "exportTutorial": {
+    "outputDirectory": "Downloads",
+    "sourceDocument": "sample-b_小さなレポート.md",
+    "files": [
+      "MAGINALIA_チュートリアル_小さなレポート.md",
+      "MAGINALIA_チュートリアル_小さなレポート.pdf",
+      "MAGINALIA_チュートリアル_小さなレポート.docx"
+    ]
+  },
+  "shelfPolicy": {
+    "privateShelfRequired": true,
+    "publicShelfAutoCreate": false,
+    "seedMode": "idempotent-non-destructive"
+  }
+}

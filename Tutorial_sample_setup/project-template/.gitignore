@@ -1,0 +1,8 @@
+# MAGINALIA machine-local state
+.maginalia-local/
+.env*
+
+# Tutorial exports
+*.resolved.md
+*.pdf
+*.docx

@@ -1,0 +1,10 @@
+{
+  "type": "annotation",
+  "version": "0.1",
+  "id": "ann:01JABCDEFGHJKMNPQRSTVWXYZ0",
+  "source": "isbn:9784480020024",
+  "location": {"path": "aozora/000081/card1058/序"},
+  "quote": "わたくしといふ現象は\n仮定された有機交流電燈の\nひとつの青い照明です",
+  "comment": "「記録すること」と、記録する主体そのものを考えるためのサンプル引用。",
+  "attribution": "宮沢賢治「春と修羅」序（底本『宮沢賢治全集1』ちくま文庫）"
+}
