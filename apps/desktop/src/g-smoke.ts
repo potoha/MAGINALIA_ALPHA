@@ -270,9 +270,16 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
 
   await script(window, `(() => { const tab = [...document.querySelectorAll("#document-tabs .document-tab")].find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("a.md")); const button = tab?.querySelector(".document-tab-label"); const mode = document.querySelector('[data-unified-search-mode="project"]'); const query = document.querySelector("#library-query"); if (!(button instanceof HTMLButtonElement) || !(mode instanceof HTMLButtonElement) || !(query instanceof HTMLInputElement)) return false; button.click(); mode.click(); query.value = "PROJECT_LITERAL_SENTINEL"; query.form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); return true; })()`, "Project search");
   await waitFor(window, (value) => value.active === "a.md", "A active for Project search");
-  await waitForScript(window, "document.querySelectorAll('#project-search-results button').length > 0", "Project result");
+  await waitForScript(window, "document.querySelector('#project-search-results [data-project-search-sync]') instanceof HTMLButtonElement", "Project result Sync action");
   await script(window, `(() => {
-    const result = document.querySelector("#project-search-results button");
+    const sync = document.querySelector('#project-search-results [data-project-search-sync]');
+    return sync instanceof HTMLButtonElement && sync.dataset.target === 'b.md' && sync.textContent === 'Sync' && (sync.click(), true);
+  })()`, "click Project search Sync action");
+  await waitFor(window, (value) => value.active === "a.md"
+    && value.text.split('maginalia:synced-block v1 {"target":"b.md"}').length >= 3
+    && !value.text.includes("PROJECT_LITERAL_SENTINEL"), "Project search Sync inserts only a canonical marker");
+  await script(window, `(() => {
+    const result = document.querySelector("#project-search-results .project-search-open");
     const editor = document.querySelector("#editor");
     if (!(result instanceof HTMLElement) || !(editor instanceof HTMLElement) || typeof DataTransfer !== "function" || typeof DragEvent !== "function") return false;
     const transfer = new DataTransfer();
@@ -283,9 +290,30 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
     editor.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
     return true;
   })()`, "drag Project search result into authoring source as a Synced Block");
-  await waitFor(window, (value) => value.text.split('maginalia:synced-block v1 {"target":"b.md"}').length >= 3, "Project search drag inserts a canonical marker without copied source");
-  await script(window, `(() => { const open = document.querySelector("#project-search-results button"); if (!(open instanceof HTMLButtonElement)) return false; open.click(); const source = document.querySelector("#project-search-source"); const insert = document.querySelector("#project-search-insert"); if (!(source instanceof HTMLTextAreaElement) || !(insert instanceof HTMLButtonElement)) return false; source.selectionStart = 0; source.selectionEnd = source.value.length; insert.click(); return true; })()`, "literal Project insertion");
+  await waitFor(window, (value) => value.text.split('maginalia:synced-block v1 {"target":"b.md"}').length >= 4, "Project search drag remains a canonical marker insertion");
+  await script(window, `(() => { const open = document.querySelector("#project-search-results .project-search-open"); if (!(open instanceof HTMLButtonElement)) return false; open.click(); const source = document.querySelector("#project-search-source"); const insert = document.querySelector("#project-search-insert"); if (!(source instanceof HTMLTextAreaElement) || !(insert instanceof HTMLButtonElement) || insert.textContent !== "テキストとして挿入") return false; source.selectionStart = 0; source.selectionEnd = source.value.length; insert.click(); return true; })()`, "literal Project text insertion");
   await waitFor(window, (value) => value.text.includes("PROJECT_LITERAL_SENTINEL") && value.status === "modified", "literal insertion into destination");
+
+  await script(window, `(() => {
+    const query = document.querySelector("#library-query");
+    if (!(query instanceof HTMLInputElement)) return false;
+    query.value = "PROJECT_NESTED_SYNC_SENTINEL";
+    query.form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    return true;
+  })()`, "search for a nested Project Markdown result");
+  await waitForScript(window, `(() => {
+    const sync = document.querySelector('#project-search-results [data-project-search-sync]');
+    return sync instanceof HTMLButtonElement && sync.dataset.target === 'nested/notes.md';
+  })()`, "nested Project result keeps its relative target");
+  await script(window, `(() => {
+    const sync = document.querySelector('#project-search-results [data-project-search-sync]');
+    if (!(sync instanceof HTMLButtonElement) || sync.dataset.target !== 'nested/notes.md') return false;
+    sync.click();
+    return true;
+  })()`, "click Sync for a nested Project result");
+  await waitFor(window, (value) => value.active === "a.md"
+    && value.text.includes('maginalia:synced-block v1 {"target":"nested/notes.md"}')
+    && !value.text.includes("PROJECT_NESTED_SYNC_SENTINEL"), "nested Sync inserts a marker without copying the source");
   if (path.basename(path.resolve(fixtureRoot)).length === 0) throw new Error("G smoke fixture root was invalid.");
 }
 
