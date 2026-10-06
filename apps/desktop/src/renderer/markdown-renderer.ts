@@ -15,7 +15,7 @@ import { parseInternalLinkAt } from "../project-links";
 import { describeEmbed } from "./embed-providers";
 import { PreviewCompositionGate } from "./preview-editing";
 import { collectMarkdownTables, escapeTableCell, isMarkdownTableTerminator, type MarkdownTableCellTarget, type MarkdownTableTarget } from "./markdown-table-commands";
-import { projectMarkdownBody } from "./document-properties";
+import { findFrontMatterBoundary, projectMarkdownBody } from "./document-properties";
 import { isMarkdownFenceClosing, openingMarkdownFence } from "./markdown-fence";
 import { isMarkdownBlockquoteLine, parseMarkdownHeading, parseMarkdownListItem } from "./markdown-structure";
 import { isSyncedBlockStructuralLine, parseSyncedBlockMarker, type ComposedSyncedBlock } from "./synced-block";
@@ -223,6 +223,39 @@ export function parseMarkdownBlocks(
   return Object.freeze(blocks);
 }
 
+/** Add only the line break boundary needed before a new trailing Markdown block. */
+export function minimumPreviewTrailingSeparator(
+  text: string,
+  lastBlock: MarkdownBlock | undefined,
+  defaultLineEnding: "\n" | "\r\n" | "\r" = "\n"
+): string {
+  if (lastBlock === undefined) {
+    const frontMatter = findFrontMatterBoundary(text);
+    return frontMatter?.closingEnd === text.length ? defaultLineEnding : "";
+  }
+  const needsBlankLine = lastBlock.kind === "paragraph" || lastBlock.kind === "blockquote"
+    || lastBlock.kind === "list" || lastBlock.kind === "table";
+  const requiredLineBreaks = needsBlankLine ? 2 : 1;
+  let trailingLineBreaks = 0;
+  let cursor = text.length;
+  while (cursor > 0) {
+    if (text.slice(cursor - 2, cursor) === "\r\n") {
+      trailingLineBreaks += 1;
+      cursor -= 2;
+    } else if (text[cursor - 1] === "\r" || text[cursor - 1] === "\n") {
+      trailingLineBreaks += 1;
+      cursor -= 1;
+    } else {
+      break;
+    }
+  }
+  let lineEnding = defaultLineEnding;
+  for (const match of text.matchAll(/\r\n|\n|\r/gu)) {
+    if (match[0] === "\r\n" || match[0] === "\n" || match[0] === "\r") lineEnding = match[0];
+  }
+  return lineEnding.repeat(Math.max(0, requiredLineBreaks - trailingLineBreaks));
+}
+
 /** Collect only parsed Project media nodes; code spans/fences remain inert. */
 export function scanLocalMediaTargets(text: string): readonly string[] {
   const targets = new Set<string>();
@@ -279,6 +312,7 @@ export interface PreviewEditableTextRange {
 
 export interface PreviewEditableOptions {
   readonly revision: number;
+  readonly defaultLineEnding?: "\n" | "\r\n" | "\r";
   readonly onEdit: (request: { readonly revision: number; readonly range: PreviewEditableTextRange; readonly replacement: string }) =>
     | { readonly kind: "applied"; readonly revision: number; readonly range: { readonly start: number; readonly end: number } }
     | { readonly kind: "error" };
@@ -542,6 +576,86 @@ function appendEditableTableCell(
   parent.append(element);
 }
 
+function appendTrailingEditablePosition(
+  root: HTMLElement,
+  sourceText: string,
+  lastBlock: MarkdownBlock | undefined,
+  editable: PreviewEditableOptions
+): HTMLParagraphElement {
+  const element = document.createElement("p");
+  element.className = "markdown-preview-editable-text markdown-preview-trailing-insertion";
+  element.contentEditable = "true";
+  element.spellcheck = true;
+  element.setAttribute("role", "textbox");
+  element.setAttribute("aria-label", "Add text after document");
+  element.setAttribute("aria-multiline", "false");
+  element.dataset.previewSourceStart = String(sourceText.length);
+  element.dataset.previewSourceEnd = String(sourceText.length);
+  element.dataset.previewRevision = String(editable.revision);
+  element.dataset.previewTrailingActive = "false";
+
+  const composition = new PreviewCompositionGate();
+  const placeCaretAtEnd = (): void => {
+    const selection = document.getSelection();
+    if (selection === null) return;
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
+  const activate = (): boolean => {
+    if (element.dataset.previewTrailingActive === "true") return true;
+    const separator = minimumPreviewTrailingSeparator(sourceText, lastBlock, editable.defaultLineEnding);
+    let insertionOffset = sourceText.length;
+    if (separator.length > 0) {
+      const result = editable.onEdit({
+        revision: Number(element.dataset.previewRevision),
+        range: { start: sourceText.length, end: sourceText.length, text: "" },
+        replacement: separator
+      });
+      if (result.kind !== "applied") return false;
+      insertionOffset = result.range.end;
+      element.dataset.previewRevision = String(result.revision);
+    }
+    element.dataset.previewSourceStart = String(insertionOffset);
+    element.dataset.previewSourceEnd = String(insertionOffset);
+    element.dataset.previewTrailingActive = "true";
+    editable.onSelectionChange?.({ start: insertionOffset, end: insertionOffset });
+    placeCaretAtEnd();
+    return true;
+  };
+  const apply = (compositionFinal = false): void => {
+    if (element.dataset.previewTrailingActive !== "true"
+      || (!compositionFinal && !composition.mayCommitInput())) return;
+    const replacement = element.textContent ?? "";
+    if (/\r|\n/u.test(replacement)) return;
+    const start = Number(element.dataset.previewSourceStart);
+    const result = editable.onEdit({
+      revision: Number(element.dataset.previewRevision),
+      range: { start, end: Number(element.dataset.previewSourceEnd), text: "" },
+      replacement
+    });
+    if (result.kind !== "applied") return;
+    element.dataset.previewSourceEnd = String(result.range.end);
+    element.dataset.previewRevision = String(result.revision);
+  };
+  element.addEventListener("compositionstart", () => composition.start());
+  element.addEventListener("compositionend", () => { if (composition.end()) apply(true); });
+  element.addEventListener("input", () => apply());
+  element.addEventListener("focus", () => {
+    editable.onEditingChange?.(true);
+    activate();
+  });
+  element.addEventListener("blur", () => editable.onEditingChange?.(false));
+  element.addEventListener("click", () => {
+    if (document.activeElement !== element) element.focus();
+    if (element.dataset.previewTrailingActive !== "true") activate();
+  });
+  root.append(element);
+  return element;
+}
+
 function appendTableControls(parent: HTMLElement, target: MarkdownTableTarget, currentCell: () => MarkdownTableCellTarget | undefined, options: MarkdownPreviewRenderOptions): void {
   if (options.onTableCommand === undefined) return;
   const controls = document.createElement("div");
@@ -698,6 +812,7 @@ export function renderMarkdownPreview(
   const rangesByBlock = options.editable === undefined ? [] : collectEditablePreviewRanges(projection.body, projection.start);
   const tablesByBlock = options.editable === undefined ? [] : collectMarkdownTables(projection.body, projection.start);
   let tableIndex = 0;
+  let lastRenderedBlock: HTMLElement | undefined;
   const blocks = parseMarkdownBlocks(projection.body, quotes, internalLinks, media);
   blocks.forEach((block, blockIndex) => {
     const editableState = options.editable === undefined ? undefined : { ranges: rangesByBlock[blockIndex] ?? [], cursor: 0 };
@@ -804,8 +919,18 @@ export function renderMarkdownPreview(
       }
     }
     root.append(element);
+    lastRenderedBlock = element;
   });
   if (options.editable !== undefined) {
+    const trailing = appendTrailingEditablePosition(root, text, blocks.at(-1), options.editable);
+    root.addEventListener("click", (event) => {
+      if (event.target !== root) return;
+      const lastBounds = lastRenderedBlock?.getBoundingClientRect();
+      const afterLastBlock = lastBounds === undefined || (direction === "vertical"
+        ? event.clientX <= lastBounds.left
+        : event.clientY >= lastBounds.bottom);
+      if (afterLastBlock && !trailing.contains(document.activeElement)) trailing.click();
+    });
     const selection = (): void => {
       const selected = document.getSelection();
       if (selected === null) {

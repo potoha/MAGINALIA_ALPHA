@@ -3,6 +3,7 @@ import {
   parseMarkdownBlocks,
   parseMarkdownInlines,
   collectEditablePreviewRanges,
+  minimumPreviewTrailingSeparator,
   scanLocalMediaTargets,
   scanQuoteMarkersFromText
 } from "./markdown-renderer";
@@ -86,6 +87,26 @@ describe("Markdown preview parser", () => {
       expect(collectEditablePreviewRanges(source).map((ranges) => ranges.map((range) => range.text))).toEqual([["before"], [], ["after"]]);
     }
     expect(scanSyncedBlockMarkers(`before\n${invalid}\nafter`)).toMatchObject([{ kind: "invalid" }]);
+  });
+
+  it("uses the minimum source line breaks for a trailing Preview paragraph", () => {
+    const quoteRef = '<!-- maginalia:quote-ref v1 {"quoteId":"00000000-0000-4000-8000-000000000001","mode":"normal"} -->';
+    const image = "![[assets/図版.png]]";
+    const syncedBlock = serializeSyncedBlock("chapters/one.md");
+    const lastBlock = (source: string) => parseMarkdownBlocks(source).at(-1);
+
+    expect(minimumPreviewTrailingSeparator("# H1 only", lastBlock("# H1 only"))).toBe("\n");
+    expect(minimumPreviewTrailingSeparator("# H1 only", lastBlock("# H1 only"), "\r\n")).toBe("\r\n");
+    expect(minimumPreviewTrailingSeparator("# H1 only\r\n", lastBlock("# H1 only\r\n"))).toBe("");
+    expect(minimumPreviewTrailingSeparator("ordinary paragraph", lastBlock("ordinary paragraph"))).toBe("\n\n");
+    expect(minimumPreviewTrailingSeparator("ordinary paragraph\r\n", lastBlock("ordinary paragraph\r\n"))).toBe("\r\n");
+    expect(minimumPreviewTrailingSeparator(quoteRef, lastBlock(quoteRef))).toBe("\n\n");
+    expect(minimumPreviewTrailingSeparator(image, lastBlock(image))).toBe("\n\n");
+    expect(minimumPreviewTrailingSeparator(syncedBlock, lastBlock(syncedBlock))).toBe("\n");
+    expect(minimumPreviewTrailingSeparator(`${syncedBlock}\n`, lastBlock(`${syncedBlock}\n`))).toBe("");
+    const frontMatterOnly = "---\ntitle: Preview\n---";
+    expect(minimumPreviewTrailingSeparator(frontMatterOnly, undefined)).toBe("\n");
+    expect(minimumPreviewTrailingSeparator(`${frontMatterOnly}\n`, undefined)).toBe("");
   });
 
   it("keeps marker-shaped fenced code inert in every structural consumer", () => {

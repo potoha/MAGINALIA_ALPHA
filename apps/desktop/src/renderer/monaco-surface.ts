@@ -1,7 +1,7 @@
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api.js";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker.js?worker";
 import "monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js";
-import type { WritingSurface, WritingTextRange } from "./controller";
+import type { WritingSurface, WritingTextLineEnding, WritingTextRange } from "./controller";
 
 (globalThis as typeof globalThis & { MonacoEnvironment?: { getWorker: () => Worker } }).MonacoEnvironment = {
   getWorker: () => new EditorWorker()
@@ -45,6 +45,11 @@ export class MonacoMarkdownSurface implements WritingSurface {
 
   public getText(): string {
     return this.model?.getValue(monaco.editor.EndOfLinePreference.TextDefined, true) ?? "";
+  }
+
+  public getLineEnding(): WritingTextLineEnding {
+    const lineEnding = this.model?.getEOL();
+    return lineEnding === "\r\n" || lineEnding === "\n" ? lineEnding : "\n";
   }
 
   public getSelection(): WritingTextRange {
