@@ -290,7 +290,7 @@ app.innerHTML = `
               <div id="project-search-preview" class="project-search-preview" hidden>
                 <label for="project-search-source">Source Markdown</label>
                 <textarea id="project-search-source" readonly spellcheck="false" aria-label="Read-only source Markdown"></textarea>
-                <button id="project-search-insert" type="button">選択部分を挿入</button>
+                <button id="project-search-insert" type="button">テキストとして挿入</button>
                 <p id="project-search-error" class="library-error" role="alert" hidden></p>
               </div>
             </section>
@@ -2873,10 +2873,27 @@ function renderProjectSearchState(state: ProjectSearchState): void {
         projectSearchPreview.hidden = false;
         projectSearchError.hidden = true;
       });
+      const sync = document.createElement("button");
+      sync.type = "button";
+      sync.className = "project-search-sync";
+      sync.textContent = "Sync";
+      sync.dataset.projectSearchSync = "true";
+      sync.dataset.target = result.displayName;
+      sync.title = `Insert ${result.displayName} as a Synced Block`;
+      sync.setAttribute("aria-label", `Insert ${result.displayName} as a Synced Block`);
+      sync.addEventListener("click", () => {
+        const project = projectController?.getState().project;
+        if (project !== null && project !== undefined) {
+          requestSyncedBlockInsertion({ projectId: project.projectId, target: result.displayName });
+        }
+      });
+      const actions = document.createElement("div");
+      actions.className = "project-search-result-actions";
+      actions.append(open, sync);
       const excerpt = document.createElement("pre");
       excerpt.className = "project-search-excerpt";
       excerpt.textContent = result.excerpt;
-      item.append(open, excerpt);
+      item.append(actions, excerpt);
       projectSearchResults.append(item);
     }
     return;

@@ -11,9 +11,11 @@ try {
   const projectRoot = path.join(temporaryDirectory, "project-root");
   const userDataRoot = path.join(temporaryDirectory, "electron-user-data");
   await mkdir(projectRoot, { recursive: true });
+  await mkdir(path.join(projectRoot, "nested"), { recursive: true });
   await writeFile(path.join(projectRoot, "a.md"), "A document.\n\n[[b.md|Open B]]\n", "utf8");
   await writeFile(path.join(projectRoot, "b.md"), "# B\n\nPROJECT_LITERAL_SENTINEL\n", "utf8");
   await writeFile(path.join(projectRoot, "c.md"), "# C\n\nThird document.\n", "utf8");
+  await writeFile(path.join(projectRoot, "nested", "notes.md"), "# Nested source\n\nPROJECT_NESTED_SYNC_SENTINEL\n", "utf8");
   await writeFile(path.join(projectRoot, "chapter.md"), "---\ntitle: Chapter\n---\n\n# Chapter\n\nChapter prose.\n\n<!-- maginalia:synced-block v1 {\"target\":\"section.md\"} -->\n", "utf8");
   await writeFile(path.join(projectRoot, "section.md"), "---\ntitle: Section\n---\n\n# Section\n\nSection prose.\n", "utf8");
   const result = await runElectronSmoke({ userDataRoot, appArgs: ["--smoke-g", projectRoot] });
