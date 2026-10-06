@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { MaterializationResult } from "./reviewer-shelf-materializer";
@@ -27,8 +27,11 @@ function reviewerRow(annotationId: string, quote: string, isbn13: string | null 
     pageId: `page-${annotationId}`,
     sourcePageId: null,
     isbn13,
-    title: "Reviewer title is not authoritative",
-    authors: ["Reviewer author"],
+    packageId: "capkg:01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    sourceKind: "book",
+    getDate: "202602011230",
+    title: null,
+    authors: [],
     quote,
     pageLabel: "12",
     comment: "Reviewer のメモ",
@@ -165,7 +168,7 @@ describe("Reviewer to Private Shelf sync adapter", () => {
     expect(lookupMetadata).not.toHaveBeenCalled();
   });
 
-  it("keeps openBD misses pending, retries on the next sync, and is idempotent", async () => {
+  it("materializes with manifest provenance when OpenBD misses, then remains idempotent", async () => {
     const root = await createShelf();
     const reviewerFetcher: typeof fetch = vi.fn(async () => response(page([
       reviewerRow("123e4567-e89b-42d3-a456-426614174000", "引用を保留してから取り込む")
@@ -187,14 +190,16 @@ describe("Reviewer to Private Shelf sync adapter", () => {
     });
 
     const first = await sync(root);
-    expect(first).toMatchObject({ kind: "completed", materialized: 0, pending: 1, failed: 0 });
-    expect(await readdir(path.join(root, "books"))).toEqual([]);
-    expect(await readdir(path.join(root, "annotations"))).toEqual([]);
+    expect(first).toMatchObject({ kind: "completed", materialized: 1, pending: 0, failed: 0 });
+    const bookFiles = await readdir(path.join(root, "books"));
+    expect(bookFiles).toHaveLength(1);
+    const annotationFiles = await readdir(path.join(root, "annotations"));
+    expect(annotationFiles).toHaveLength(1);
 
     const second = await sync(root);
-    expect(second).toMatchObject({ kind: "completed", materialized: 1, unchanged: 0, pending: 0, failed: 0 });
-    expect(await readdir(path.join(root, "books"))).toEqual([`${ISBN}.json`]);
-    expect(await readdir(path.join(root, "annotations"))).toHaveLength(1);
+    expect(second).toMatchObject({ kind: "completed", materialized: 0, unchanged: 1, pending: 0, failed: 0 });
+    expect(await readdir(path.join(root, "books"))).toEqual(bookFiles);
+    expect(await readdir(path.join(root, "annotations"))).toEqual(annotationFiles);
 
     const third = await sync(root);
     expect(third).toMatchObject({ kind: "completed", materialized: 0, unchanged: 1, pending: 0, failed: 0 });
@@ -202,7 +207,7 @@ describe("Reviewer to Private Shelf sync adapter", () => {
     expect(reviewerFetcher).toHaveBeenCalledTimes(3);
   });
 
-  it("isolates an openBD rejection and continues with independent records", async () => {
+  it("isolates an OpenBD rejection without blocking approved manifest-backed records", async () => {
     const root = await createShelf();
     const secondIsbn = "9780134685991";
     const records = [
@@ -223,9 +228,38 @@ describe("Reviewer to Private Shelf sync adapter", () => {
 
     const result = await sync(root);
 
-    expect(result).toMatchObject({ kind: "completed", materialized: 1, pending: 1, failed: 1 });
+    expect(result).toMatchObject({ kind: "completed", materialized: 2, pending: 0, failed: 1 });
     expect(lookupMetadata).toHaveBeenCalledTimes(2);
-    expect(await readdir(path.join(root, "books"))).toEqual([`${secondIsbn}.json`]);
-    expect(await readdir(path.join(root, "annotations"))).toHaveLength(1);
+    expect(await readdir(path.join(root, "books"))).toHaveLength(2);
+    expect(await readdir(path.join(root, "annotations"))).toHaveLength(2);
+  });
+
+  it("reconciles existing YAML Books before creating a new v0.4 Book", async () => {
+    const root = await createShelf();
+    const booksDirectory = path.join(root, "books");
+    await mkdir(booksDirectory, { recursive: true });
+    await writeFile(path.join(booksDirectory, "existing.yaml"), [
+      "type: book",
+      "version: '0.4'",
+      "id: book:01J0A1B2C3D4E5F6G7H8J9K0M1",
+      "source:",
+      "  kind: book",
+      "get:",
+      "  date: '202601011200'",
+      `isbn13: '${ISBN}'`,
+      "title: Existing YAML book",
+      "authors:",
+      "  - Existing author",
+      ""
+    ].join("\n"), "utf8");
+    const sync = createReviewerShelfSyncAdapter({
+      ...adapterOptions([page([reviewerRow("123e4567-e89b-42d3-a456-426614174003", "同じ書籍")], 1, 0, 2)]),
+      lookupMetadata: async () => ({ status: "not-found" })
+    });
+
+    const result = await sync(root);
+
+    expect(result).toMatchObject({ kind: "completed", materialized: 1, unchanged: 0, conflicts: 0 });
+    expect(await readdir(booksDirectory)).toEqual(["existing.yaml"]);
   });
 });

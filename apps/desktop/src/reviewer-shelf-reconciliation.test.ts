@@ -1,14 +1,15 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { validateEntity } from "@maginalia/format";
+import { generateEntityId, validateShelfEntity } from "@maginalia/format";
 import {
   createReviewerReconciliationCandidate,
   materializeReviewerReconciliationCandidate,
   type ApprovedReviewerRecord,
-  type OpenBdBookMetadata,
   type ReviewerReconciliationCandidate
 } from "./reviewer-shelf-reconciliation";
 
 const ISBN = "9780306406157";
+const PACKAGE_ID = "capkg:01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const REVIEWER_ANNOTATION_UUID = "123e4567-e89b-42d3-a456-426614174000";
 const FORMAT_ULID = "01J0A1B2C3D4E5F6G7H8J9K0M1";
 
@@ -16,7 +17,15 @@ function reviewerRecord(overrides: Partial<ApprovedReviewerRecord> = {}): Approv
   return {
     annotationId: REVIEWER_ANNOTATION_UUID,
     reviewState: "APPROVED",
+    packageId: PACKAGE_ID,
+    sourceKind: "book",
+    getDate: "202602011230",
     isbn13: ISBN,
+    url: null,
+    title: "『開かれた作品』",
+    authors: ["ウンベルト・エーコ"],
+    publisher: "青土社",
+    year: 1990,
     quote: "「引用の本文」\r\nそのまま保存する。",
     pageLabel: "42",
     comment: "研究者のメモ：前付けの文脈",
@@ -24,171 +33,139 @@ function reviewerRecord(overrides: Partial<ApprovedReviewerRecord> = {}): Approv
   };
 }
 
-function openBdMetadata(overrides: Partial<OpenBdBookMetadata> = {}): OpenBdBookMetadata {
-  return {
-    isbn13: ISBN,
-    title: "『開かれた作品』",
-    authors: ["ウンベルト・エーコ"],
-    publisher: "青土社",
-    year: 1990,
-    ...overrides
-  };
-}
-
-async function candidateFor(
-  record: unknown = reviewerRecord(),
-  metadata: unknown = openBdMetadata()
-): Promise<ReviewerReconciliationCandidate> {
-  const result = await createReviewerReconciliationCandidate(record, metadata);
+async function candidateFor(record: unknown = reviewerRecord()): Promise<ReviewerReconciliationCandidate> {
+  const result = await createReviewerReconciliationCandidate(record);
   if (result.kind !== "candidate") throw new Error(`Expected candidate, received ${result.code}.`);
   return result;
 }
 
-describe("Reviewer to Format v0.1 reconciliation core", () => {
-  it("keeps Japanese quotation/comment text exact and stores the Reviewer UUID as an opaque private alias", async () => {
-    const idGenerator = vi.fn(() => `ann:${FORMAT_ULID}`);
-    const candidate = await candidateFor();
+function v04Book(candidate: ReviewerReconciliationCandidate) {
+  return {
+    type: "book" as const,
+    version: "0.4" as const,
+    id: candidate.bookId,
+    source: { kind: candidate.sourceKind },
+    get: { date: candidate.getDate },
+    ...(candidate.isbn13 === undefined ? {} : { isbn13: candidate.isbn13 }),
+    ...(candidate.url === undefined ? {} : { url: candidate.url }),
+    ...(candidate.title === undefined ? {} : { title: candidate.title }),
+    ...(candidate.authors.length === 0 ? {} : { authors: [...candidate.authors] }),
+    ...(candidate.publisher === undefined ? {} : { publisher: candidate.publisher }),
+    ...(candidate.year === undefined ? {} : { year: candidate.year })
+  };
+}
 
-    expect(candidate.book).toEqual({
-      type: "book",
-      version: "0.1",
-      id: `isbn:${ISBN}`,
+describe("Reviewer to Shelf v0.4 reconciliation core", () => {
+  it("preserves Japanese quote, package provenance, get.date, and the Reviewer UUID alias", async () => {
+    const candidate = await candidateFor();
+    expect(candidate).toMatchObject({
+      packageId: PACKAGE_ID,
+      sourceKind: "book",
+      getDate: "202602011230",
       isbn13: ISBN,
-      title: "『開かれた作品』",
-      authors: ["ウンベルト・エーコ"],
-      publisher: "青土社",
-      year: 1990
+      quote: "「引用の本文」\r\nそのまま保存する。",
+      page: 42,
+      privateMemo: "研究者のメモ：前付けの文脈"
     });
-    expect(candidate.annotation).not.toHaveProperty("id");
-    expect(candidate.annotation).toMatchObject({
+    expect(candidate.digest).toMatch(/^sha256:[0-9a-f]{64}$/u);
+    const annotationId = vi.fn(() => `ann:${FORMAT_ULID}`);
+    const output = await materializeReviewerReconciliationCandidate(candidate, v04Book(candidate), [], annotationId);
+    expect(annotationId).toHaveBeenCalledOnce();
+    expect(output.kind).toBe("materialized");
+    if (output.kind !== "materialized") return;
+    expect(output.annotation).toMatchObject({
       type: "annotation",
-      version: "0.1",
-      source: `isbn:${ISBN}`,
+      version: "0.4",
+      id: `ann:${FORMAT_ULID}`,
+      source: { id: candidate.bookId, kind: "book" },
+      get: { date: "202602011230" },
+      isbn13: ISBN,
       location: { page: 42 },
       quote: "「引用の本文」\r\nそのまま保存する。",
       privateMemo: "研究者のメモ：前付けの文脈",
-      deviceMetadata: {
-        maginaliaReviewer: {
-          version: 1,
-          annotationId: REVIEWER_ANNOTATION_UUID,
-          digest: candidate.digest
-        }
-      }
+      deviceMetadata: { maginaliaReviewer: { annotationId: REVIEWER_ANNOTATION_UUID, digest: candidate.digest } }
     });
-    expect(candidate.annotation).not.toHaveProperty("comment");
-    expect(idGenerator).not.toHaveBeenCalled();
-
-    const materialized = await materializeReviewerReconciliationCandidate(candidate, idGenerator);
-    expect(idGenerator).toHaveBeenCalledTimes(1);
-    expect(materialized.kind).toBe("materialized");
-    if (materialized.kind !== "materialized") return;
-    expect(materialized.annotation.id).toBe(`ann:${FORMAT_ULID}`);
-    expect(materialized.annotation.id).not.toContain(REVIEWER_ANNOTATION_UUID);
-    expect(validateEntity("book", materialized.book).valid).toBe(true);
-    expect(validateEntity("annotation", materialized.annotation).valid).toBe(true);
+    expect(validateShelfEntity("book", output.book).valid).toBe(true);
+    expect(validateShelfEntity("annotation", output.annotation).valid).toBe(true);
   });
 
-  it("validates ISBN-13 checksum and approval state before creating a candidate", async () => {
-    expect(await createReviewerReconciliationCandidate(
-      reviewerRecord({ isbn13: "9780306406158" }), openBdMetadata({ isbn13: "9780306406158" })
-    )).toMatchObject({ kind: "pending", code: "invalid-isbn13" });
-    expect(await createReviewerReconciliationCandidate(
-      { ...reviewerRecord(), reviewState: "NEEDS_REVIEW" }, openBdMetadata()
-    )).toMatchObject({ kind: "pending", code: "reviewer-not-approved" });
-    expect(await createReviewerReconciliationCandidate(
-      reviewerRecord({ annotationId: "not-a-uuid" }), openBdMetadata()
-    )).toMatchObject({ kind: "pending", code: "invalid-reviewer-annotation-id" });
+  it("does not fabricate missing v1 provenance and rejects invalid package/source identities", async () => {
+    expect(await createReviewerReconciliationCandidate({
+      ...reviewerRecord(), packageId: undefined, sourceKind: undefined, getDate: undefined
+    })).toMatchObject({ kind: "pending", code: "invalid-package-id" });
+    expect(await createReviewerReconciliationCandidate(reviewerRecord({ packageId: "capkg:invalid" })))
+      .toMatchObject({ kind: "pending", code: "invalid-package-id" });
+    expect(await createReviewerReconciliationCandidate(reviewerRecord({ isbn13: "9780306406158" })))
+      .toMatchObject({ kind: "pending", code: "invalid-isbn13" });
+    expect(await createReviewerReconciliationCandidate({ ...reviewerRecord(), reviewState: "NEEDS_REVIEW" }))
+      .toMatchObject({ kind: "pending", code: "reviewer-not-approved" });
+    expect(await createReviewerReconciliationCandidate(reviewerRecord({ annotationId: "not-a-uuid" })))
+      .toMatchObject({ kind: "pending", code: "invalid-reviewer-annotation-id" });
   });
 
-  it("requires matching openBD ISBN, nonempty title/authors, and valid optional fields", async () => {
-    const invalidCases: readonly [unknown, string][] = [
-      [undefined, "openbd-metadata-missing"],
-      [openBdMetadata({ isbn13: "9780134685991" }), "openbd-isbn-mismatch"],
-      [openBdMetadata({ title: "  " }), "invalid-openbd-title"],
-      [openBdMetadata({ authors: [] }), "invalid-openbd-authors"],
-      [openBdMetadata({ authors: ["山田太郎", " "] }), "invalid-openbd-authors"],
-      [{ ...openBdMetadata(), publisher: 42 }, "invalid-openbd-publisher"],
-      [{ ...openBdMetadata(), year: 1990.5 }, "invalid-openbd-year"],
-      [{ ...openBdMetadata(), year: -1 }, "invalid-openbd-year"]
-    ];
-    for (const [metadata, code] of invalidCases) {
-      expect(await createReviewerReconciliationCandidate(reviewerRecord(), metadata)).toMatchObject({
-        kind: "pending",
-        code
-      });
+  it("keeps unsupported page labels pending instead of coercing them", async () => {
+    for (const pageLabel of ["0", "42a", " 42", "42 ", "四十二", "９", "9007199254740992"]) {
+      expect(await createReviewerReconciliationCandidate(reviewerRecord({ pageLabel })))
+        .toMatchObject({ kind: "pending", code: "pending-location", pageLabel });
     }
-
-    const withoutOptionalFields = await candidateFor(reviewerRecord(), {
-      isbn13: ISBN,
-      title: "本の題名",
-      authors: ["著者"]
-    });
-    expect(withoutOptionalFields.book).not.toHaveProperty("publisher");
-    expect(withoutOptionalFields.book).not.toHaveProperty("year");
   });
 
-  it("leaves noninteger page labels pending when no legal Format locator is supplied", async () => {
-    const result = await createReviewerReconciliationCandidate(
-      reviewerRecord({ pageLabel: "前付け xiv" }), openBdMetadata()
-    );
-    expect(result).toMatchObject({
-      kind: "pending",
-      code: "pending-location",
-      reviewerAnnotationId: REVIEWER_ANNOTATION_UUID,
-      pageLabel: "前付け xiv"
-    });
-    if (result.kind === "pending") expect(result.digest).toMatch(/^sha256:[0-9a-f]{64}$/u);
-  });
-
-  it.each(["0", "42a", " 42", "42 ", "四十二", "９", "9007199254740992"]) (
-    "does not coerce page label %j to a numeric Format page",
-    async (pageLabel) => {
-      expect(await createReviewerReconciliationCandidate(
-        reviewerRecord({ pageLabel }), openBdMetadata()
-      )).toMatchObject({ kind: "pending", code: "pending-location", pageLabel });
-    }
-  );
-
-  it("computes a stable digest and candidate for the same consumed Reviewer/openBD fields", async () => {
+  it("keeps candidate digest independent of object key order and Reviewer approval time", async () => {
     const first = reviewerRecord();
-    const reordered = {
+    const candidate = await candidateFor(first);
+    const reordered = await candidateFor({
       comment: first.comment,
       pageLabel: first.pageLabel,
       quote: first.quote,
       isbn13: first.isbn13,
       reviewState: first.reviewState,
       annotationId: first.annotationId,
-      reviewedAtMs: 123,
-      title: "ignored Reviewer title"
-    };
-    const metadata = openBdMetadata();
-    const firstCandidate = await candidateFor(first, metadata);
-    const secondCandidate = await candidateFor(reordered, {
-      year: metadata.year,
-      publisher: metadata.publisher,
-      authors: [...metadata.authors],
-      title: metadata.title,
-      isbn13: metadata.isbn13
+      packageId: first.packageId,
+      sourceKind: first.sourceKind,
+      getDate: first.getDate,
+      title: first.title,
+      authors: first.authors,
+      publisher: first.publisher,
+      year: first.year,
+      reviewedAtMs: 1_728_000_000_000
     });
-
-    expect(secondCandidate).toEqual(firstCandidate);
-    expect(firstCandidate.digest).toMatch(/^sha256:[0-9a-f]{64}$/u);
-    expect((await candidateFor(reviewerRecord({ quote: "別の引用" }), metadata)).digest).not.toBe(firstCandidate.digest);
+    expect(reordered.digest).toBe(candidate.digest);
+    expect((await candidateFor(reviewerRecord({ quote: "別の引用" }))).digest).not.toBe(candidate.digest);
+    expect((await candidateFor(reviewerRecord({ getDate: "202602011231" }))).digest).not.toBe(candidate.digest);
   });
 
-  it("uses the Format ULID generator only during materialization and rejects invalid generated IDs", async () => {
+  it("validates Handwritten canonical bytes and preserves the exact source file metadata", async () => {
+    const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0x00, 0x01]);
+    const sha256 = createHash("sha256").update(jpeg).digest("hex");
+    const record = reviewerRecord({
+      sourceKind: "Handwritten",
+      isbn13: null,
+      url: null,
+      sourceFiles: [{ path: "images/手書き.jpg", mediaType: "image/jpeg", sha256, originalName: "手書き.jpg", bytes: jpeg }]
+    });
+    const candidate = await candidateFor(record);
+    expect(candidate.canonicalSourceAssets[0]?.bytes).toEqual(jpeg);
+    expect(await createReviewerReconciliationCandidate(reviewerRecord({ sourceKind: "Handwritten", isbn13: null, url: null })))
+      .toMatchObject({ kind: "pending", code: "canonical-source-files-missing" });
+    expect(await createReviewerReconciliationCandidate({
+      ...record,
+      sourceFiles: [{ path: "images/手書き.jpg", mediaType: "image/jpeg", sha256: "0".repeat(64), bytes: jpeg }]
+    })).toMatchObject({ kind: "pending", code: "canonical-source-hash-mismatch" });
+    expect(await createReviewerReconciliationCandidate({
+      ...record,
+      sourceFiles: [{ path: "../手書き.jpg", mediaType: "image/jpeg", sha256, bytes: jpeg }]
+    })).toMatchObject({ kind: "pending", code: "invalid-source-file" });
+  });
+
+  it("rejects invalid generated Annotation IDs", async () => {
     const candidate = await candidateFor();
-    const invalidIdGenerator = vi.fn(() => `ann:${REVIEWER_ANNOTATION_UUID}`);
-    const result = await materializeReviewerReconciliationCandidate(candidate, invalidIdGenerator);
-    expect(invalidIdGenerator).toHaveBeenCalledTimes(1);
+    const result = await materializeReviewerReconciliationCandidate(
+      candidate,
+      v04Book(candidate),
+      [],
+      () => `ann:${REVIEWER_ANNOTATION_UUID}`
+    );
     expect(result).toMatchObject({ kind: "pending", code: "invalid-generated-annotation-id" });
-  });
-
-  it("uses the Format ULID generator by default on first materialization", async () => {
-    const result = await materializeReviewerReconciliationCandidate(await candidateFor());
-    expect(result.kind).toBe("materialized");
-    if (result.kind !== "materialized") return;
-    expect(result.annotation.id).toMatch(/^ann:[0-7][0-9A-HJKMNP-TV-Z]{25}$/u);
-    expect(validateEntity("annotation", result.annotation).valid).toBe(true);
+    expect(generateEntityId("ann")).toMatch(/^ann:[0-7][0-9A-HJKMNP-TV-Z]{25}$/u);
   });
 });

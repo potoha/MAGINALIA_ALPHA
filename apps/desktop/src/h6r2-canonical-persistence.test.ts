@@ -52,9 +52,16 @@ describe("H6R2 canonical Reviewer persistence", () => {
       captureId: "capture-日本語",
       pageId: "page-日本語",
       sourcePageId: null,
+      packageId: "capkg:01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      sourceKind: "book" as const,
+      getDate: "202602011230",
       isbn13: ISBN,
-      title: "Reviewer 側の仮題",
-      authors: ["Reviewer 側の仮著者"],
+      url: null,
+      title: BOOK_TITLE,
+      authors: [BOOK_AUTHOR],
+      publisher: "青土社",
+      year: 2021,
+      sourceFiles: [],
       quote: QUOTE,
       pageLabel: "42",
       comment: PRIVATE_MEMO,
@@ -95,7 +102,15 @@ describe("H6R2 canonical Reviewer persistence", () => {
     const repeated = await materializeReviewerRecords(root, [{
       annotationId: REVIEWER_ANNOTATION_UUID,
       reviewState: "APPROVED",
+      packageId: "capkg:01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      sourceKind: "book",
+      getDate: "202602011230",
       isbn13: ISBN,
+      url: null,
+      title: BOOK_TITLE,
+      authors: [BOOK_AUTHOR],
+      publisher: "青土社",
+      year: 2021,
       quote: QUOTE,
       pageLabel: "42",
       comment: PRIVATE_MEMO
@@ -108,9 +123,11 @@ describe("H6R2 canonical Reviewer persistence", () => {
     const firstActiveResult = firstService.getActivePrivateShelfForOwner(owner);
     expect(firstActiveResult.kind).toBe("private-shelf");
     if (firstActiveResult.kind !== "private-shelf") throw new Error("Expected the selected canonical Private Shelf");
+    const canonicalBookId = firstActiveResult.entities.books[0]?.id;
+    expect(canonicalBookId).toMatch(/^book:[0-7][0-9A-HJKMNP-TV-Z]{25}$/u);
     expect(firstActiveResult.records).toEqual([expect.objectContaining({
       annotationId: expect.stringMatching(/^ann:/u),
-      sourceId: `isbn:${ISBN}`,
+      sourceId: canonicalBookId,
       quote: QUOTE,
       privateMemo: PRIVATE_MEMO,
       title: BOOK_TITLE,
@@ -119,7 +136,10 @@ describe("H6R2 canonical Reviewer persistence", () => {
     })]);
     expect(firstActiveResult.entities).toMatchObject({
       books: [{
-        id: `isbn:${ISBN}`,
+        id: canonicalBookId,
+        version: "0.4",
+        source: { kind: "book" },
+        get: { date: "202602011230" },
         isbn13: ISBN,
         title: BOOK_TITLE,
         authors: [BOOK_AUTHOR],
@@ -127,7 +147,9 @@ describe("H6R2 canonical Reviewer persistence", () => {
         year: 2021
       }],
       annotations: [{
-        source: `isbn:${ISBN}`,
+        version: "0.4",
+        source: { id: canonicalBookId, kind: "book" },
+        get: { date: "202602011230" },
         location: { page: 42 },
         quote: QUOTE,
         deviceMetadata: { maginaliaReviewer: { annotationId: REVIEWER_ANNOTATION_UUID } }
@@ -156,7 +178,7 @@ describe("H6R2 canonical Reviewer persistence", () => {
     const search = restartedService.searchForOwner(restartedOwner, reopened.library.libraryId, "多様な視点");
     expect(search).toMatchObject({
       kind: "results",
-      results: [{ annotationId: canonicalAnnotationId, sourceId: `isbn:${ISBN}`, title: BOOK_TITLE, authors: [BOOK_AUTHOR] }]
+      results: [{ annotationId: canonicalAnnotationId, sourceId: canonicalBookId, title: BOOK_TITLE, authors: [BOOK_AUTHOR] }]
     });
     const inserted = restartedService.resolveQuotationForInsertForOwner(
       restartedOwner,
@@ -166,7 +188,7 @@ describe("H6R2 canonical Reviewer persistence", () => {
     expect(inserted).toMatchObject({
       kind: "resolved",
       annotationId: canonicalAnnotationId,
-      sourceId: `isbn:${ISBN}`,
+      sourceId: canonicalBookId,
       title: BOOK_TITLE,
       authors: [BOOK_AUTHOR],
       page: 42,
@@ -187,7 +209,7 @@ describe("H6R2 canonical Reviewer persistence", () => {
           quote: QUOTE,
           pageLabel: "42"
         },
-        source: { id: `book:isbn13:${ISBN}` }
+        source: { id: canonicalBookId }
       }],
       unresolved: []
     });
@@ -214,17 +236,32 @@ describe("H6R2 canonical Reviewer persistence", () => {
     }
   });
 
-  it("keeps a malformed existing Book as an explicit conflict instead of overwriting it", async () => {
+  it("keeps a current Book with contradictory source kind as a conflict", async () => {
     const root = await createShelf();
     const books = path.join(root, "books");
     await mkdir(books, { recursive: true });
-    const existingBook = path.join(books, `${ISBN}.json`);
-    await writeFile(existingBook, "{not valid JSON", "utf8");
+    const existingBook = path.join(books, "book-01J0A1B2C3D4E5F6G7H8J9K0M1.json");
+    const existingBookText = JSON.stringify({
+      type: "book",
+      version: "0.4",
+      id: "book:01J0A1B2C3D4E5F6G7H8J9K0M1",
+      source: { kind: "website" },
+      get: { date: "202601011200" },
+      isbn13: ISBN,
+      url: "https://example.test/source",
+      title: "Existing source"
+    });
+    await writeFile(existingBook, existingBookText, "utf8");
 
     const result = await materializeReviewerRecords(root, [{
       annotationId: REVIEWER_ANNOTATION_UUID,
       reviewState: "APPROVED",
+      packageId: "capkg:01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      sourceKind: "book",
+      getDate: "202602011230",
       isbn13: ISBN,
+      title: BOOK_TITLE,
+      authors: [BOOK_AUTHOR],
       quote: QUOTE,
       pageLabel: "42",
       comment: PRIVATE_MEMO,
@@ -239,6 +276,6 @@ describe("H6R2 canonical Reviewer persistence", () => {
 
     expect(result).toMatchObject({ materialized: 0, unchanged: 0, conflicts: 1, pending: [] });
     await expect(import("node:fs/promises").then(({ readFile }) => readFile(existingBook, "utf8")))
-      .resolves.toBe("{not valid JSON");
+      .resolves.toBe(existingBookText);
   });
 });

@@ -12,7 +12,8 @@
 
 import type {
   BookSourceInput,
-  IsbnBookSource
+  IsbnBookSource,
+  Source
 } from "@maginalia/source-core" with { "resolution-mode": "import" };
 import type { QuoteRef } from "@maginalia/writing-core" with { "resolution-mode": "import" };
 import {
@@ -88,7 +89,7 @@ export interface ResolvedQuoteRef {
   readonly occurrence: QuoteRefOccurrence;
   readonly quoteRef: QuoteRef;
   readonly quotation: ReviewerQuotation;
-  readonly source: IsbnBookSource;
+  readonly source: Source;
 }
 
 export interface UnresolvedQuoteRef {
@@ -99,7 +100,7 @@ export interface UnresolvedQuoteRef {
 
 export interface ReviewerResolutionSuccess {
   readonly kind: "resolved";
-  readonly sources: readonly IsbnBookSource[];
+  readonly sources: readonly Source[];
   readonly resolved: readonly ResolvedQuoteRef[];
   readonly unresolved: readonly UnresolvedQuoteRef[];
 }

@@ -7,8 +7,8 @@
  * adapted to a provider-neutral Source without Reviewer or network access.
  */
 
-import type { Annotation, Book } from "@maginalia/format" with { "resolution-mode": "import" };
-import type { IsbnBookSource } from "@maginalia/source-core" with { "resolution-mode": "import" };
+import type { ShelfAnnotation, ShelfBook } from "@maginalia/format" with { "resolution-mode": "import" };
+import type { Source } from "@maginalia/source-core" with { "resolution-mode": "import" };
 import type { QuoteRef } from "@maginalia/writing-core" with { "resolution-mode": "import" };
 import type { ReviewerQuotation } from "./reviewer-ipc";
 import {
@@ -38,8 +38,8 @@ async function loadWritingCore(): Promise<WritingCore> {
 }
 
 export interface CanonicalShelfEntities {
-  readonly annotations: readonly Annotation[];
-  readonly books: readonly Book[];
+  readonly annotations: readonly ShelfAnnotation[];
+  readonly books: readonly ShelfBook[];
 }
 
 export type ShelfResolutionResult = ReviewerResolutionResult;
@@ -56,7 +56,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function reviewerAlias(annotation: Annotation): string | undefined {
+function reviewerAlias(annotation: ShelfAnnotation): string | undefined {
   const deviceMetadata = annotation.deviceMetadata;
   if (!isRecord(deviceMetadata)) return undefined;
   const provenance = deviceMetadata.maginaliaReviewer;
@@ -79,16 +79,16 @@ function indexBy<T>(values: readonly T[], getKey: (value: T) => string | undefin
   return mutable;
 }
 
-function indexReviewerAliases(annotations: readonly Annotation[]): ReadonlyMap<string, readonly Annotation[]> {
+function indexReviewerAliases(annotations: readonly ShelfAnnotation[]): ReadonlyMap<string, readonly ShelfAnnotation[]> {
   return indexBy(annotations, reviewerAlias);
 }
 
-function indexCanonicalAnnotationIds(annotations: readonly Annotation[]): ReadonlyMap<string, readonly Annotation[]> {
+function indexCanonicalAnnotationIds(annotations: readonly ShelfAnnotation[]): ReadonlyMap<string, readonly ShelfAnnotation[]> {
   return indexBy(annotations, (annotation) => annotation.id);
 }
 
-function indexBooks(books: readonly Book[]): ReadonlyMap<string, Book | null> {
-  const byId = new Map<string, Book | null>();
+function indexBooks(books: readonly ShelfBook[]): ReadonlyMap<string, ShelfBook | null> {
+  const byId = new Map<string, ShelfBook | null>();
   for (const book of books) {
     byId.set(book.id, byId.has(book.id) ? null : book);
   }
@@ -97,9 +97,13 @@ function indexBooks(books: readonly Book[]): ReadonlyMap<string, Book | null> {
 
 function resolvedQuotation(
   quoteRef: QuoteRef,
-  annotation: Annotation,
-  book: Book
+  annotation: ShelfAnnotation,
+  book: ShelfBook
 ): ReviewerQuotation {
+  const isbn13 = annotation.version === "0.4" ? annotation.isbn13 ?? book.isbn13 ?? null : book.isbn13 ?? null;
+  const title = book.version === "0.1" ? book.title : book.title ?? null;
+  const authors = book.authors ?? [];
+  const location = annotation.location;
   return Object.freeze({
     // Keep the identity that the authoring document actually stores. The
     // canonical Shelf annotation ID is available on the resolved source data.
@@ -109,21 +113,25 @@ function resolvedQuotation(
     captureId: "",
     pageId: "",
     sourcePageId: null,
-    isbn13: book.isbn13,
-    title: book.title,
-    authors: Object.freeze([...book.authors]),
+    isbn13,
+    title,
+    authors: Object.freeze([...authors]),
     quote: annotation.quote,
-    pageLabel: annotation.location.page === undefined
-      ? annotation.location.path ?? ""
-      : String(annotation.location.page),
-    comment: "",
+    pageLabel: location?.page === undefined ? location?.path ?? "" : String(location.page),
+    comment: annotation.version === "0.4" ? annotation.privateMemo ?? annotation.comment ?? "" : annotation.privateMemo ?? annotation.comment ?? "",
     reviewState: "CANONICAL",
-    reviewedAtMs: null
+    reviewedAtMs: null,
+    ...(annotation.version === "0.4" ? {
+      sourceKind: annotation.source.kind,
+      getDate: annotation.get.date,
+      url: annotation.url ?? (book.version === "0.4" ? book.url : undefined) ?? null,
+      ...(annotation.isbn13 === undefined && book.isbn13 === undefined ? {} : { isbn13: annotation.isbn13 ?? book.isbn13 ?? null })
+    } : {})
   });
 }
 
 function success(
-  sources: readonly IsbnBookSource[],
+  sources: readonly Source[],
   resolved: readonly ResolvedQuoteRef[],
   unresolved: readonly UnresolvedQuoteRef[]
 ): ReviewerResolutionSuccess {
@@ -169,8 +177,7 @@ export async function resolveShelfQuoteRefs(
   const canonicalAnnotationIds = indexCanonicalAnnotationIds(entities.annotations);
   const aliases = indexReviewerAliases(entities.annotations);
   const books = indexBooks(entities.books);
-  const sourceCore = await loadSourceCore();
-  const sourcesById = new Map<string, IsbnBookSource>();
+  const sourcesById = new Map<string, Source>();
   const resolved: ResolvedQuoteRef[] = [];
 
   for (const occurrence of validOccurrences) {
@@ -185,26 +192,44 @@ export async function resolveShelfQuoteRefs(
     }
 
     const annotation = matches[0];
-    const book = books.get(annotation.source);
+    const bookId = annotation.version === "0.4" ? annotation.source.id : annotation.source;
+    const book = books.get(bookId);
     if (book === undefined || book === null) {
       unresolved.push({ occurrence, quoteRef, code: "quote-not-found" });
       continue;
     }
-    // The canonical Format Book ID is an ISBN identity. A mismatched ISBN
-    // field must not redirect an Annotation to a different Source identity.
-    if (book.id !== `isbn:${book.isbn13}`) {
-      unresolved.push({ occurrence, quoteRef, code: "isbn-invalid" });
-      continue;
+    let source: Source | undefined;
+    if (book.version === "0.1") {
+      // A v0.1 Book ID is its ISBN identity; reject a mismatched projection.
+      if (book.id !== `isbn:${book.isbn13}`) {
+        unresolved.push({ occurrence, quoteRef, code: "isbn-invalid" });
+        continue;
+      }
+      source = (await loadSourceCore()).adaptBookSource({
+        isbn13: book.isbn13,
+        title: book.title,
+        authors: book.authors,
+        publisher: book.publisher,
+        publishedDate: book.year === undefined ? undefined : String(book.year),
+        metadata: { maginaliaBookId: book.id }
+      });
+    } else {
+      if (annotation.version !== "0.4" || annotation.source.kind !== book.source.kind) {
+        unresolved.push({ occurrence, quoteRef, code: "isbn-invalid" });
+        continue;
+      }
+      const sourceType = book.source.kind === "website" ? "web" : "book";
+      source = Object.freeze({
+        id: book.id,
+        type: sourceType,
+        authors: Object.freeze([...(book.authors ?? [])]),
+        ...(book.title === undefined ? {} : { title: book.title }),
+        ...(book.publisher === undefined ? {} : { publisher: book.publisher }),
+        ...(book.year === undefined ? {} : { publishedDate: String(book.year) }),
+        ...(book.isbn13 === undefined ? {} : { identifiers: Object.freeze({ isbn13: book.isbn13 }) }),
+        ...(book.url === undefined ? {} : { url: book.url })
+      });
     }
-
-    const source = sourceCore.adaptBookSource({
-      isbn13: book.isbn13,
-      title: book.title,
-      authors: book.authors,
-      publisher: book.publisher,
-      publishedDate: book.year === undefined ? undefined : String(book.year),
-      metadata: { maginaliaBookId: book.id }
-    });
     if (source === undefined) {
       unresolved.push({ occurrence, quoteRef, code: "isbn-invalid" });
       continue;

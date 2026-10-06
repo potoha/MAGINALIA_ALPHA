@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import hashlib
 import sqlite3
 import stat
+from concurrent.futures import ThreadPoolExecutor
 import zipfile
 from pathlib import Path
 
@@ -48,6 +50,28 @@ def magicap_manifest(count: int) -> dict[str, object]:
     return {"format": "maginalia-capture-package", "version": 1, "packageId": PACKAGE_ID, "createdAt": "2026-08-27T00:00:00.000Z", "book": {"isbn13": ISBN}, "captureCount": count}
 
 
+def magicap_manifest_v2(count: int, package_id: str = PACKAGE_ID) -> dict[str, object]:
+    return {
+        "format": "maginalia-capture-package", "version": 2, "packageId": package_id,
+        "createdAt": "2026-10-01T05:00:00.000Z",
+        "source": {"kind": "book", "isbn13": ISBN, "title": "契約上の書名", "authors": ["契約上の著者"], "publisher": "出版社", "year": 2024},
+        "get": {"date": "202602011230"}, "captureCount": count,
+    }
+
+
+def magicap_manifest_v3_handwritten(image: bytes, count: int = 1) -> dict[str, object]:
+    return {
+        "format": "maginalia-capture-package", "version": 3,
+        "packageId": "capkg:01ARZ3NDEKTSV4RRFFQ69G5FAW",
+        "createdAt": "2026-10-01T05:00:00.000Z",
+        "source": {
+            "kind": "Handwritten", "title": "手書き資料",
+            "files": [{"path": "images/page-1.jpg", "mediaType": "image/jpeg", "sha256": hashlib.sha256(image).hexdigest(), "originalName": "手書き資料.jpg"}],
+        },
+        "get": {"date": "202603021415"}, "captureCount": count,
+    }
+
+
 def make_magicap(path: Path, captures: list[dict[str, object]] | None = None, image: bytes | None = None, manifest: dict[str, object] | None = None, extra: dict[str, bytes] | None = None) -> None:
     captures = captures or [capture("capture-1")]
     image = image or jpeg_fixture()
@@ -84,6 +108,130 @@ def test_imports_shared_image_once_and_keeps_capture_rectangles(tmp_path: Path) 
     assert page["image_media_type"] == "image/jpeg"
 
 
+def test_v2_import_preserves_package_identity_and_provenance_through_approval(tmp_path: Path) -> None:
+    workspace, service = importer(tmp_path)
+    bundle = tmp_path / "current-v2.magicap"
+    make_magicap(bundle, manifest=magicap_manifest_v2(1))
+    service.import_magicap(bundle, bundle.name)
+    page = workspace.list_pages()[0]
+    page_id = str(page["id"])
+    annotation = workspace.get_page(page_id)["annotations"][0]  # type: ignore[index]
+    assert workspace.update_annotation(str(annotation["id"]), {
+        "highlight_quote": "引用", "sentence_before": "", "sentence_after": "",
+        "page_label": "12", "chapter_label": "", "comment": "修正"
+    })
+    assert workspace.approve_capture(str(annotation["id"]), 1_800_000_000_000)
+    result, count = workspace.search_quotes(status="APPROVED")
+    assert count == 1
+    assert result[0]["packageId"] == PACKAGE_ID
+    assert result[0]["sourceKind"] == "book"
+    assert result[0]["getDate"] == "202602011230"
+    assert result[0]["isbn13"] == ISBN
+    assert result[0]["title"] == "契約上の書名"
+    assert result[0]["authors"] == ["契約上の著者"]
+
+
+def test_v1_legacy_metadata_remains_readable_without_fabricating_current_provenance(tmp_path: Path) -> None:
+    workspace, service = importer(tmp_path)
+    bundle = tmp_path / "legacy-v1.magicap"
+    manifest = magicap_manifest(1) | {
+        "createdAt": "legacy timestamp accepted by the v1 reader",
+        "book": {"isbn13": ISBN, "title": "旧形式の書名", "authors": "旧形式の著者"},
+        "legacyProducerField": "preserved in manifest"
+    }
+    legacy_capture = capture("capture-1") | {"quote": "ignored v1 extension"}
+    make_magicap(bundle, captures=[legacy_capture], manifest=manifest)
+    service.import_magicap(bundle, bundle.name)
+    page_id = str(workspace.list_pages()[0]["id"])
+    page = workspace.get_page(page_id)
+    assert page is not None
+    provenance = page["source_provenance"]
+    assert provenance["packageId"] == PACKAGE_ID
+    assert provenance["title"] == "旧形式の書名"
+    assert provenance["authors"] == ["旧形式の著者"]
+    assert "sourceKind" not in provenance
+    assert "getDate" not in provenance
+    assert page["annotations"][0]["highlight_quote"] == ""
+
+
+def test_v3_canonical_source_hash_mismatch_is_rejected_before_any_import(tmp_path: Path) -> None:
+    image = jpeg_fixture()
+    manifest = magicap_manifest_v3_handwritten(image)
+    manifest["source"]["files"][0]["sha256"] = "0" * 64  # type: ignore[index]
+    workspace, service = importer(tmp_path)
+    bundle = tmp_path / "wrong-canonical-hash.magicap"
+    make_magicap(bundle, image=image, manifest=manifest)
+
+    with pytest.raises(BundleValidationError, match="SHA-256 mismatch"):
+        service.import_magicap(bundle, bundle.name)
+
+    assert workspace.list_pages() == []
+
+
+def test_v3_handwritten_validates_and_serves_canonical_source_only_to_desktop(tmp_path: Path) -> None:
+    image = jpeg_fixture()
+    workspace = Workspace(tmp_path / "reviewer.sqlite3")
+    workspace.initialize()
+    service = MagicapImporter(workspace, tmp_path / "imports", ImportLimits(10_000_000, 10_000_000, 30))
+    bundle = tmp_path / "handwritten.magicap"
+    make_magicap(bundle, image=image, manifest=magicap_manifest_v3_handwritten(image))
+    service.import_magicap(bundle, bundle.name)
+    page = workspace.list_pages()[0]
+    page_id = str(page["id"])
+    annotation = workspace.get_page(page_id)["annotations"][0]  # type: ignore[index]
+    annotation_id = str(annotation["id"])
+    assert workspace.update_annotation(annotation_id, {
+        "highlight_quote": "手書き引用", "sentence_before": "", "sentence_after": "",
+        "page_label": "12", "chapter_label": "", "comment": "手書きメモ"
+    })
+    assert workspace.approve_capture(annotation_id, 1_800_000_000_000)
+    results, _ = workspace.search_quotes(status="APPROVED")
+    assert results[0]["sourceKind"] == "Handwritten"
+    assert results[0]["getDate"] == "202603021415"
+    assert results[0]["packageId"] == "capkg:01ARZ3NDEKTSV4RRFFQ69G5FAW"
+    assert results[0]["sourceFiles"][0]["originalName"] == "手書き資料.jpg"
+    asset = service.source_asset_for_annotation(annotation_id, "images/page-1.jpg")
+    assert asset is not None
+    source_path, media_type = asset
+    assert media_type == "image/jpeg"
+    assert source_path.read_bytes() == image
+
+
+def test_duplicate_package_id_blocks_renamed_import_without_mutating_reviewer_data(tmp_path: Path) -> None:
+    workspace, service = importer(tmp_path)
+    first = tmp_path / "first.magicap"
+    second = tmp_path / "renamed.magicap"
+    make_magicap(first)
+    make_magicap(second)
+    service.import_magicap(first, first.name)
+    before_pages = workspace.list_pages()
+    before = (len(before_pages), len(workspace.get_page(str(before_pages[0]["id"]))["annotations"]))  # type: ignore[index]
+    from marginalia_reviewer.importer import DuplicateCapturePackageError
+    with pytest.raises(DuplicateCapturePackageError, match=PACKAGE_ID):
+        service.import_magicap(second, second.name)
+    after_pages = workspace.list_pages()
+    after = (len(after_pages), len(workspace.get_page(str(after_pages[0]["id"]))["annotations"]))  # type: ignore[index]
+    assert after == before == (1, 1)
+
+
+def test_concurrent_same_package_imports_have_one_winner(tmp_path: Path) -> None:
+    workspace, service = importer(tmp_path)
+    bundles = [tmp_path / f"copy-{index}.magicap" for index in range(4)]
+    for bundle in bundles:
+        make_magicap(bundle)
+    def attempt(bundle: Path) -> str:
+        try:
+            return service.import_magicap(bundle, bundle.name)
+        except Exception as exc:  # The unique DB index rejects all racing duplicates.
+            return type(exc).__name__
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(attempt, bundles))
+    assert sum(value not in {"DuplicateCapturePackageError", "IntegrityError"} for value in results) == 1
+    pages = workspace.list_pages()
+    assert len(pages) == 1
+    assert len(workspace.get_page(str(pages[0]["id"]))["annotations"]) == 1  # type: ignore[index]
+
+
 def test_accepts_magicap_zip_alias_but_not_arbitrary_zip(tmp_path: Path) -> None:
     _, service = importer(tmp_path)
     alias = tmp_path / "book.magicap.zip"
@@ -97,7 +245,7 @@ def test_accepts_magicap_zip_alias_but_not_arbitrary_zip(tmp_path: Path) -> None
 
 @pytest.mark.parametrize("mutate, message", [
     (lambda manifest, captures: manifest.__setitem__("format", "wrong"), "format"),
-    (lambda manifest, captures: manifest.__setitem__("version", 2), "format"),
+    (lambda manifest, captures: manifest.__setitem__("version", 2), "book"),
     (lambda manifest, captures: manifest.__setitem__("packageId", "capkg:invalid"), "packageId"),
     (lambda manifest, captures: manifest["book"].__setitem__("isbn13", "9780306406158"), "ISBN"),  # type: ignore[index]
     (lambda manifest, captures: manifest.__setitem__("captureCount", 2), "captureCount"),
@@ -287,12 +435,69 @@ def test_api_imports_magicap_and_approves_a_capture(tmp_path: Path) -> None:
     assert client.get(f"/api/pages/{page['id']}").json()["status"] == "APPROVED"
 
 
+def test_api_duplicate_package_warns_and_future_version_is_non_destructive(tmp_path: Path) -> None:
+    bundle = tmp_path / "original.magicap"
+    make_magicap(bundle)
+    app = create_app(Settings(workspace=tmp_path / "workspace"))
+    client = TestClient(app, base_url="http://127.0.0.1")
+    headers = {"X-CSRF-Token": client.get("/api/session").json()["csrfToken"]}
+    with bundle.open("rb") as source:
+        assert client.post("/api/import", headers=headers, files={"bundle": (bundle.name, source, "application/zip")}).status_code == 201
+    renamed = tmp_path / "renamed.magicap"
+    make_magicap(renamed)
+    with renamed.open("rb") as source:
+        duplicate = client.post("/api/import", headers=headers, files={"bundle": (renamed.name, source, "application/zip")})
+    assert duplicate.status_code == 409
+    assert PACKAGE_ID in duplicate.json()["detail"]
+    assert len(client.get("/api/pages").json()) == 1
+
+    future = tmp_path / "future.magicap"
+    manifest = magicap_manifest(1) | {"version": 4}
+    make_magicap(future, manifest=manifest)
+    with future.open("rb") as source:
+        unsupported = client.post("/api/import", headers=headers, files={"bundle": (future.name, source, "application/zip")})
+    assert unsupported.status_code == 415
+    assert "Unsupported Capture Package version: 4" in unsupported.json()["detail"]
+    assert len(client.get("/api/pages").json()) == 1
+
+
+def test_api_canonical_source_endpoint_requires_desktop_token_and_returns_exact_bytes(tmp_path: Path) -> None:
+    image = jpeg_fixture()
+    bundle = tmp_path / "handwritten.magicap"
+    make_magicap(bundle, image=image, manifest=magicap_manifest_v3_handwritten(image))
+    app = create_app(Settings(workspace=tmp_path / "workspace", desktop_shutdown_token="desktop-secret"))
+    client = TestClient(app, base_url="http://127.0.0.1")
+    headers = {"X-CSRF-Token": client.get("/api/session").json()["csrfToken"]}
+    with bundle.open("rb") as source:
+        assert client.post("/api/import", headers=headers, files={"bundle": (bundle.name, source, "application/zip")}).status_code == 201
+    page = client.get("/api/pages").json()[0]
+    detail = client.get(f"/api/pages/{page['id']}").json()
+    annotation_id = detail["annotations"][0]["id"]
+    review = {"quote": "手書き引用", "pageLabel": "12", "comment": "reviewed"}
+    assert client.put(f"/api/annotations/{annotation_id}", headers=headers, json=review).status_code == 200
+    assert client.post(f"/api/captures/{annotation_id}/approve", headers=headers).status_code == 200
+    endpoint = f"/api/captures/{annotation_id}/source-file?asset_path=images%2Fpage-1.jpg"
+    assert client.get(endpoint).status_code == 403
+    served = client.get(endpoint, headers={"X-Maginalia-Reviewer-Desktop-Token": "desktop-secret"})
+    assert served.status_code == 200
+    assert served.headers["content-type"].startswith("image/jpeg")
+    assert served.content == image
+
+
 def test_additive_migration_keeps_legacy_annotation(tmp_path: Path) -> None:
     path = tmp_path / "legacy.sqlite3"
     with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE imports (id TEXT PRIMARY KEY, source_name TEXT NOT NULL, root_path TEXT NOT NULL, manifest_json TEXT NOT NULL, imported_at TEXT NOT NULL)")
+        db.execute("INSERT INTO imports VALUES('legacy-import','legacy.magicap','/legacy',?, '2026-01-01')", (
+            json.dumps({"packageId": PACKAGE_ID}),
+        ))
         db.execute("CREATE TABLE annotations (id TEXT PRIMARY KEY, page_id TEXT NOT NULL, source_annotation_id TEXT, geometry_json TEXT NOT NULL DEFAULT '[]', highlight_quote TEXT NOT NULL DEFAULT '', sentence_before TEXT NOT NULL DEFAULT '', sentence_after TEXT NOT NULL DEFAULT '', page_label TEXT NOT NULL DEFAULT '', chapter_label TEXT NOT NULL DEFAULT '', comment TEXT NOT NULL DEFAULT '', created_at TEXT, updated_at TEXT NOT NULL)")
         db.execute("INSERT INTO annotations VALUES('legacy','page','source','[]','q','','','1','chapter','comment',NULL,'then')")
-    Workspace(path).initialize()
+    workspace = Workspace(path)
+    workspace.initialize()
     with sqlite3.connect(path) as db:
         row = db.execute("SELECT highlight_quote, source_capture_id, source_book_id, selected_region_json, phone_comment, review_state FROM annotations WHERE id='legacy'").fetchone()
     assert row == ("q", None, None, None, "", "PENDING")
+    assert workspace.has_package_id(PACKAGE_ID)
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT package_id FROM imports WHERE id='legacy-import'").fetchone() == (PACKAGE_ID,)

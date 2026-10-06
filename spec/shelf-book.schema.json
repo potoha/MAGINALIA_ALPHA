@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maginalia.app/spec/shelf-book.schema.json",
+  "title": "MAGINALIA Shelf Book v0.4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "version",
+    "id",
+    "source",
+    "get"
+  ],
+  "properties": {
+    "type": {
+      "const": "book"
+    },
+    "version": {
+      "const": "0.4"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^book:[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "book",
+            "selfpublish",
+            "website",
+            "bookwithoutisbn",
+            "Handwritten"
+          ]
+        },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "mediaType",
+              "sha256"
+            ],
+            "properties": {
+              "path": {
+                "$ref": "common.schema.json#/$defs/relativePath"
+              },
+              "mediaType": {
+                "enum": [
+                  "image/jpeg",
+                  "application/pdf"
+                ]
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "originalName": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "get": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date"
+      ],
+      "properties": {
+        "date": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{4}(?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01])(?:[01][0-9]|2[0-3])(?:[0-5][0-9])$"
+            },
+            {
+              "const": "oldversionplaceholder"
+            }
+          ]
+        }
+      }
+    },
+    "isbn13": {
+      "type": "string",
+      "pattern": "^[0-9]{13}$"
+    },
+    "url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "circleName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "eventName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "publisher": {
+      "type": "string",
+      "minLength": 1
+    },
+    "year": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "coverImage": {
+      "$ref": "common.schema.json#/$defs/relativePath"
+    },
+    "titleReading": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authorReadings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "properties": {
+              "kind": {
+                "const": "Handwritten"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "required": [
+              "kind",
+              "files"
+            ]
+          }
+        }
+      },
+      "else": {
+        "anyOf": [
+          {
+            "required": [
+              "isbn13"
+            ]
+          },
+          {
+            "required": [
+              "url"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

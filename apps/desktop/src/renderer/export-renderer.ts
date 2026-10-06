@@ -1,5 +1,5 @@
 import { parseQuoteRef, type QuoteRef } from "@maginalia/writing-core";
-import type { IsbnBookSource } from "@maginalia/source-core";
+import type { Source } from "@maginalia/source-core";
 import type {
   ResolvedQuoteRef,
   ReviewerResolutionFailure,
@@ -175,8 +175,8 @@ export function renderResolvedProvenance(resolved: ResolvedQuoteRef): string {
   return body.length === 0 ? "" : `（${body}）`;
 }
 
-function dedupeSources(sources: readonly IsbnBookSource[]): IsbnBookSource[] {
-  const unique = new Map<string, IsbnBookSource>();
+function dedupeSources(sources: readonly Source[]): Source[] {
+  const unique = new Map<string, Source>();
   for (const source of sources) {
     if (!unique.has(source.id)) unique.set(source.id, source);
   }
@@ -187,7 +187,7 @@ function dedupeSources(sources: readonly IsbnBookSource[]): IsbnBookSource[] {
 
 /** Render deterministic bibliography entries without emitting Source IDs. */
 export function renderResolvedReferences(
-  sources: readonly IsbnBookSource[],
+  sources: readonly Source[],
   eol = "\n"
 ): string {
   return dedupeSources(sources).map(formatReferenceSource).join(eol);

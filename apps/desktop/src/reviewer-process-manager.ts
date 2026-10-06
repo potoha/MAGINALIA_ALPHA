@@ -716,4 +716,9 @@ export class ReviewerProcessManager {
   public getDiagnosticLogs(): readonly string[] {
     return this.logs.getRecentLines();
   }
+
+  /** Main-process-only shared secret for narrow Desktop bridge requests. */
+  public getDesktopRequestToken(): string | null {
+    return this.activeShutdownToken;
+  }
 }

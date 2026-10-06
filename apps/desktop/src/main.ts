@@ -85,6 +85,7 @@ import { ConfiguredPrivateShelf } from "./configured-private-shelf";
 import { ShelfLocationRegistry } from "./shelf-location-registry";
 import { resolveDesktopConfigurationPaths, type DesktopConfigurationPaths } from "./desktop-configuration";
 import { createReviewerShelfSyncAdapter } from "./reviewer-shelf-sync";
+import { materializeApprovedReviewerRecords } from "./reviewer-approval-materializer";
 import { createReferenceHandlers } from "./reference-ipc";
 import { resolveShelfQuoteRefs } from "./shelf-resolution";
 import { ReviewerProcessManager, UserDataReviewerWorkspaceLocator } from "./reviewer-process-manager";
@@ -92,6 +93,7 @@ import { createReviewerEmbeddedHost, isSafeReviewerViewBounds } from "./reviewer
 import {
   CLOSE_REVIEWER_VIEW_CHANNEL,
   OPEN_REVIEWER_VIEW_CHANNEL,
+  REVIEWER_APPROVAL_NOTIFICATION_CHANNEL,
   SET_REVIEWER_VIEW_BOUNDS_CHANNEL,
   ReviewerViewController
 } from "./reviewer-view-controller";
@@ -272,9 +274,10 @@ async function getManagedReviewerBaseUrl(): Promise<string> {
   return (await getReviewerProcessManager().ensureReady()).href;
 }
 
-// A Reviewer window is deliberately separate from DocumentSession/tabs. It has
-// no preload and receives only the manager-selected loopback origin.
+// A Reviewer window is deliberately separate from DocumentSession/tabs. Its
+// preload reports approval only; the manager supplies the loopback origin.
 let reviewerViewController: ReviewerViewController | undefined;
+let reviewerWebContentsForH5Smoke: WebContents | undefined;
 function getReviewerViewController(): ReviewerViewController {
   reviewerViewController ??= new ReviewerViewController({
     getManagedReviewerBaseUrl,
@@ -292,13 +295,18 @@ function getReviewerViewController(): ReviewerViewController {
 function createReviewerEmbeddedHostForMain() {
   const owner = mainWindow;
   if (owner === null || owner.isDestroyed()) throw new Error("No Workbench window is available.");
-  return createReviewerEmbeddedHost<WebContentsView>(owner, () => new WebContentsView({
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true
-    }
-  }));
+  return createReviewerEmbeddedHost<WebContentsView>(owner, () => {
+    const view = new WebContentsView({
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        preload: path.join(__dirname, "reviewer-preload.js")
+      }
+    });
+    reviewerWebContentsForH5Smoke = view.webContents;
+    return view;
+  });
 }
 const workdeskService = new WorkdeskService(
   new FileWorkdeskPathStore(path.join(app.getPath("userData"), "workdesk-paths.json"))
@@ -477,10 +485,24 @@ const libraryHandlers = createLibraryHandlers({
     libraryService.resolveQuotationForInsertForOwner(owner, libraryId, annotationId)
 });
 const reviewerShelfSync = createReviewerShelfSyncAdapter({
-  // Reviewer is started only by the explicit Shelf refresh operation. Its
-  // loopback origin stays in the main process and never reaches the renderer.
-  getBaseUrl: getManagedReviewerBaseUrl
+  // Reviewer is started only for Shelf materialization or explicit refresh.
+  // Its origin and process token stay in the main process.
+  getBaseUrl: getManagedReviewerBaseUrl,
+  getDesktopRequestToken: () => getReviewerProcessManager().getDesktopRequestToken()
 });
+let reviewerApprovalMaterialization: Promise<void> = Promise.resolve();
+function handleReviewerCaptureApproved(event: Electron.IpcMainEvent, annotationId: unknown): void {
+  if (typeof annotationId !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(annotationId)
+    || !getReviewerViewController().ownsWebContents(event.sender)) return;
+  reviewerApprovalMaterialization = reviewerApprovalMaterialization.then(async () => {
+    const owner = mainWindow?.webContents;
+    if (owner === undefined || owner.isDestroyed()) return;
+    await materializeApprovedReviewerRecords(owner, getConfiguredPrivateShelf(), reviewerShelfSync);
+  }).catch(() => {
+    // Approval is authoritative in Reviewer; Shelf can be retried from Refresh Shelf.
+  });
+}
 const shelfHandlers = createShelfHandlers({
   getActivePrivateShelf: (owner) => getActivePrivateShelfForDesktop(owner),
   searchPrivateShelf: (owner, libraryId, query) => libraryService.searchForOwner(owner, libraryId, query),
@@ -981,6 +1003,7 @@ function registerMarkdownIpc(): void {
     if (event.sender !== mainWindow?.webContents || !isSafeReviewerViewBounds(bounds)) return;
     getReviewerViewController().setBounds(bounds);
   });
+  ipcMain.on(REVIEWER_APPROVAL_NOTIFICATION_CHANNEL, handleReviewerCaptureApproved);
   ipcMain.handle(RESOLVE_REFERENCES_CHANNEL, referenceHandlers.resolveReferences);
   ipcMain.handle(RESOLVE_EXPORT_CHANNEL, exportHandlers.resolveExport);
   ipcMain.handle(WRITE_EXPORT_CHANNEL, exportHandlers.writeExport);
@@ -1028,6 +1051,7 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(OPEN_REVIEWER_VIEW_CHANNEL);
   ipcMain.removeHandler(CLOSE_REVIEWER_VIEW_CHANNEL);
   ipcMain.removeHandler(SET_REVIEWER_VIEW_BOUNDS_CHANNEL);
+  ipcMain.removeListener(REVIEWER_APPROVAL_NOTIFICATION_CHANNEL, handleReviewerCaptureApproved);
   ipcMain.removeHandler(RESOLVE_REFERENCES_CHANNEL);
   ipcMain.removeHandler(RESOLVE_EXPORT_CHANNEL);
   ipcMain.removeHandler(WRITE_EXPORT_CHANNEL);
@@ -1342,7 +1366,20 @@ function createMainWindow(): BrowserWindow {
       void runH5Smoke({
         reviewer: getReviewerProcessManager(),
         reviewerView: getReviewerViewController(),
-        userDataPath: app.getPath("userData")
+        userDataPath: app.getPath("userData"),
+        owner: window.webContents,
+        configuredShelf: getConfiguredPrivateShelf(),
+        libraryService,
+        notifyReviewerApproval: async (annotationId) => {
+          const reviewerWebContents = reviewerWebContentsForH5Smoke;
+          if (reviewerWebContents === undefined || reviewerWebContents.isDestroyed()) {
+            throw new Error("The embedded Reviewer WebContents is unavailable to the smoke harness.");
+          }
+          const safeAnnotationId = JSON.stringify(annotationId);
+          await reviewerWebContents.executeJavaScript(
+            `window.maginaliaReviewer.captureApproved(${safeAnnotationId})`
+          );
+        }
       }).then(
         () => completeH5Smoke(),
         (error: unknown) => failH5Smoke(error)

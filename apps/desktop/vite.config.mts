@@ -12,9 +12,12 @@ export default defineConfig(({ mode }) => {
         outDir: path.join(desktopRoot, "dist/main"),
         emptyOutDir: false,
         lib: {
-          entry: path.join(desktopRoot, "src/preload.ts"),
+          entry: {
+            preload: path.join(desktopRoot, "src/preload.ts"),
+            reviewerPreload: path.join(desktopRoot, "src/reviewer-preload.ts")
+          },
           formats: ["cjs"],
-          fileName: () => "preload.js"
+          fileName: (_format, entryName) => entryName === "reviewerPreload" ? "reviewer-preload.js" : "preload.js"
         },
         rollupOptions: {
           external: ["electron"]

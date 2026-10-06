@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maginalia.app/spec/common.schema.json",
+  "$defs": {
+    "version": { "const": "0.1" },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "allOf": [
+        { "not": { "pattern": "^(?:[A-Za-z]:|\\\\\\\\|/)" } },
+        { "not": { "pattern": "(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)" } }
+      ]
+    },
+    "isbnId": { "type": "string", "pattern": "^isbn:[0-9]{13}$" },
+    "annId": { "type": "string", "pattern": "^ann:[0-7][0-9A-HJKMNP-TV-Z]{25}$" },
+    "pubId": { "type": "string", "pattern": "^pub:[0-7][0-9A-HJKMNP-TV-Z]{25}$" },
+    "projectId": { "type": "string", "pattern": "^project:[0-7][0-9A-HJKMNP-TV-Z]{25}$" },
+    "noteId": { "type": "string", "pattern": "^note:[0-7][0-9A-HJKMNP-TV-Z]{25}$" },
+    "captureId": { "type": "string", "pattern": "^capture:[0-7][0-9A-HJKMNP-TV-Z]{25}$" }
+  }
+}

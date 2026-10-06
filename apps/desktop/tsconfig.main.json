@@ -38,6 +38,7 @@
     "src/reviewer-ipc.ts",
     "src/reviewer-process-manager.ts",
     "src/reviewer-view-controller.ts",
+    "src/reviewer-preload.ts",
     "src/reviewer-embedded-view-host.ts",
     "src/reference-ipc.ts",
     "src/export-ipc.ts",

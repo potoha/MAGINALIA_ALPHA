@@ -15,7 +15,9 @@ const schemaNames = [
   "source.schema.json",
   "publication.schema.json",
   "published-annotation.schema.json",
-  "published-book.schema.json"
+  "published-book.schema.json",
+  "shelf-book.schema.json",
+  "shelf-annotation.schema.json"
 ];
 
 if (!existsSync(source)) throw new Error(`authoritative schema source is missing: ${source}`);

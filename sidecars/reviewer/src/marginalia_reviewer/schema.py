@@ -8,6 +8,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
+from referencing import Registry, Resource
 
 
 class ContractValidationError(ValueError):
@@ -27,8 +28,10 @@ def contracts_dir() -> Path:
 def _validator(name: str) -> Draft202012Validator:
     path = contracts_dir() / name
     schema = json.loads(path.read_text(encoding="utf-8"))
+    common = json.loads((contracts_dir() / "common.schema.json").read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
-    return Draft202012Validator(schema, format_checker=FormatChecker())
+    registry = Registry().with_resource(common["$id"], Resource.from_contents(common))
+    return Draft202012Validator(schema, format_checker=FormatChecker(), registry=registry)
 
 
 def validate_contract(instance: Any, name: str) -> None:

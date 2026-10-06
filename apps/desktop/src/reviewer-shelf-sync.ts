@@ -15,6 +15,7 @@ import {
 } from "./reviewer-ipc";
 import type {
   ApprovedReviewerRecord,
+  ReviewerSourceFile,
   ReviewerReconciliationPending
 } from "./reviewer-shelf-reconciliation";
 
@@ -48,6 +49,11 @@ export interface ReviewerShelfSyncAdapterOptions {
   readonly baseUrl?: string;
   readonly getBaseUrl?: () => string | URL | null | Promise<string | URL | null>;
   readonly reviewerFetcher?: typeof fetch;
+  /** Main-process-only token for the owned Reviewer source-asset endpoint. */
+  readonly getDesktopRequestToken?: () => string | null;
+  /** Test seam; production uses the main-process Reviewer fetch adapter. */
+  readonly sourceAssetFetcher?: typeof fetch;
+  readonly maxSourceAssetBytes?: number;
   /** Override metadata lookup for a host adapter or focused tests. */
   readonly lookupMetadata?: ReviewerShelfMetadataLookup;
   /** Override the durable boundary for focused tests. */
@@ -84,6 +90,26 @@ function isOptionalStringOrNull(value: unknown): value is string | null {
   return value === null || typeof value === "string";
 }
 
+function isOptionalStringValue(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === "string";
+}
+
+function isSafeSourceFile(value: unknown): boolean {
+  if (!isPlainRecord(value)
+    || typeof value.path !== "string"
+    || value.path.length === 0
+    || value.path.includes("\\")
+    || value.path.includes("\0")
+    || value.path.startsWith("/")
+    || /^[A-Za-z]:/u.test(value.path)
+    || value.path.split("/").some((part) => part.length === 0 || part === "." || part === "..")
+    || (value.mediaType !== "image/jpeg" && value.mediaType !== "application/pdf")
+    || typeof value.sha256 !== "string"
+    || !/^[0-9a-f]{64}$/u.test(value.sha256)
+    || (value.originalName !== undefined && typeof value.originalName !== "string")) return false;
+  return true;
+}
+
 function isReviewerQuotation(value: unknown): value is ReviewerQuotation {
   return isPlainRecord(value)
     && typeof value.annotationId === "string"
@@ -102,6 +128,18 @@ function isReviewerQuotation(value: unknown): value is ReviewerQuotation {
     && typeof value.pageLabel === "string"
     && typeof value.comment === "string"
     && value.reviewState === "APPROVED"
+    && (value.packageId === undefined || value.packageId === null
+      || (typeof value.packageId === "string" && /^capkg:[0-7][0-9A-HJKMNP-TV-Z]{25}$/u.test(value.packageId)))
+    && (value.sourceKind === undefined || value.sourceKind === null
+      || ["book", "selfpublish", "website", "bookwithoutisbn", "Handwritten"].includes(String(value.sourceKind)))
+    && (value.getDate === undefined || value.getDate === null || typeof value.getDate === "string")
+    && isOptionalStringValue(value.url)
+    && isOptionalStringValue(value.publisher)
+    && isOptionalStringValue(value.circleName)
+    && isOptionalStringValue(value.eventName)
+    && (value.year === undefined || value.year === null
+      || (typeof value.year === "number" && Number.isInteger(value.year) && value.year >= 0))
+    && (value.sourceFiles === undefined || (Array.isArray(value.sourceFiles) && value.sourceFiles.every(isSafeSourceFile)))
     && (value.reviewedAtMs === undefined
       || value.reviewedAtMs === null
       || (typeof value.reviewedAtMs === "number" && Number.isFinite(value.reviewedAtMs)));
@@ -141,13 +179,71 @@ function toApprovedReviewerRecord(quotation: ReviewerQuotation): ApprovedReviewe
   return Object.freeze({
     annotationId: quotation.annotationId,
     reviewState: "APPROVED",
-    // Reviewer permits approved quotations with no ISBN; the reconciliation
-    // core will keep these records pending without blocking independent rows.
-    isbn13: quotation.isbn13 ?? "",
+    packageId: quotation.packageId,
+    sourceKind: quotation.sourceKind,
+    getDate: quotation.getDate,
+    isbn13: quotation.isbn13,
+    url: quotation.url,
+    title: quotation.title,
+    authors: quotation.authors,
+    publisher: quotation.publisher,
+    year: quotation.year,
+    circleName: quotation.circleName,
+    eventName: quotation.eventName,
     quote: quotation.quote,
     pageLabel: quotation.pageLabel,
-    comment: quotation.comment
+    comment: quotation.comment,
+    ...(quotation.sourceFiles === undefined ? {} : { sourceFiles: quotation.sourceFiles })
   });
+}
+
+async function fetchSourceAsset(
+  baseUrl: URL,
+  fetcher: typeof fetch,
+  token: string,
+  annotationId: string,
+  file: ReviewerSourceFile,
+  maxBytes: number
+): Promise<Uint8Array | null> {
+  const endpoint = new URL(`api/captures/${encodeURIComponent(annotationId)}/source-file`, baseUrl);
+  endpoint.searchParams.set("asset_path", file.path);
+  try {
+    const response = await fetcher(endpoint, {
+      method: "GET",
+      redirect: "error",
+      headers: { "X-Maginalia-Reviewer-Desktop-Token": token }
+    });
+    if (!response.ok) return null;
+    const contentLength = response.headers.get("content-length");
+    if (contentLength !== null && Number.isFinite(Number(contentLength)) && Number(contentLength) > maxBytes) return null;
+    if (response.body === null) return null;
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        size += next.value.byteLength;
+        if (size > maxBytes) {
+          await reader.cancel();
+          return null;
+        }
+        chunks.push(next.value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
+  } catch {
+    return null;
+  }
 }
 
 function reviewerError(
@@ -250,6 +346,8 @@ export function createReviewerShelfSyncAdapter(
 ): (shelfRoot: string) => Promise<ReviewerShelfSyncResult> {
   const configuredBaseUrl = parseReviewerBaseUrl(options.baseUrl);
   const fetcher = options.reviewerFetcher ?? fetch;
+  const assetFetcher = options.sourceAssetFetcher ?? fetcher;
+  const maxSourceAssetBytes = options.maxSourceAssetBytes ?? 256 * 1024 * 1024;
   const lookupMetadata = options.lookupMetadata ?? ((isbn13) => lookupOpenBdMetadata(isbn13));
   const materialize = options.materialize ?? materializeReviewerRecords;
   const pageLimit = options.pageLimit ?? REVIEWER_SHELF_SYNC_PAGE_LIMIT;
@@ -274,6 +372,7 @@ export function createReviewerShelfSyncAdapter(
 
     const records: ApprovedReviewerRecord[] = [];
     const annotationIds = new Set<string>();
+    const sourceAssetCache = new Map<string, Promise<Uint8Array | null>>();
     let expectedOffset = 0;
     let expectedTotal: number | undefined;
     let pageCount = 0;
@@ -301,7 +400,30 @@ export function createReviewerShelfSyncAdapter(
           return reviewerError("pagination-inconsistent", "Reviewer search returned a duplicate annotation.");
         }
         annotationIds.add(quotation.annotationId);
-        records.push(toApprovedReviewerRecord(quotation));
+        let record = toApprovedReviewerRecord(quotation);
+        if (quotation.sourceFiles !== undefined && quotation.sourceFiles.length > 0) {
+          const token = options.getDesktopRequestToken?.();
+          const files: ReviewerSourceFile[] = [];
+          let unavailable = token === null || token === undefined || !Number.isSafeInteger(maxSourceAssetBytes) || maxSourceAssetBytes < 1;
+          if (!unavailable) {
+            for (const file of quotation.sourceFiles) {
+              let asset = sourceAssetCache.get(file.sha256);
+              if (asset === undefined) {
+                asset = fetchSourceAsset(baseUrl, assetFetcher, token!, quotation.annotationId, file, maxSourceAssetBytes);
+                sourceAssetCache.set(file.sha256, asset);
+              }
+              const bytes = await asset;
+              if (bytes === null) unavailable = true;
+              files.push(Object.freeze({ ...file, ...(bytes === null ? {} : { bytes }) }));
+            }
+          }
+          record = Object.freeze({
+            ...record,
+            sourceFiles: Object.freeze(files.length > 0 ? files : [...quotation.sourceFiles]),
+            sourceAssetsUnavailable: unavailable
+          });
+        }
+        records.push(record);
       }
 
       const nextOffset = page.offset + page.results.length;

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maginalia.app/spec/magicap-v1-manifest.schema.json",
+  "title": "MAGINALIA Capture Package manifest v1 (legacy reader)",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["format", "version", "packageId", "createdAt", "book", "captureCount"],
+  "properties": {
+    "format": { "const": "maginalia-capture-package" },
+    "version": { "const": 1 },
+    "packageId": { "type": "string", "pattern": "^capkg:[0-7][0-9A-HJKMNP-TV-Z]{25}$" },
+    "createdAt": { "type": "string" },
+    "book": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["isbn13"],
+      "properties": {
+        "isbn13": { "type": "string", "pattern": "^[0-9]{13}$" },
+        "title": { "type": "string" },
+        "authors": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        },
+        "publisher": { "type": "string" },
+        "year": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "captureCount": { "type": "integer", "minimum": 0 }
+  }
+}

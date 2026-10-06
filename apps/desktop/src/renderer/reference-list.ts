@@ -1,4 +1,4 @@
-import type { IsbnBookSource } from "@maginalia/source-core";
+import type { Source } from "@maginalia/source-core";
 
 export const REFERENCE_LIST_MARKER_START = "<!-- maginalia:reference-list-start v1 -->";
 export const REFERENCE_LIST_MARKER_END = "<!-- maginalia:reference-list-end v1 -->";
@@ -152,7 +152,7 @@ function appendPrefix(text: string, eol: string): string {
  * Convert provider metadata to one stable, simple Japanese bibliography line.
  * This intentionally is not a citation-style engine.
  */
-export function formatReferenceSource(source: IsbnBookSource): string {
+export function formatReferenceSource(source: Source): string {
   const authors = source.authors
     .map(normalizeExternalText)
     .filter((author) => author.length > 0)
@@ -161,8 +161,12 @@ export function formatReferenceSource(source: IsbnBookSource): string {
   const publisher = normalizeExternalText(source.publisher);
   const publishedDate = normalizeExternalText(source.publishedDate);
 
+  const url = normalizeExternalText(source.url);
+  const isbn = source.identifiers?.isbn13;
   if (authors.length === 0 && title.length === 0 && publisher.length === 0 && publishedDate.length === 0) {
-    return `- ISBN ${escapeMarkdown(source.identifiers.isbn13)}。`;
+    if (typeof isbn === "string") return `- ISBN ${escapeMarkdown(isbn)}。`;
+    if (url.length > 0) return `- ${escapeMarkdown(url)}。`;
+    return "- 原資料。";
   }
 
   let line = "- ";
@@ -175,6 +179,7 @@ export function formatReferenceSource(source: IsbnBookSource): string {
   if (publishedDate.length > 0) {
     line += line === "- " ? escapeMarkdown(publishedDate) : `、${escapeMarkdown(publishedDate)}`;
   }
+  if (url.length > 0) line += `（${escapeMarkdown(url)}）`;
   return `${line}。`;
 }
 
@@ -190,8 +195,8 @@ function escapeMarkdown(value: string): string {
   return value.replace(/[\\`*_[\]{}()#+.!|>]/gu, "\\$&");
 }
 
-function sourceLines(sources: readonly IsbnBookSource[], eol: string): string {
-  const unique = new Map<string, IsbnBookSource>();
+function sourceLines(sources: readonly Source[], eol: string): string {
+  const unique = new Map<string, Source>();
   for (const source of sources) {
     if (!unique.has(source.id)) unique.set(source.id, source);
   }
@@ -201,7 +206,7 @@ function sourceLines(sources: readonly IsbnBookSource[], eol: string): string {
     .join(eol);
 }
 
-function generatedBlock(sources: readonly IsbnBookSource[], eol: string): string {
+function generatedBlock(sources: readonly Source[], eol: string): string {
   const entries = sourceLines(sources, eol);
   return `${REFERENCE_LIST_HEADING}${eol}${eol}${REFERENCE_LIST_MARKER_START}${eol}`
     + (entries.length > 0 ? `${entries}${eol}` : "")
@@ -215,7 +220,7 @@ function generatedBlock(sources: readonly IsbnBookSource[], eol: string): string
  */
 export function refreshReferenceList(
   text: string,
-  sources: readonly IsbnBookSource[]
+  sources: readonly Source[]
 ): ReferenceListRefreshResult {
   const current = typeof text === "string" ? text : "";
   const eol = preferredEol(current);
