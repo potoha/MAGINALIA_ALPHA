@@ -1376,9 +1376,7 @@ function createMainWindow(): BrowserWindow {
             throw new Error("The embedded Reviewer WebContents is unavailable to the smoke harness.");
           }
           const safeAnnotationId = JSON.stringify(annotationId);
-          await reviewerWebContents.executeJavaScript(
-            `window.maginaliaReviewer.captureApproved(${safeAnnotationId})`
-          );
+          await reviewerWebContents.executeJavaScript(`window.notifyDesktopShelfApproval(${safeAnnotationId})`);
         }
       }).then(
         () => completeH5Smoke(),
