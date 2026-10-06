@@ -1113,6 +1113,7 @@ const previewController = new PreviewController({
       const editable = state.document !== null && typeof state.document.revision === "number"
         ? {
           revision: state.document.revision,
+          defaultLineEnding: controller.getLineEnding(),
           onEdit: (request: { readonly revision: number; readonly range: { readonly start: number; readonly end: number }; readonly replacement: string }) =>
             controller.applySourceEdit({
               documentId: state.document!.documentId,

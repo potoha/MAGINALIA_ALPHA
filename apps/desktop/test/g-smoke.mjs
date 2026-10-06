@@ -18,6 +18,12 @@ try {
   await writeFile(path.join(projectRoot, "nested", "notes.md"), "# Nested source\n\nPROJECT_NESTED_SYNC_SENTINEL\n", "utf8");
   await writeFile(path.join(projectRoot, "chapter.md"), "---\ntitle: Chapter\n---\n\n# Chapter\n\nChapter prose.\n\n<!-- maginalia:synced-block v1 {\"target\":\"section.md\"} -->\n", "utf8");
   await writeFile(path.join(projectRoot, "section.md"), "---\ntitle: Section\n---\n\n# Section\n\nSection prose.\n", "utf8");
+  const trailingQuoteRef = '<!-- maginalia:quote-ref v1 {"quoteId":"00000000-0000-4000-8000-000000000044","mode":"normal"} -->';
+  const trailingSyncedBlock = '<!-- maginalia:synced-block v1 {"target":"section.md"} -->';
+  await writeFile(path.join(projectRoot, "trailing-heading.md"), "# H1 only", "utf8");
+  await writeFile(path.join(projectRoot, "trailing-paragraph.md"), "ordinary final paragraph", "utf8");
+  await writeFile(path.join(projectRoot, "trailing-quote.md"), trailingQuoteRef, "utf8");
+  await writeFile(path.join(projectRoot, "trailing-synced.md"), trailingSyncedBlock, "utf8");
   const result = await runElectronSmoke({ userDataRoot, appArgs: ["--smoke-g", projectRoot] });
   assertElectronSmokeMarker(result, marker, "Electron G smoke");
   const restored = await runElectronSmoke({ userDataRoot, appArgs: ["--smoke-g-restore", projectRoot] });

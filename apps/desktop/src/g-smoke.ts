@@ -53,9 +53,93 @@ async function waitForScript(window: BrowserWindow, source: string, description:
   throw new Error(`G smoke timed out waiting for ${description}.`);
 }
 
+async function exerciseTrailingPreviewInsertion(
+  window: BrowserWindow,
+  displayName: string,
+  initialSource: string,
+  separator: string,
+  insertedText: string
+): Promise<void> {
+  await script(window, `(() => {
+    const source = [...document.querySelectorAll('#manuscript-list button[data-manuscript-id]')]
+      .find((item) => item.dataset.manuscriptName === ${JSON.stringify(displayName)});
+    if (!(source instanceof HTMLButtonElement)) return false;
+    source.click();
+    const preview = document.querySelector('#document-preview-mode');
+    if (!(preview instanceof HTMLButtonElement)) return false;
+    if (preview.getAttribute('aria-pressed') !== 'true') preview.click();
+    return true;
+  })()`, `open ${displayName} in Preview`);
+  await waitFor(window, (value) => value.active === displayName && value.preview, `${displayName} Preview`);
+  await waitForScript(window, `document.querySelector('.markdown-preview-trailing-insertion') instanceof HTMLParagraphElement`, `${displayName} trailing Preview position`);
+  if (initialSource.includes("maginalia:synced-block")) {
+    await waitForScript(window, `document.querySelector('.rendered-synced-block[data-synced-block-state="resolved"]') instanceof HTMLElement`, `${displayName} resolved Synced Block`);
+  }
+  const trailingClickPoint = await window.webContents.executeJavaScript(`(() => {
+    const root = document.querySelector('.markdown-preview-document');
+    const trailing = document.querySelector('.markdown-preview-trailing-insertion');
+    if (!(root instanceof HTMLElement) || !(trailing instanceof HTMLParagraphElement)) return null;
+    const rootBounds = root.getBoundingClientRect();
+    const trailingBounds = trailing.getBoundingClientRect();
+    const lastBlock = [...root.children].filter((item) => item !== trailing).at(-1);
+    if (!(lastBlock instanceof HTMLElement)) return null;
+    const lastBounds = lastBlock.getBoundingClientRect();
+    const vertical = getComputedStyle(root).writingMode.startsWith('vertical');
+    const x = Math.floor(rootBounds.left + 4);
+    const availableBelow = rootBounds.bottom - trailingBounds.bottom;
+    const y = vertical
+      ? Math.floor(rootBounds.top + rootBounds.height / 2)
+      : Math.floor(trailingBounds.bottom + Math.min(8, availableBelow - 2));
+    const afterLastBlock = vertical ? x <= lastBounds.left : y >= lastBounds.bottom;
+    return (vertical || availableBelow >= 4) && afterLastBlock && document.elementFromPoint(x, y) === root ? { x, y } : null;
+  })()`, true) as { readonly x: number; readonly y: number } | null;
+  if (trailingClickPoint === null) throw new Error(`G smoke could not locate blank Preview canvas below ${displayName}.`);
+  await script(window, `(() => {
+    const root = document.querySelector('.markdown-preview-document');
+    if (!(root instanceof HTMLElement)) return false;
+    root.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: ${trailingClickPoint.x}, clientY: ${trailingClickPoint.y} }));
+    return true;
+  })()`, `click blank Preview canvas below ${displayName}`);
+  const lineBreakVariants = ["\n", "\r\n", "\r"];
+  const boundarySources = lineBreakVariants.map((lineBreak) => `${initialSource}${separator.replace(/\n/gu, lineBreak)}`);
+  const boundaryState = await waitFor(window, (value) => value.active === displayName && boundarySources.includes(value.text), `${displayName} source boundary`);
+  const boundarySource = boundaryState.text;
+  const caretReady = await window.webContents.executeJavaScript(`(() => {
+    const trailing = document.querySelector('.markdown-preview-trailing-insertion');
+    const editor = document.querySelector('#editor');
+    const selection = document.getSelection();
+    if (!(trailing instanceof HTMLParagraphElement) || !(editor instanceof HTMLElement) || selection === null) return false;
+    const source = editor.dataset.smokeText ?? '';
+    const start = Number(trailing.dataset.previewSourceStart);
+    const end = Number(trailing.dataset.previewSourceEnd);
+    const anchor = selection.anchorNode;
+    return document.activeElement === trailing
+      && trailing.dataset.previewTrailingActive === 'true'
+      && start === source.length && end === source.length
+      && selection.isCollapsed && (anchor === trailing || (anchor instanceof Node && trailing.contains(anchor)))
+      && !/[\\u200b-\\u200d\\u2060]/u.test(source);
+  })()`, true) as boolean;
+  if (!caretReady) throw new Error(`G smoke did not map the ${displayName} trailing caret to the end of source.`);
+
+  await script(window, `(() => { const trailing = document.querySelector('.markdown-preview-trailing-insertion'); if (!(trailing instanceof HTMLParagraphElement)) return false; trailing.click(); return true; })()`, `repeat ${displayName} trailing click`);
+  const repeatedClick = await state(window);
+  if (repeatedClick?.text !== boundarySource) throw new Error(`G smoke repeated ${displayName} trailing click added another source boundary.`);
+
+  await window.webContents.insertText(insertedText);
+  const expectedSource = `${boundarySource}${insertedText}`;
+  await waitFor(window, (value) => value.active === displayName && value.text === expectedSource, `${displayName} trailing source edit`);
+  const hasNoPlaceholder = await window.webContents.executeJavaScript(`(() => {
+    const editor = document.querySelector('#editor');
+    return editor instanceof HTMLElement && !/[\\u200b-\\u200d\\u2060]/u.test(editor.dataset.smokeText ?? '');
+  })()`, true) as boolean;
+  if (!hasNoPlaceholder) throw new Error(`G smoke persisted a Preview placeholder in ${displayName}.`);
+}
+
 /** Real Electron coverage of G's command/preview/link/search seams. */
 export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Promise<void> {
   const initialC = await readFile(path.join(fixtureRoot, "c.md"), "utf8");
+  const trailingQuoteRef = '<!-- maginalia:quote-ref v1 {"quoteId":"00000000-0000-4000-8000-000000000044","mode":"normal"} -->';
+  const trailingSyncedBlock = '<!-- maginalia:synced-block v1 {"target":"section.md"} -->';
   await window.webContents.executeJavaScript("document.body?.offsetWidth ?? 0", true);
   await script(window, `(() => { const overflow = document.querySelector("#project-overflow"); const open = document.querySelector("#open-project"); if (!(overflow instanceof HTMLButtonElement) || !(open instanceof HTMLButtonElement)) return false; overflow.click(); open.click(); return true; })()`, "open Project");
   await waitFor(window, (value) => value.ready && value.active === "a.md", "A open");
@@ -314,6 +398,13 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
   await waitFor(window, (value) => value.active === "a.md"
     && value.text.includes('maginalia:synced-block v1 {"target":"nested/notes.md"}')
     && !value.text.includes("PROJECT_NESTED_SYNC_SENTINEL"), "nested Sync inserts a marker without copying the source");
+
+  await exerciseTrailingPreviewInsertion(window, "trailing-heading.md", "# H1 only", "\n", "H1 trailing text");
+  await exerciseTrailingPreviewInsertion(window, "trailing-paragraph.md", "ordinary final paragraph", "\n\n", "Paragraph trailing text");
+  await exerciseTrailingPreviewInsertion(window, "trailing-quote.md", trailingQuoteRef, "\n\n", "Quote trailing text");
+  await exerciseTrailingPreviewInsertion(window, "trailing-synced.md", trailingSyncedBlock, "\n", "Synced trailing text");
+  await script(window, `(() => { const tab = [...document.querySelectorAll('#document-tabs .document-tab')].find((item) => item.querySelector('.document-tab-label')?.textContent?.startsWith('a.md')); const button = tab?.querySelector('.document-tab-label'); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`, "restore A as active Preview tab");
+  await waitFor(window, (value) => value.active === "a.md", "A active after trailing Preview coverage");
   if (path.basename(path.resolve(fixtureRoot)).length === 0) throw new Error("G smoke fixture root was invalid.");
 }
 
@@ -324,7 +415,7 @@ export async function runGRestoreSmoke(window: BrowserWindow): Promise<void> {
     window,
     (value) => value.ready
       && value.active === "a.md"
-      && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md|chapter.md",
+      && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md|chapter.md|trailing-heading.md|trailing-paragraph.md|trailing-quote.md|trailing-synced.md",
     "restored C, A, B, and composed-source tab order"
   );
 }

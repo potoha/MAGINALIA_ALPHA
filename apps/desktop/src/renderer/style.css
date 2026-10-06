@@ -1776,6 +1776,12 @@ button:focus-visible {
   box-shadow: 0 0 0 1px color-mix(in srgb, #8a402d 55%, transparent);
 }
 
+.markdown-preview-document > .markdown-preview-trailing-insertion {
+  min-block-size: 1.9em;
+  margin: 0;
+  cursor: text;
+}
+
 .rendered-local-media {
   display: block;
   max-width: 100%;

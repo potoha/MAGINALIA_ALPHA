@@ -31,6 +31,7 @@ import type {
 export interface WritingSurface {
   replaceDocument(text: string): void;
   getText(): string;
+  getLineEnding?(): WritingTextLineEnding;
   getSelection(): WritingTextRange;
   applyEdit(range: WritingTextRange, text: string, selection: WritingTextRange): void;
   onTextChange(listener: (text: string) => void): () => void;
@@ -40,6 +41,8 @@ export interface WritingSurface {
   undo?(): void;
   redo?(): void;
 }
+
+export type WritingTextLineEnding = "\n" | "\r\n" | "\r";
 
 /** UTF-16 offsets shared by Writing Core and the Monaco adapter. */
 export interface WritingTextRange {
@@ -311,6 +314,11 @@ export class WritingController {
   /** A primitive UTF-16 selection snapshot for command handlers. */
   public getSelection(): WritingTextRange {
     return this.externalSelection ?? this.surface.getSelection();
+  }
+
+  /** Report the active writing surface's EOL for source edits at an empty document tail. */
+  public getLineEnding(): WritingTextLineEnding {
+    return this.surface.getLineEnding?.() ?? "\n";
   }
 
   /** Current Preview-owned selection, if any; callers must not fall back to hidden Monaco. */
