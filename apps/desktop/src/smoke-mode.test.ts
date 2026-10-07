@@ -9,7 +9,8 @@ import {
   parseRepositorySmokeMode,
   parseShelfSmokeMode,
   parseWritingSmokeMode,
-  parseWorkspaceSmokeMode
+  parseWorkspaceSmokeMode,
+  parseWorkdeskPersistenceSmokeMode
 } from "./smoke-mode";
 
 describe("writing smoke mode", () => {
@@ -61,6 +62,21 @@ describe("workspace smoke mode", () => {
     expect(parseWorkspaceSmokeMode(["--smoke-workspace", "--other"])).toEqual({
       requested: true
     });
+  });
+});
+
+describe("Workdesk persistence smoke mode", () => {
+  it("parses first-run selection and same-userData restart stages", () => {
+    expect(parseWorkdeskPersistenceSmokeMode(["--smoke-workdesk-persistence", "D:\\研究\\Desk"])).toEqual({
+      requested: true,
+      rootPath: "D:\\研究\\Desk"
+    });
+    expect(parseWorkdeskPersistenceSmokeMode(["--smoke-workdesk-persistence-restore", "D:\\研究\\Desk"])).toEqual({
+      requested: true,
+      restore: true,
+      rootPath: "D:\\研究\\Desk"
+    });
+    expect(parseWorkdeskPersistenceSmokeMode(["electron"])).toEqual({ requested: false });
   });
 });
 

@@ -36,7 +36,7 @@ interface ShelfRendererState {
 const READ_STATE_SCRIPT = `(() => {
   const editor = document.querySelector("#editor");
   const documentName = document.querySelector("#workspace-document-name");
-  const manuscriptList = document.querySelector("#manuscript-list");
+  const explorerTree = document.querySelector("#explorer-tree");
   const status = document.querySelector("#document-status");
   const save = document.querySelector("#save-markdown");
   const libraryStatus = document.querySelector("#library-status");
@@ -45,16 +45,16 @@ const READ_STATE_SCRIPT = `(() => {
   const referencesStatus = document.querySelector("#references-status");
   const referencesUnresolved = document.querySelector("#references-unresolved");
   const referencesRefresh = document.querySelector("#refresh-references");
-  if (!editor || editor.dataset.smokeReady !== "shelf" || !documentName || !manuscriptList
+  if (!editor || editor.dataset.smokeReady !== "shelf" || !documentName || !explorerTree
     || !status || !save || !libraryStatus || !libraryError || !results || !referencesStatus
     || !referencesUnresolved || !referencesRefresh) return null;
-  const manuscriptButtons = [...manuscriptList.querySelectorAll("button[data-manuscript-id]")];
+  const manuscriptButtons = [...explorerTree.querySelectorAll("button[data-explorer-file-id]")];
   const active = manuscriptButtons.find((button) => button.getAttribute("aria-current") === "page");
   return {
     smokeReady: true,
     documentName: documentName.textContent ?? "",
-    manuscripts: manuscriptButtons.map((button) => button.dataset.manuscriptName ?? button.textContent ?? ""),
-    activeManuscript: active?.dataset.manuscriptName ?? active?.textContent ?? null,
+    manuscripts: manuscriptButtons.map((button) => button.dataset.explorerFileName ?? button.textContent ?? ""),
+    activeManuscript: active?.dataset.explorerFileName ?? active?.textContent ?? null,
     text: editor.dataset.smokeText ?? "",
     statusKind: status.dataset.state ?? "",
     statusMessage: status.textContent ?? "",

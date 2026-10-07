@@ -14,6 +14,8 @@ export const G_RESTORE_SMOKE_FLAG = "--smoke-g-restore";
 export const H_SMOKE_FLAG = "--smoke-h";
 export const H_RESTORE_SMOKE_FLAG = "--smoke-h-restore";
 export const H5_SMOKE_FLAG = "--smoke-h5";
+export const WORKDESK_PERSISTENCE_SMOKE_FLAG = "--smoke-workdesk-persistence";
+export const WORKDESK_PERSISTENCE_RESTORE_SMOKE_FLAG = "--smoke-workdesk-persistence-restore";
 
 export interface WritingSmokeMode {
   readonly requested: boolean;
@@ -73,6 +75,12 @@ export interface HSmokeMode {
 
 export interface H5SmokeMode {
   readonly requested: boolean;
+}
+
+export interface WorkdeskPersistenceSmokeMode {
+  readonly requested: boolean;
+  readonly rootPath?: string;
+  readonly restore?: boolean;
 }
 
 export function parseWritingSmokeMode(args: readonly string[]): WritingSmokeMode {
@@ -197,4 +205,18 @@ export function parseHSmokeMode(args: readonly string[]): HSmokeMode {
 
 export function parseH5SmokeMode(args: readonly string[]): H5SmokeMode {
   return { requested: args.includes(H5_SMOKE_FLAG) };
+}
+
+export function parseWorkdeskPersistenceSmokeMode(args: readonly string[]): WorkdeskPersistenceSmokeMode {
+  const restoreIndex = args.indexOf(WORKDESK_PERSISTENCE_RESTORE_SMOKE_FLAG);
+  if (restoreIndex >= 0) {
+    const candidate = args[restoreIndex + 1];
+    if (!candidate || candidate.startsWith("--")) return { requested: true, restore: true };
+    return { requested: true, restore: true, rootPath: candidate };
+  }
+  const flagIndex = args.indexOf(WORKDESK_PERSISTENCE_SMOKE_FLAG);
+  if (flagIndex < 0) return { requested: false };
+  const candidate = args[flagIndex + 1];
+  if (!candidate || candidate.startsWith("--")) return { requested: true };
+  return { requested: true, rootPath: candidate };
 }

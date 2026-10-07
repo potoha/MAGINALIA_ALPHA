@@ -19,17 +19,17 @@ interface WorkspaceRendererState {
 const READ_STATE_SCRIPT = `(() => {
   const editor = document.querySelector("#editor");
   const documentName = document.querySelector("#workspace-document-name");
-  const list = document.querySelector("#manuscript-list");
+  const list = document.querySelector("#explorer-tree");
   const status = document.querySelector("#document-status");
   const save = document.querySelector("#save-markdown");
   if (!editor || editor.dataset.smokeReady !== "workspace" || !documentName || !list || !status || !save) return null;
-  const buttons = [...list.querySelectorAll("button[data-manuscript-id]")];
+  const buttons = [...list.querySelectorAll("button[data-explorer-file-id]")];
   const active = buttons.find((button) => button.getAttribute("aria-current") === "page");
   return {
     smokeReady: true,
     documentName: documentName.textContent ?? "",
-    manuscripts: buttons.map((button) => button.textContent ?? ""),
-    activeManuscript: active?.textContent ?? null,
+    manuscripts: buttons.map((button) => button.dataset.explorerFileName ?? ""),
+    activeManuscript: active?.dataset.explorerFileName ?? null,
     text: editor.dataset.smokeText ?? "",
     statusKind: status.dataset.state ?? "",
     statusMessage: status.textContent ?? "",
@@ -81,8 +81,8 @@ async function clickOpenDocument(window: BrowserWindow): Promise<void> {
 async function clickManuscript(window: BrowserWindow, displayName: string): Promise<void> {
   const clicked = await window.webContents.executeJavaScript(`(() => {
     const wanted = ${JSON.stringify(displayName)};
-    const button = [...document.querySelectorAll("#manuscript-list button[data-manuscript-id]")]
-      .find((candidate) => candidate.textContent === wanted);
+    const button = [...document.querySelectorAll("#explorer-tree button[data-explorer-file-id]")]
+      .find((candidate) => candidate.dataset.explorerFileName === wanted);
     if (!(button instanceof HTMLButtonElement) || button.disabled) return false;
     button.click();
     return true;
@@ -150,7 +150,7 @@ export async function runWorkspaceSmoke(window: BrowserWindow, fixtureRoot: stri
   const initialText = await readFile(manuscriptPath, "utf8");
   const notesText = await readFile(notesPath, "utf8");
   const documentName = path.basename(path.resolve(fixtureRoot));
-  const manuscriptList = ["manuscript.md", "notes.md"];
+  const explorerTree = ["manuscript.md", "notes.md"];
 
   await waitForState(
     window,
@@ -164,14 +164,14 @@ export async function runWorkspaceSmoke(window: BrowserWindow, fixtureRoot: stri
     (state) => state.statusKind === "saved"
       && !state.saveEnabled
       && state.documentName === documentName
-      && state.manuscripts.length === manuscriptList.length
+      && state.manuscripts.length === explorerTree.length
       && state.activeManuscript === "manuscript.md"
       && state.text === initialText,
     "the Document and first manuscript to open"
   );
   assertState(opened, {
     documentName,
-    manuscripts: manuscriptList,
+    manuscripts: explorerTree,
     activeManuscript: "manuscript.md",
     text: initialText,
     statusKind: "saved",
@@ -188,7 +188,7 @@ export async function runWorkspaceSmoke(window: BrowserWindow, fixtureRoot: stri
   );
   assertState(modified, {
     documentName,
-    manuscripts: manuscriptList,
+    manuscripts: explorerTree,
     activeManuscript: "manuscript.md",
     text: expectedText,
     statusKind: "modified",
@@ -202,7 +202,7 @@ export async function runWorkspaceSmoke(window: BrowserWindow, fixtureRoot: stri
   if (!cancelled) throw new Error("Workspace smoke could not read the cancelled-switch state.");
   assertState(cancelled, {
     documentName,
-    manuscripts: manuscriptList,
+    manuscripts: explorerTree,
     activeManuscript: "manuscript.md",
     text: expectedText,
     statusKind: "modified",
@@ -221,7 +221,7 @@ export async function runWorkspaceSmoke(window: BrowserWindow, fixtureRoot: stri
   );
   assertState(switched, {
     documentName,
-    manuscripts: manuscriptList,
+    manuscripts: explorerTree,
     activeManuscript: "notes.md",
     text: notesText,
     statusKind: "saved",
@@ -241,7 +241,7 @@ export async function runWorkspaceSmoke(window: BrowserWindow, fixtureRoot: stri
   );
   assertState(modifiedNotes, {
     documentName,
-    manuscripts: manuscriptList,
+    manuscripts: explorerTree,
     activeManuscript: "notes.md",
     text: editedNotesText,
     statusKind: "modified",
@@ -259,7 +259,7 @@ export async function runWorkspaceSmoke(window: BrowserWindow, fixtureRoot: stri
   );
   assertState(savedNotes, {
     documentName,
-    manuscripts: manuscriptList,
+    manuscripts: explorerTree,
     activeManuscript: "notes.md",
     text: editedNotesText,
     statusKind: "saved",
@@ -278,7 +278,7 @@ export async function runWorkspaceSmoke(window: BrowserWindow, fixtureRoot: stri
   );
   assertState(reopened, {
     documentName,
-    manuscripts: manuscriptList,
+    manuscripts: explorerTree,
     activeManuscript: "manuscript.md",
     text: expectedText,
     statusKind: "saved",

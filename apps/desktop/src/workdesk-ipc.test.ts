@@ -35,6 +35,20 @@ function dependencies() {
 }
 
 describe("Workdesk IPC boundary", () => {
+  it("returns restore failures distinctly without opening the first-run picker", async () => {
+    const values = dependencies();
+    values.service.restorePrimary.mockRejectedValue(Object.assign(new Error(
+      "Saved Workdesk information is damaged. Use Open Workdesk to choose another folder."
+    ), { name: "WorkdeskBoundaryError", code: "local-state-corrupt" }));
+    const handlers = createWorkdeskHandlers(values as never);
+
+    await expect(handlers.restoreWorkdesk({ sender: owner })).resolves.toMatchObject({
+      kind: "error",
+      code: "local-state-corrupt"
+    });
+    expect(values.pickWorkdeskFolder).not.toHaveBeenCalled();
+  });
+
   it("opens a selected Workdesk and records it as the primary local path", async () => {
     const values = dependencies();
     const workdeskId = "11111111-1111-4111-8111-111111111111";

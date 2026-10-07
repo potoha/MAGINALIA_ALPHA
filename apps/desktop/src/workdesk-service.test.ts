@@ -1,7 +1,8 @@
 import { mkdtemp, mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createIdentity, templateFiles, type RepositoryIdentity } from "@maginalia/repository-core";
 import {
   EMPTY_WORKDESK_LOCAL_STATE,
@@ -13,6 +14,7 @@ import {
 
 const roots: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map(async (root) => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true }))));
 });
 
@@ -38,7 +40,7 @@ describe("Workdesk portable and local state", () => {
     expect(await readFile(path.join(desk.root, ".maginalia", "repository.json"))).toEqual(before);
   });
 
-  it("restores a remembered valid Workdesk and treats a missing remembered folder as first run", async () => {
+  it("restores a remembered valid Workdesk and distinguishes an unavailable folder from first run", async () => {
     const desk = await fixture("workbench", "Primary Desk");
     const localRoot = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-primary-"));
     roots.push(localRoot);
@@ -49,7 +51,56 @@ describe("Workdesk portable and local state", () => {
     expect((await service.restorePrimary())?.canonicalRoot).toBe(opened.canonicalRoot);
 
     await import("node:fs/promises").then(({ rm }) => rm(desk.root, { recursive: true, force: true }));
+    await expect(service.restorePrimary()).rejects.toMatchObject({ code: "remembered-workdesk-unavailable" });
+  });
+
+  it("treats only a missing or valid state without a primary as first run", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-first-run-"));
+    roots.push(root);
+    const store = new FileWorkdeskPathStore(path.join(root, "workdesk-paths.json"));
+    const service = new WorkdeskService(store);
     expect(await service.restorePrimary()).toBeUndefined();
+
+    await store.save(EMPTY_WORKDESK_LOCAL_STATE);
+    expect(await service.restorePrimary()).toBeUndefined();
+  });
+
+  it("fails visibly for unreadable, malformed, or structurally corrupt startup state", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-corrupt-"));
+    roots.push(root);
+    const localPath = path.join(root, "workdesk-paths.json");
+    const store = new FileWorkdeskPathStore(localPath);
+    const service = new WorkdeskService(store);
+
+    await writeFile(localPath, "{bad", "utf8");
+    await expect(service.restorePrimary()).rejects.toMatchObject({ code: "local-state-corrupt" });
+
+    await writeFile(localPath, JSON.stringify({
+      schemaVersion: 1,
+      primaryWorkdesk: path.join(root, "remembered"),
+      workdesks: { bad: { projects: {} } }
+    }), "utf8");
+    await expect(service.restorePrimary()).rejects.toMatchObject({ code: "local-state-corrupt" });
+
+    await import("node:fs/promises").then(({ rm }) => rm(localPath));
+    await mkdir(localPath);
+    await expect(service.restorePrimary()).rejects.toMatchObject({ code: "local-state-unreadable" });
+  });
+
+  it("does not treat a dangling saved-state symlink as first run", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-dangling-state-"));
+    roots.push(root);
+    const localPath = path.join(root, "workdesk-paths.json");
+    const service = new WorkdeskService(new FileWorkdeskPathStore(localPath));
+    const lstatSpy = vi.spyOn(fs, "lstat").mockResolvedValue({
+      isFile: () => false,
+      isSymbolicLink: () => true,
+    } as unknown as Awaited<ReturnType<typeof fs.lstat>>);
+    const readFileSpy = vi.spyOn(fs, "readFile").mockRejectedValue(Object.assign(new Error("missing target"), { code: "ENOENT" }));
+
+    await expect(service.restorePrimary()).rejects.toMatchObject({ code: "local-state-unreadable" });
+    expect(lstatSpy).toHaveBeenCalledWith(localPath);
+    expect(readFileSpy).not.toHaveBeenCalled();
   });
 
   it("treats absent and corrupt optional project indexes as empty", async () => {

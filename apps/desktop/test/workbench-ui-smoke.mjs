@@ -199,15 +199,16 @@ async function clickSecondaryTab(window, viewId) {
 async function checkExplorerActionLayout(window) {
   const result = await window.webContents.executeJavaScript(`(() => {
     const list = document.createElement('ul');
-    list.className = 'manuscript-list';
-    list.dataset.navigationMode = 'project';
+    list.className = 'explorer-tree';
     list.style.cssText = 'position:fixed;left:0;top:0;width:260px;z-index:9999;background:#fff';
-    const row = document.createElement('li');
-    row.className = 'project-file-row';
+    const node = document.createElement('li');
+    node.className = 'explorer-node';
+    const row = document.createElement('div');
+    row.className = 'explorer-row';
     const file = document.createElement('button');
-    file.className = 'manuscript-button';
+    file.className = 'explorer-entry-button';
     file.type = 'button';
-    file.innerHTML = '<span class="project-file-title">A very long Unicode filename — 日本語の文書タイトル.md</span><small class="project-file-type">MEMO</small>';
+    file.innerHTML = '<span class="explorer-entry-icon" aria-hidden="true">📄</span><span class="explorer-entry-title">A very long Unicode filename — 日本語の文書タイトル.md</span><small class="explorer-file-type">MEMO</small>';
     const actions = document.createElement('div');
     actions.className = 'explorer-row-actions';
     const sync = document.createElement('button');
@@ -220,7 +221,8 @@ async function checkExplorerActionLayout(window) {
     remove.textContent = 'Delete';
     actions.append(sync, remove);
     row.append(file, actions);
-    list.append(row);
+    node.append(row);
+    list.append(node);
     document.body.append(list);
     const hiddenByDefault = getComputedStyle(actions).display === 'none';
     file.focus();

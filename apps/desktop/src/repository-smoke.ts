@@ -34,15 +34,15 @@ const READ_STATE_SCRIPT = `(() => {
   const repositoryStatus = document.querySelector('#repository-status');
   const repositoryError = document.querySelector('#repository-error');
   const documentName = document.querySelector('#workspace-document-name');
-  const manuscriptList = document.querySelector('#manuscript-list');
+  const explorerTree = document.querySelector('#explorer-tree');
   const documentStatus = document.querySelector('#document-status');
   const save = document.querySelector('#save-markdown');
   const historyStatus = document.querySelector('#repository-history-status');
   const history = document.querySelector('#repository-history-entry');
   if (!editor || editor.dataset.smokeReady !== 'repository' || !repositoryKind || !repositoryName
-    || !repositoryStatus || !repositoryError || !documentName || !manuscriptList || !documentStatus
+    || !repositoryStatus || !repositoryError || !documentName || !explorerTree || !documentStatus
     || !save || !historyStatus || !history) return null;
-  const active = [...manuscriptList.querySelectorAll('button[data-manuscript-id]')]
+  const active = [...explorerTree.querySelectorAll('button[data-explorer-file-id]')]
     .find((button) => button.getAttribute('aria-current') === 'page');
   return {
     smokeReady: true,
@@ -51,7 +51,7 @@ const READ_STATE_SCRIPT = `(() => {
     repositoryStatus: repositoryStatus.dataset.state ?? '',
     repositoryError: repositoryError.textContent ?? '',
     documentName: documentName.textContent ?? '',
-    activeManuscript: active?.textContent ?? null,
+    activeManuscript: active?.dataset.explorerFileName ?? null,
     documentText: editor.dataset.smokeText ?? '',
     documentStatus: documentStatus.dataset.state ?? '',
     saveEnabled: !save.disabled,
