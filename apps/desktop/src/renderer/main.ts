@@ -152,8 +152,8 @@ app.innerHTML = `
                 <button id="project-overflow" class="project-header-action" type="button" aria-label="Project actions" title="Project actions" aria-haspopup="menu" aria-controls="project-overflow-menu" aria-expanded="false">…</button>
               </div>
               <div id="workdesk-project-actions" class="project-header-actions" hidden aria-label="Workdesk Project actions">
-                <button id="workdesk-new-project" class="project-header-action" type="button" title="New Project" aria-label="New Project">+P</button>
-                <button id="workdesk-register-project" class="project-header-action" type="button" title="Register existing Project" aria-label="Register existing Project">Add</button>
+                <button id="workdesk-new-project" class="project-header-action" type="button" title="New Project">New Project</button>
+                <button id="workdesk-register-project" class="project-header-action" type="button" title="Add existing Project">Add existing Project</button>
               </div>
             </div>
             <div id="project-new-menu" class="project-action-menu" role="menu" aria-label="New Markdown file" hidden>
@@ -162,14 +162,14 @@ app.innerHTML = `
               <button id="explorer-new-folder" type="button" role="menuitem">New Folder</button>
             </div>
             <div id="project-overflow-menu" class="project-action-menu" role="menu" aria-label="Project actions" hidden>
-              <button id="open-project" type="button" role="menuitem">Open Project</button>
+              <button id="open-project" type="button" role="menuitem">Open another Project…</button>
               <button id="project-create" type="button" role="menuitem">Create Project</button>
               <button id="open-workdesk" type="button" role="menuitem">Open Workdesk</button>
               <button id="workdesk-create" type="button" role="menuitem">Create Workdesk</button>
             </div>
             <form id="project-create-form" class="project-create-form" hidden>
               <label class="visually-hidden" for="create-project-title">New Project name</label>
-              <input id="create-project-title" type="text" maxlength="200" autocomplete="off" placeholder="New Project name">
+              <input id="create-project-title" type="text" maxlength="200" autocomplete="off" placeholder="New Project name" required>
               <button id="create-project" type="submit">Create</button>
               <button id="project-create-cancel" type="button">Cancel</button>
             </form>
@@ -465,6 +465,7 @@ const reloadModsButton = requiredElement<HTMLButtonElement>("#reload-mods");
 const modsStatus = requiredElement<HTMLElement>("#mods-status");
 const openButton = requiredElement<HTMLButtonElement>("#open-markdown");
 const openProjectButton = requiredElement<HTMLButtonElement>("#open-project");
+const openProjectMenuItem = openProjectButton;
 const openWorkdeskButton = requiredElement<HTMLButtonElement>("#open-workdesk");
 const createWorkdeskButton = requiredElement<HTMLButtonElement>("#workdesk-create");
 const saveButton = requiredElement<HTMLButtonElement>("#save-markdown");
@@ -1241,6 +1242,8 @@ const updateCommandContext = (): void => {
   const propertiesCurrent = ownsCurrentPropertiesTarget(propertiesFormTarget, current) && propertiesFormTarget?.stale !== true;
   const project = projectController?.getState().project;
   const activeProjectId = project?.projectId;
+  const workdeskHomeActive = activeWorkdesk !== null
+    && project?.projectId === activeWorkdesk.workdesk.documentId;
   const parentFileId = current === null ? null : projectController?.getFileIdForSession(current.documentId) ?? null;
   const insertionSelectionIsSafe = previewController.getMode() !== "preview" || controller.getExternalSelection() !== null;
   const syncedBlockInsertable = current !== null && project !== null && project !== undefined
@@ -1272,6 +1275,7 @@ const updateCommandContext = (): void => {
     "view.id": previewController.getMode(),
     "project.active": projectController?.getState().project !== null,
     "workdesk.active": activeWorkdesk !== null,
+    "workdesk.homeActive": workdeskHomeActive,
     "workdesk.homeAvailable": primaryWorkdeskAvailable
       && activeProjectId !== activeWorkdeskRootDocumentId(),
     "workdesk.childProject": activeWorkdesk !== null
@@ -1279,6 +1283,8 @@ const updateCommandContext = (): void => {
       && project !== undefined
       && project.projectId !== activeWorkdesk.workdesk.documentId
   });
+  openProjectMenuItem.hidden = activeWorkdesk !== null;
+  projectCreateButton.textContent = workdeskHomeActive ? "New Project…" : "Create Project";
 };
 commandContextReady = true;
 controller.onDocumentChange(() => {
@@ -1645,27 +1651,21 @@ commandRegistry.register({
 });
 commandRegistry.register({
   id: "maginalia.workdesk.createProject",
-  title: "New Workdesk Project",
+  title: "New Project",
   category: "Workdesk",
   keywords: ["project", "new", "child"],
-  when: "workdesk.active"
+  when: "workdesk.homeActive"
 }, async () => {
   const desk = activeWorkdesk;
-  const api = getWorkdeskApi();
-  if (!desk || !api) throw new Error("Open a Workdesk before creating a Project.");
-  const title = window.prompt("New Project name");
-  if (title === null || title.trim().length === 0) return;
-  await openWorkdeskProjectResult(await api.createWorkdeskProject({
-    workdeskIdentityId: desk.workdesk.workdeskIdentityId,
-    title
-  }));
+  if (!desk || !getWorkdeskApi()) throw new Error("Open a Workdesk before creating a Project.");
+  beginProjectCreation(true);
 });
 commandRegistry.register({
   id: "maginalia.workdesk.registerProject",
-  title: "Open and Register existing Project with Workdesk",
+  title: "Add existing Project",
   category: "Workdesk",
   keywords: ["project", "register", "external"],
-  when: "workdesk.active"
+  when: "workdesk.homeActive"
 }, async () => {
   const desk = activeWorkdesk;
   const api = getWorkdeskApi();
@@ -1695,16 +1695,22 @@ commandRegistry.register({
 });
 commandRegistry.register({
   id: "maginalia.workdesk.openProject",
-  title: "Open Workdesk Project",
+  title: "Open registered Project",
   category: "Workdesk",
   keywords: ["project", "open", "registered"],
-  when: "workdesk.active"
+  when: "workdesk.homeActive"
 }, async () => {
   const desk = activeWorkdesk;
   const projectIdentityId = pendingWorkdeskProjectIdentityId;
   pendingWorkdeskProjectIdentityId = null;
   const api = getWorkdeskApi();
-  if (!desk || !api || projectIdentityId === null) throw new Error("The Workdesk Project is no longer available.");
+  if (!desk || !api) throw new Error("Open a Workdesk to choose a registered Project.");
+  if (projectIdentityId === null) {
+    const target = explorerTree.querySelector<HTMLButtonElement>("[data-workdesk-project-shortcut]")
+      ?? workdeskNewProjectButton;
+    target.focus();
+    return;
+  }
   await openWorkdeskProjectResult(await api.openWorkdeskProject({
     workdeskIdentityId: desk.workdesk.workdeskIdentityId,
     projectIdentityId
@@ -2214,6 +2220,7 @@ let selectedExplorerFolderId: string | null = null;
 let explorerDocumentId: string | null = null;
 let explorerEntries: readonly ExplorerEntry[] = [];
 let pendingWorkdeskProjectIdentityId: string | null = null;
+let projectCreationFromWorkdesk = false;
 
 // The document controller can be empty during module construction. Hydrate the
 // panel after all navigation ownership state exists, without mutating source.
@@ -2527,7 +2534,17 @@ function cancelProjectFileCreation(restoreFocus = true): void {
 function cancelProjectCreation(restoreFocus = true): void {
   projectCreateForm.hidden = true;
   createProjectTitle.value = "";
+  projectCreationFromWorkdesk = false;
   if (restoreFocus) projectOverflowButton.focus();
+}
+
+function beginProjectCreation(fromWorkdesk: boolean): void {
+  projectCreationFromWorkdesk = fromWorkdesk;
+  createProjectTitle.value = "";
+  projectCreateForm.hidden = false;
+  setProjectMenuOpen(projectNewMenu, projectNewButton, false);
+  setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
+  createProjectTitle.focus();
 }
 
 function beginProjectFileCreation(documentType: ProjectDocumentType): void {
@@ -3199,6 +3216,14 @@ function refreshActiveWorkdeskNode(node: { readonly projectIdentityId: string; r
 
 async function openWorkdeskProjectResult(result: WorkdeskProjectResult): Promise<boolean> {
   if (result.kind === "cancelled") return false;
+  if (result.kind === "opened-unregistered") {
+    const navigation = projectController;
+    if (!navigation || !(await navigation.activateOpenedProject(result.project))) return false;
+    projectView.setProjectState(navigation.getState());
+    await rememberActiveWorkdeskContext({ kind: "home" });
+    updateCommandContext();
+    return true;
+  }
   if (result.kind === "registered") {
     refreshActiveWorkdeskNode(result.node);
     return true;
@@ -3415,10 +3440,12 @@ const shelfSmokeMode = smokeQuery === "shelf";
 const d5SmokeMode = smokeQuery === "d5" || smokeQuery === "d5-restore";
 const exportSmokeMode = smokeQuery === "export";
 const gSmokeMode = smokeQuery === "g" || smokeQuery === "g-restore";
-const workdeskSmokeMode = smokeQuery === "h";
+const workdeskSmokeMode = smokeQuery === "h" || smokeQuery === "h-restore"
+  || smokeQuery === "h-acceptance" || smokeQuery === "h-acceptance-restore";
+const workdeskRestoreSmokeMode = smokeQuery === "h-restore" || smokeQuery === "h-acceptance-restore";
 const gRestoreSmokeMode = smokeQuery === "g-restore";
 const projectSmokeMode = smokeQuery === "project";
-const projectRestoreSmokeMode = smokeQuery === "project-restore" || smokeQuery === "d5-restore" || gRestoreSmokeMode;
+const projectRestoreSmokeMode = smokeQuery === "project-restore" || smokeQuery === "d5-restore" || gRestoreSmokeMode || workdeskRestoreSmokeMode;
 const projectCreateSmokeMode = smokeQuery === "project-create";
 const workbenchSmokeMode = smokeQuery === "workbench";
 const smokeDecisionQueue: DirtySwitchDecision[] = [];
@@ -3474,12 +3501,11 @@ explorerNewFolderButton.addEventListener("click", () => {
 projectCreateButton.addEventListener("click", () => {
   cancelProjectFileCreation(false);
   setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
-  routeCreateProjectAction(activeWorkdesk !== null,
+  const workdeskRootActive = activeWorkdesk !== null
+    && projectController?.getState().project?.projectId === activeWorkdesk.workdesk.documentId;
+  routeCreateProjectAction(workdeskRootActive,
     () => { void commandRegistry.execute("maginalia.workdesk.createProject", commandContext.snapshot()); },
-    () => {
-      projectCreateForm.hidden = false;
-      createProjectTitle.focus();
-    });
+    () => beginProjectCreation(false));
 });
 
 projectCreateCancelButton.addEventListener("click", () => cancelProjectCreation());
@@ -3997,6 +4023,23 @@ newFileTitle.addEventListener("keydown", (event) => {
 projectCreateForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (!projectController) return;
+  if (projectCreationFromWorkdesk) {
+    const desk = activeWorkdesk;
+    const api = getWorkdeskApi();
+    if (!desk || !api) {
+      projectView.setProjectError("Open a Workdesk before creating a Project.");
+      return;
+    }
+    void api.createWorkdeskProject({
+      workdeskIdentityId: desk.workdesk.workdeskIdentityId,
+      title: createProjectTitle.value,
+    }).then(async (result) => {
+      if (await openWorkdeskProjectResult(result)) cancelProjectCreation(false);
+    }).catch((error: unknown) => {
+      projectView.setProjectError(error instanceof Error ? error.message : "The Workdesk Project could not be created.");
+    });
+    return;
+  }
   const previousProjectId = projectController.getState().project?.projectId;
   void projectController.createProject(createProjectTitle.value).then(() => {
     const project = projectController?.getState().project;

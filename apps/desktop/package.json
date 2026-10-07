@@ -33,6 +33,7 @@
     "smoke:export": "npm run build && node test/export-smoke.mjs",
     "smoke:g": "npm run build && node test/g-smoke.mjs",
     "smoke:h": "npm run build && node test/h-smoke.mjs",
+    "smoke:h-navigation-acceptance": "npm run build && node test/workdesk-navigation-acceptance-smoke.mjs",
     "smoke:workdesk-persistence": "npm run build && node test/workdesk-persistence-smoke.mjs",
     "smoke:h5": "npm run build && node test/h5-smoke.mjs",
     "start": "npm run build && electron dist/main/main.js"

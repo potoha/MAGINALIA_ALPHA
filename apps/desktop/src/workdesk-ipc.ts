@@ -79,6 +79,11 @@ export interface WorkdeskProjectOpened {
   readonly node: WorkdeskProjectNode;
 }
 
+export interface WorkdeskProjectOpenedUnregistered {
+  readonly kind: "opened-unregistered";
+  readonly project: ProjectOpened;
+}
+
 export interface WorkdeskProjectRegistered {
   readonly kind: "registered";
   readonly node: WorkdeskProjectNode;
@@ -132,7 +137,8 @@ export interface SaveWorkdeskContextRequest {
 }
 export type SaveWorkdeskContextResult = { readonly kind: "saved" } | WorkdeskFailure;
 export type WorkdeskFileCreateResult = ProjectFileCreateResult | WorkdeskFailure;
-export type WorkdeskProjectResult = WorkdeskProjectOpened | WorkdeskProjectRegistered | WorkdeskProjectRemoved | WorkdeskCancelled | WorkdeskFailure;
+export type WorkdeskProjectResult = WorkdeskProjectOpened | WorkdeskProjectOpenedUnregistered | WorkdeskProjectRegistered | WorkdeskProjectRemoved | WorkdeskCancelled | WorkdeskFailure;
+export type ExistingProjectRegistrationChoice = "register" | "cancel" | "open-without-registration";
 export type WorkdeskCopyResult = ProjectFileCreateResult | WorkdeskFailure;
 
 export interface WorkdeskHandlerDependencies {
@@ -140,6 +146,7 @@ export interface WorkdeskHandlerDependencies {
   readonly pickWorkdeskParent: () => Promise<WorkdeskFolderSelection>;
   readonly pickExistingProjectFolder: () => Promise<WorkdeskFolderSelection>;
   readonly confirmAdoptWorkdesk: () => Promise<boolean>;
+  readonly confirmRegisterExistingProject: () => Promise<ExistingProjectRegistrationChoice>;
   readonly service: WorkdeskService;
   readonly projects: ProjectService;
   /**
@@ -330,11 +337,7 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
     return result;
   };
   const register = async (desk: ValidatedWorkdesk, project: Awaited<ReturnType<WorkdeskService["validateExternalProject"]>>): Promise<WorkdeskProjectNode> => {
-    // The portable identity is committed first. If the app-local mapping fails
-    // afterward it remains an honest unavailable registration rather than
-    // deleting user data to "roll back".
-    await dependencies.service.registerPortableProject(desk, project.projectIdentity);
-    await dependencies.service.registerProjectPath(desk, project);
+    await dependencies.service.registerProjectLocation(desk, project);
     return Object.freeze({ projectIdentityId: project.projectIdentity.id, title: project.projectIdentity.title, available: true });
   };
   return {
@@ -488,7 +491,6 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
         catch (error) { return asFailure(error, "The Project was created but could not be registered with the Workdesk."); }
         const project = await dependencies.projects.openForOwner(event.sender, boundary.canonicalRoot);
         if (project.kind !== "opened") {
-          await dependencies.service.unregisterProject(desk, boundary.projectIdentity.id).catch(() => undefined);
           return failure(project.code, project.message);
         }
         return Object.freeze({ kind: "opened", project, node });
@@ -507,17 +509,22 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
       if (selected.canceled || selected.filePaths.length === 0) return { kind: "cancelled" };
       if (selected.filePaths.length !== 1) return failure("invalid-request", "Choose one Project folder.");
       try {
-        const boundary = await dependencies.service.validateExternalProject(selected.filePaths[0]!);
+        const boundary = await dependencies.service.validateExternalProject(selected.filePaths[0]!, {
+          expectedWorkdeskIdentityId: desk.identity.id,
+          requireExistingMarker: true,
+        });
         const checked = await dependencies.projects.validateProjectRoot(boundary.canonicalRoot);
         if (checked.kind !== "opened") return failure(checked.code, checked.message);
-        const existing = (await dependencies.service.listRegisteredProjects(desk))
-          .some((candidate) => candidate.projectIdentityId.toLowerCase() === boundary.projectIdentity.id.toLowerCase());
+        const choice = await dependencies.confirmRegisterExistingProject();
+        if (choice === "cancel") return { kind: "cancelled" };
+        if (choice === "open-without-registration") {
+          const project = await dependencies.projects.openForOwner(event.sender, boundary.canonicalRoot);
+          if (project.kind !== "opened") return failure(project.code, project.message);
+          return Object.freeze({ kind: "opened-unregistered", project });
+        }
         const node = await register(desk, boundary);
         const project = await dependencies.projects.openForOwner(event.sender, boundary.canonicalRoot);
-        if (project.kind !== "opened") {
-          if (!existing) await dependencies.service.unregisterProject(desk, boundary.projectIdentity.id).catch(() => undefined);
-          return failure(project.code, project.message);
-        }
+        if (project.kind !== "opened") return failure(project.code, project.message);
         return Object.freeze({ kind: "opened", project, node });
       } catch (error) {
         return asFailure(error, "Only a complete MAGINALIA Project can be registered.");

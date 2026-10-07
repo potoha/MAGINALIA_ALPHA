@@ -47,6 +47,11 @@ import {
   SAVE_WORKDESK_CONTEXT_CHANNEL,
   createWorkdeskHandlers
 } from "./workdesk-ipc";
+import type { ExistingProjectRegistrationChoice } from "./workdesk-ipc";
+import {
+  WORKDESK_PROJECT_REGISTRATION_DIALOG_BUTTONS,
+  workdeskProjectRegistrationChoice,
+} from "./workdesk-registration-dialog";
 import {
   SEARCH_PROJECT_MARKDOWN_CHANNEL,
   createProjectSearchHandlers
@@ -155,7 +160,7 @@ import { runWritingSmoke } from "./writing-smoke";
 import { runD5Smoke, runD5RestoreSmoke } from "./d5-smoke";
 import { runExportSmoke } from "./export-smoke";
 import { runGRestoreSmoke, runGSmoke } from "./g-smoke";
-import { runHSmoke } from "./h-smoke";
+import { runHNavigationAcceptanceSmoke, runHSmoke } from "./h-smoke";
 import { runH5Smoke } from "./h5-smoke";
 import { runWorkdeskPersistenceSmoke } from "./workdesk-persistence-smoke";
 import {
@@ -200,7 +205,11 @@ const h5Smoke = parseH5SmokeMode(process.argv);
 const workdeskPersistenceSmoke = parseWorkdeskPersistenceSmokeMode(process.argv);
 let workdeskPersistencePickerInvocationCount = 0;
 let hSmokePickerInvocationCount = 0;
-let hSmokeWorkdeskRoot: string | null = null;
+let hSmokeProjectPickerInvocationCount = 0;
+let hSmokeRegistrationPromptInvocationCount = 0;
+let hSmokeWorkdeskRoot: string | null = hSmoke.acceptance ? hSmoke.rootPath ?? null : null;
+let hSmokeProjectRoot: string | null = hSmoke.acceptance ? hSmoke.projectRootPath ?? null : null;
+const hSmokeProjectRoots: string[] = [];
 const smokeMode = quickSmokeMode
   || writingSmoke.requested
   || workspaceSmoke.requested
@@ -471,10 +480,20 @@ const workdeskHandlers = createWorkdeskHandlers({
     title: "Choose a folder for the new Workdesk",
     properties: ["openDirectory"]
   }),
-  pickExistingProjectFolder: () => dialog.showOpenDialog({
-    title: "Register existing Project",
-    properties: ["openDirectory"]
-  }),
+  pickExistingProjectFolder: () => {
+    if (hSmoke.requested) {
+      hSmokeProjectPickerInvocationCount += 1;
+      const rootPath = hSmokeProjectRoots[hSmokeProjectPickerInvocationCount - 1] ?? hSmokeProjectRoot;
+      return Promise.resolve({
+        canceled: !rootPath,
+        filePaths: rootPath ? [rootPath] : [],
+      });
+    }
+    return dialog.showOpenDialog({
+      title: "Add existing Project",
+      properties: ["openDirectory"]
+    });
+  },
   confirmAdoptWorkdesk: async () => {
     const options: MessageBoxOptions = {
       type: "warning",
@@ -490,6 +509,28 @@ const workdeskHandlers = createWorkdeskHandlers({
       ? await dialog.showMessageBox(options)
       : await dialog.showMessageBox(mainWindow, options);
     return response.response === 0;
+  },
+  confirmRegisterExistingProject: async (): Promise<ExistingProjectRegistrationChoice> => {
+    if (hSmoke.requested) {
+      hSmokeRegistrationPromptInvocationCount += 1;
+      if (hSmokeRegistrationPromptInvocationCount === 2) return "cancel";
+      if (hSmokeRegistrationPromptInvocationCount === 3) return "open-without-registration";
+      return "register";
+    }
+    const options: MessageBoxOptions = {
+      type: "question",
+      title: "WorkdeskにProjectを追加",
+      message: "このプロジェクトをWorkdeskに登録しますか？",
+      detail: "「はい」は登録して開きます。「いいえ」はWorkdeskに戻ります。「登録せずに開く」は一覧に登録せず、このProjectだけを開きます。",
+      buttons: [...WORKDESK_PROJECT_REGISTRATION_DIALOG_BUTTONS],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    };
+    const response = mainWindow === null
+      ? await dialog.showMessageBox(options)
+      : await dialog.showMessageBox(mainWindow, options);
+    return workdeskProjectRegistrationChoice(response.response);
   },
   service: workdeskService,
   projects: projectService,
@@ -1524,11 +1565,22 @@ function createMainWindow(): BrowserWindow {
       failH5Smoke(new Error(`Renderer process exited: ${details.reason}`));
     });
   } else if (hSmoke.requested) {
-    if (!hSmoke.rootPath) {
-      failHSmoke(new Error("The Workdesk smoke fixture root was not provided."));
+    if (!hSmoke.rootPath || (hSmoke.acceptance && !hSmoke.projectRootPath)) {
+      failHSmoke(new Error("The Workdesk smoke root or acceptance Project root was not provided."));
     } else {
       window.webContents.once("did-finish-load", () => {
-        void runHSmoke({
+        const smoke = hSmoke.acceptance
+          ? runHNavigationAcceptanceSmoke({
+            window,
+            workdeskRoot: hSmoke.rootPath!,
+            projectRoot: hSmoke.projectRootPath!,
+            restore: hSmoke.restore === true,
+            workdesks: workdeskService,
+            workdeskPickerInvocationCount: () => hSmokePickerInvocationCount,
+            projectPickerInvocationCount: () => hSmokeProjectPickerInvocationCount,
+            registrationPromptInvocationCount: () => hSmokeRegistrationPromptInvocationCount,
+          })
+          : runHSmoke({
           window,
           fixtureRoot: hSmoke.rootPath!,
           restore: hSmoke.restore === true,
@@ -1536,8 +1588,15 @@ function createMainWindow(): BrowserWindow {
           repositories: repositoryService,
           projects: projectService,
           workdeskPickerInvocationCount: () => hSmokePickerInvocationCount,
-          rememberWorkdeskRoot: (rootPath) => { hSmokeWorkdeskRoot = rootPath; }
-        }).then(
+          projectPickerInvocationCount: () => hSmokeProjectPickerInvocationCount,
+          registrationPromptInvocationCount: () => hSmokeRegistrationPromptInvocationCount,
+          rememberWorkdeskRoot: (rootPath) => { hSmokeWorkdeskRoot = rootPath; },
+          rememberProjectRoot: (rootPath) => {
+            if (hSmoke.acceptance) hSmokeProjectRoot = rootPath;
+            else hSmokeProjectRoots.push(rootPath);
+          }
+        });
+        void smoke.then(
           () => completeHSmoke(),
           (error: unknown) => failHSmoke(error)
         );
@@ -1626,7 +1685,9 @@ function createMainWindow(): BrowserWindow {
                 : h5Smoke.requested
                   ? { query: { smoke: "h5" } }
                 : hSmoke.requested
-                  ? { query: { smoke: "h" } }
+                  ? { query: { smoke: hSmoke.acceptance
+                    ? hSmoke.restore ? "h-acceptance-restore" : "h-acceptance"
+                    : hSmoke.restore ? "h-restore" : "h" } }
                 : gSmoke.requested
                   ? { query: { smoke: gSmoke.restore ? "g-restore" : "g" } }
                   : undefined;

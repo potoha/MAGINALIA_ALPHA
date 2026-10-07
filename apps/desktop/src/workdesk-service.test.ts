@@ -520,6 +520,75 @@ describe("Workdesk portable and local state", () => {
 });
 
 describe("Workdesk child Project boundary", () => {
+  it.each([null, "33333333-3333-4333-8333-333333333333"] as const)(
+    "rejects an existing Project with parent %s without rewriting its identity marker",
+    async (parentWorkdeskId) => {
+      const desk = await fixture("workbench", "Desk");
+      const project = await fixture("project", "External", parentWorkdeskId ?? undefined);
+      const markerPath = path.join(project.root, "project.magi");
+      const markerBytes = await readFile(markerPath);
+      const service = new WorkdeskService(new FileWorkdeskPathStore(path.join(desk.root, "local.json")));
+      const opened = await service.open(desk.root);
+
+      await expect(service.validateExternalProject(project.root, {
+        expectedWorkdeskIdentityId: opened.identity.id,
+        requireExistingMarker: true,
+      })).rejects.toMatchObject({ code: "mapping-conflict" });
+      expect(await readFile(markerPath)).toEqual(markerBytes);
+      await expect(readFile(path.join(desk.root, ".maginalia", "workdesk-projects.json")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      expect(await new FileWorkdeskPathStore(path.join(desk.root, "local.json")).loadForRestore()).toBeUndefined();
+    },
+  );
+
+  it("validates a renamed typed marker and registers portable identity plus local location idempotently", async () => {
+    const desk = await fixture("workbench", "Desk");
+    const project = await fixture("project", "卒論", desk.identity.id);
+    const markerPath = path.join(project.root, "project.magi");
+    const renamedMarkerPath = path.join(project.root, "卒論.magi");
+    await fs.rename(markerPath, renamedMarkerPath);
+    const profilePath = path.join(desk.root, "profile", "workdesk-paths.json");
+    const store = new FileWorkdeskPathStore(profilePath);
+    const service = new WorkdeskService(store);
+    const opened = await service.open(desk.root);
+    const boundary = await service.validateExternalProject(project.root, {
+      expectedWorkdeskIdentityId: opened.identity.id,
+      requireExistingMarker: true,
+    });
+
+    await service.registerProjectLocation(opened, boundary);
+    const portableBytes = await readFile(path.join(desk.root, ".maginalia", "workdesk-projects.json"));
+    await service.registerProjectLocation(opened, boundary);
+
+    expect(await readFile(path.join(desk.root, ".maginalia", "workdesk-projects.json"))).toEqual(portableBytes);
+    expect(await service.listRegisteredProjects(opened)).toEqual([
+      { projectIdentityId: project.identity.id, title: "卒論", available: true },
+    ]);
+    expect((await store.loadForRestore())?.workdesks[opened.identity.id]?.projects[project.identity.id]?.rootPath)
+      .toBe(await realpath(project.root));
+  });
+
+  it("restores the exact prior Workdesk index when the local path mapping cannot be saved", async () => {
+    const desk = await fixture("workbench", "Desk");
+    const project = await fixture("project", "External", desk.identity.id);
+    const indexPath = path.join(desk.root, ".maginalia", "workdesk-projects.json");
+    await mkdir(path.dirname(indexPath), { recursive: true });
+    const previousBytes = Buffer.from('{"schemaVersion":1,"projects":[]}\r\n', "utf8");
+    await writeFile(indexPath, previousBytes);
+    const store = new FileWorkdeskPathStore(path.join(desk.root, "profile", "workdesk-paths.json"));
+    vi.spyOn(store, "update").mockRejectedValue(new Error("injected local-state write failure"));
+    const service = new WorkdeskService(store);
+    const opened = await service.open(desk.root);
+    const boundary = await service.validateExternalProject(project.root, {
+      expectedWorkdeskIdentityId: opened.identity.id,
+      requireExistingMarker: true,
+    });
+
+    await expect(service.registerProjectLocation(opened, boundary)).rejects.toMatchObject({ code: "registration-failed" });
+    expect(await readFile(indexPath)).toEqual(previousBytes);
+    expect(await store.loadForRestore()).toBeUndefined();
+  });
+
   it("accepts only a direct non-symlink Project child and verifies its identity", async () => {
     const desk = await fixture("workbench", "Desk");
     const child = await fixture("project", "Child", desk.identity.id);
@@ -570,10 +639,12 @@ describe("Workdesk child Project boundary", () => {
 
   it("retains unavailable portable registrations while resolving only matching local Projects", async () => {
     const desk = await fixture("workbench", "Desk");
-    const project = await fixture("project", "Project");
+    const project = await fixture("project", "Project", desk.identity.id);
     const service = new WorkdeskService(new FileWorkdeskPathStore(path.join(desk.root, "local.json")));
     const opened = await service.open(desk.root);
-    const boundary = await service.validateExternalProject(project.root);
+    const boundary = await service.validateExternalProject(project.root, {
+      expectedWorkdeskIdentityId: opened.identity.id,
+    });
     await service.registerPortableProject(opened, project.identity);
     expect((await service.listRegisteredProjects(opened))[0]).toMatchObject({ available: false, title: "Project" });
     await service.registerProjectPath(opened, boundary);

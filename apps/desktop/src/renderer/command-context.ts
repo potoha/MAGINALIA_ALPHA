@@ -33,6 +33,7 @@ export const COMMAND_CONTEXT_KEYS = [
   // Portable parent navigation state; still a scalar, never a path or a
   // Workdesk service object. It scopes Workdesk-only creation commands.
   "workdesk.active",
+  "workdesk.homeActive",
   "workdesk.homeAvailable",
   // True only while the current Explorer displays a child Project of that
   // active Workdesk.

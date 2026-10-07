@@ -68,6 +68,8 @@ export type WorkdeskBoundaryFailureCode =
   | "unsafe-path"
   | "not-child-project"
   | "mapping-conflict"
+  | "registration-failed"
+  | "registration-rollback-failed"
   | "adoption-not-allowed"
   | "adoption-changed"
   | "adoption-failed"
@@ -259,6 +261,26 @@ function projectIndexEntry(value: unknown): WorkdeskProjectIndexEntry | undefine
   return Object.freeze({ projectIdentityId, title });
 }
 
+function strictWorkdeskProjectIndex(value: unknown): WorkdeskProjectIndex | undefined {
+  if (!isPlainObject(value) || Reflect.ownKeys(value).length !== 2
+    || value.schemaVersion !== WORKDESK_PROJECT_INDEX_SCHEMA_VERSION || !Array.isArray(value.projects)) return undefined;
+  const entries: WorkdeskProjectIndexEntry[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value.projects) {
+    const entry = projectIndexEntry(candidate);
+    if (!entry || seen.has(entry.projectIdentityId.toLowerCase())) return undefined;
+    seen.add(entry.projectIdentityId.toLowerCase());
+    entries.push(entry);
+  }
+  return Object.freeze({ schemaVersion: 1, projects: Object.freeze(entries) });
+}
+
+interface PortableIndexSnapshot {
+  readonly index: WorkdeskProjectIndex;
+  readonly bytes?: Buffer;
+  readonly directoryExisted: boolean;
+}
+
 /** Missing/corrupt optional index is a safe empty list, never an open failure. */
 export function parseWorkdeskProjectIndex(value: unknown): WorkdeskProjectIndex {
   if (!isPlainObject(value) || value.schemaVersion !== WORKDESK_PROJECT_INDEX_SCHEMA_VERSION || !Array.isArray(value.projects)) {
@@ -444,6 +466,7 @@ export class FileWorkdeskPathStore {
 export class WorkdeskService {
   private readonly adoptionCandidates = new WeakMap<object, PreparedWorkdeskAdoption>();
   private readonly adoptionLocks = new Map<string, Promise<void>>();
+  private readonly registrationQueues = new Map<string, Promise<void>>();
 
   public constructor(private readonly localStore: FileWorkdeskPathStore) {}
 
@@ -868,11 +891,36 @@ export class WorkdeskService {
   }
 
   /** Validate a registered external Project without persisting a renderer-supplied path. */
-  public async validateExternalProject(root: string): Promise<ValidatedChildProjectBoundary> {
+  public async validateExternalProject(
+    root: string,
+    options: { readonly expectedWorkdeskIdentityId?: string; readonly requireExistingMarker?: boolean } = {},
+  ): Promise<ValidatedChildProjectBoundary> {
     const canonicalRoot = await assertSafeRoot(root);
+    if (options.requireExistingMarker) {
+      const markers = await inspectFolderMarkers(canonicalRoot);
+      if (markers.kind === "conflict") {
+        throw new WorkdeskBoundaryError("marker-conflict", "This Project contains conflicting valid identity markers. Resolve the marker conflict before adding it to Workdesk.");
+      }
+      if (markers.kind !== "valid") {
+        throw new WorkdeskBoundaryError("missing-marker", "This folder has no valid Project identity marker. Open or repair the Project before adding it to Workdesk.");
+      }
+      if (markers.marker.type !== "project") {
+        throw new WorkdeskBoundaryError("wrong-kind", "The selected folder is not marked as a MAGINALIA Project.");
+      }
+      const parent = markers.marker.parent;
+      if (options.expectedWorkdeskIdentityId
+        && parent?.toLowerCase() !== options.expectedWorkdeskIdentityId.toLowerCase()) {
+        const message = parent === null
+          ? "This Project is not linked to the current Workdesk. Its identity marker was left unchanged."
+          : "This Project is linked to a different Workdesk. Add it from that Workdesk; its identity marker was left unchanged.";
+        throw new WorkdeskBoundaryError("mapping-conflict", message);
+      }
+    }
     let resolved: Awaited<ReturnType<typeof resolveFolderMarker>>;
     try {
-      resolved = await resolveFolderMarker(canonicalRoot, "project");
+      resolved = await resolveFolderMarker(canonicalRoot, "project", options.expectedWorkdeskIdentityId
+        ? { parentWorkdeskId: options.expectedWorkdeskIdentityId }
+        : {});
     } catch (error: unknown) {
       if (error instanceof FolderMarkerError) throw asFolderMarkerBoundaryError(error, "invalid-project");
       throw error;
@@ -881,7 +929,18 @@ export class WorkdeskService {
     if (identity.kind !== "project") {
       throw new WorkdeskBoundaryError("wrong-kind", "Only a MAGINALIA Project can be registered.");
     }
-    return Object.freeze({ workdeskIdentityId: "", projectIdentity: identity, canonicalRoot });
+    if (options.expectedWorkdeskIdentityId && resolved.marker.type === "project"
+      && resolved.marker.parent?.toLowerCase() !== options.expectedWorkdeskIdentityId.toLowerCase()) {
+      const message = resolved.marker.parent === null
+        ? "This Project is not linked to the current Workdesk. Its identity marker was left unchanged."
+        : "This Project is linked to a different Workdesk. Add it from that Workdesk; its identity marker was left unchanged.";
+      throw new WorkdeskBoundaryError("mapping-conflict", message);
+    }
+    return Object.freeze({
+      workdeskIdentityId: options.expectedWorkdeskIdentityId ?? "",
+      projectIdentity: identity,
+      canonicalRoot,
+    });
   }
 
   /**
@@ -977,6 +1036,109 @@ export class WorkdeskService {
       : Object.freeze({ schemaVersion: 1 as const, projects: Object.freeze([...existing.projects, Object.freeze({ projectIdentityId: projectIdentity.id, title: projectIdentity.title })]) });
     await this.savePortableIndex(workdesk, next);
     return next;
+  }
+
+  /**
+   * Commit a Workdesk Project membership and this PC's location together.
+   * The portable index is restored exactly if the local mapping write fails.
+   */
+  public async registerProjectLocation(
+    workdesk: ValidatedWorkdesk,
+    project: ValidatedChildProjectBoundary,
+  ): Promise<void> {
+    if (project.projectIdentity.kind !== "project"
+      || !isUuid(project.projectIdentity.id)
+      || !isTitle(project.projectIdentity.title)
+      || project.workdeskIdentityId.toLowerCase() !== workdesk.identity.id.toLowerCase()
+      || !path.isAbsolute(project.canonicalRoot)) {
+      throw new WorkdeskBoundaryError("mapping-conflict", "This Project does not belong to the active Workdesk.");
+    }
+
+    return this.serializeRegistration(workdesk.canonicalRoot, async () => {
+      const verifiedProject = await this.validateExternalProject(project.canonicalRoot, {
+        expectedWorkdeskIdentityId: workdesk.identity.id,
+      });
+      if (verifiedProject.projectIdentity.id.toLowerCase() !== project.projectIdentity.id.toLowerCase()
+        || !samePath(verifiedProject.canonicalRoot, project.canonicalRoot)) {
+        throw new WorkdeskBoundaryError("mapping-conflict", "The Project identity changed while registration was being prepared.");
+      }
+      project = verifiedProject;
+      const portableSnapshot = await this.readPortableIndexSnapshot(workdesk);
+      const localSnapshot = await this.localStore.loadForRestore() ?? EMPTY_WORKDESK_LOCAL_STATE;
+      const portableEntry = portableSnapshot.index.projects.find((entry) =>
+        entry.projectIdentityId.toLowerCase() === project.projectIdentity.id.toLowerCase());
+      if (portableEntry && portableEntry.title !== project.projectIdentity.title) {
+        throw new WorkdeskBoundaryError("mapping-conflict", "The registered Project title no longer matches its identity.");
+      }
+
+      const localDesk = Object.entries(localSnapshot.workdesks).find(([identityId]) =>
+        identityId.toLowerCase() === workdesk.identity.id.toLowerCase())?.[1];
+      const localMapping = Object.entries(localDesk?.projects ?? {}).find(([identityId]) =>
+        identityId.toLowerCase() === project.projectIdentity.id.toLowerCase());
+      if (localMapping && !samePath(localMapping[1].rootPath, project.canonicalRoot)) {
+        throw new WorkdeskBoundaryError("mapping-conflict", "This Project identity is already mapped to another folder.");
+      }
+      if (portableEntry && localMapping) return;
+
+      let committedBytes: Buffer | undefined;
+      if (!portableEntry) {
+        const next = Object.freeze({
+          schemaVersion: 1 as const,
+          projects: Object.freeze([
+            ...portableSnapshot.index.projects,
+            Object.freeze({ projectIdentityId: project.projectIdentity.id, title: project.projectIdentity.title }),
+          ]),
+        });
+        committedBytes = Buffer.from(`${JSON.stringify(next, null, 2)}\n`, "utf8");
+        await this.writePortableIndexBytes(workdesk, committedBytes, portableSnapshot);
+      }
+
+      try {
+        if (!localMapping) {
+          await this.localStore.update((stored) => {
+            const deskEntry = Object.entries(stored.workdesks).find(([identityId]) =>
+              identityId.toLowerCase() === workdesk.identity.id.toLowerCase());
+            const deskKey = deskEntry?.[0] ?? workdesk.identity.id;
+            const desk = deskEntry?.[1] ?? { projects: Object.freeze({}) };
+            const existing = Object.entries(desk.projects).find(([identityId]) =>
+              identityId.toLowerCase() === project.projectIdentity.id.toLowerCase());
+            if (existing && !samePath(existing[1].rootPath, project.canonicalRoot)) {
+              throw new WorkdeskBoundaryError("mapping-conflict", "This Project identity is already mapped to another folder.");
+            }
+            if (existing) return stored;
+            return Object.freeze({
+              ...stored,
+              workdesks: Object.freeze({
+                ...stored.workdesks,
+                [deskKey]: Object.freeze({
+                  ...desk,
+                  projects: Object.freeze({
+                    ...desk.projects,
+                    [project.projectIdentity.id]: Object.freeze({ rootPath: project.canonicalRoot }),
+                  }),
+                }),
+              }),
+            });
+          });
+        }
+      } catch (error) {
+        if (committedBytes) {
+          try {
+            await this.restorePortableIndexSnapshot(workdesk, portableSnapshot, committedBytes);
+          } catch (rollbackError) {
+            throw new WorkdeskBoundaryError(
+              "registration-rollback-failed",
+              `The Project could not be registered, and Workdesk safely retained the portable registration because rollback failed: ${rollbackError instanceof Error ? rollbackError.message : "unknown error"}`,
+            );
+          }
+        }
+        if (error instanceof WorkdeskBoundaryError) throw error;
+        throw new WorkdeskBoundaryError(
+          "registration-failed",
+          error instanceof Error ? `The Project could not be registered on this PC: ${error.message}` : "The Project could not be registered on this PC.",
+        );
+      }
+    });
   }
 
   /**
@@ -1092,7 +1254,9 @@ export class WorkdeskService {
       let available = false;
       if (mapping) {
         try {
-          const boundary = await this.validateExternalProject(mapping.rootPath);
+          const boundary = await this.validateExternalProject(mapping.rootPath, {
+            expectedWorkdeskIdentityId: workdesk.identity.id,
+          });
           available = boundary.projectIdentity.id.toLowerCase() === entry.projectIdentityId.toLowerCase();
         } catch {
           available = false;
@@ -1116,10 +1280,109 @@ export class WorkdeskService {
     const local = await this.localStore.load();
     const root = local.workdesks[workdesk.identity.id]?.projects[projectIdentityId]?.rootPath;
     if (!root) throw new WorkdeskBoundaryError("invalid-project", "This Project is unavailable on this PC.");
-    const project = await this.validateExternalProject(root);
+    const project = await this.validateExternalProject(root, {
+      expectedWorkdeskIdentityId: workdesk.identity.id,
+    });
     if (project.projectIdentity.id.toLowerCase() !== projectIdentityId.toLowerCase()) {
       throw new WorkdeskBoundaryError("mapping-conflict", "The local Project no longer matches its Workdesk registration.");
     }
     return project;
+  }
+
+  private async readPortableIndexSnapshot(workdesk: ValidatedWorkdesk): Promise<PortableIndexSnapshot> {
+    const directory = path.join(workdesk.canonicalRoot, ".maginalia");
+    const indexPath = path.join(directory, "workdesk-projects.json");
+    let directoryExisted = false;
+    try {
+      const directoryStat = await fs.lstat(directory);
+      if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+        throw new WorkdeskBoundaryError("invalid-workdesk", "The Workdesk Project index folder is not safe to update.");
+      }
+      directoryExisted = true;
+    } catch (error) {
+      if (error instanceof WorkdeskBoundaryError) throw error;
+      if (!(error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
+    }
+    try {
+      const stat = await fs.lstat(indexPath);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        throw new WorkdeskBoundaryError("invalid-workdesk", "The Workdesk Project index cannot be updated safely.");
+      }
+      const bytes = await fs.readFile(indexPath);
+      let parsed: unknown;
+      try { parsed = JSON.parse(bytes.toString("utf8")); }
+      catch { throw new WorkdeskBoundaryError("invalid-workdesk", "The Workdesk Project list is damaged and was left unchanged."); }
+      const index = strictWorkdeskProjectIndex(parsed);
+      if (!index) throw new WorkdeskBoundaryError("invalid-workdesk", "The Workdesk Project list is invalid and was left unchanged.");
+      return Object.freeze({ index, bytes, directoryExisted });
+    } catch (error) {
+      if (error instanceof WorkdeskBoundaryError) throw error;
+      if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+        return Object.freeze({ index: parseWorkdeskProjectIndex(undefined), directoryExisted });
+      }
+      throw error;
+    }
+  }
+
+  private async writePortableIndexBytes(
+    workdesk: ValidatedWorkdesk,
+    bytes: Buffer,
+    previous: PortableIndexSnapshot,
+  ): Promise<void> {
+    const current = await this.readPortableIndexSnapshot(workdesk);
+    if ((current.bytes === undefined) !== (previous.bytes === undefined)
+      || (current.bytes && previous.bytes && !current.bytes.equals(previous.bytes))) {
+      throw new WorkdeskBoundaryError("mapping-conflict", "The Workdesk Project list changed while registration was being prepared. Try again.");
+    }
+    const directory = path.join(workdesk.canonicalRoot, ".maginalia");
+    const indexPath = path.join(directory, "workdesk-projects.json");
+    await fs.mkdir(directory, { recursive: true });
+    const temporary = `${indexPath}.${process.pid}.${randomUUID()}.tmp`;
+    await fs.writeFile(temporary, bytes, { flag: "wx" });
+    try {
+      await fs.rename(temporary, indexPath);
+    } catch (error) {
+      await fs.unlink(temporary).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async restorePortableIndexSnapshot(
+    workdesk: ValidatedWorkdesk,
+    previous: PortableIndexSnapshot,
+    committedBytes: Buffer,
+  ): Promise<void> {
+    const directory = path.join(workdesk.canonicalRoot, ".maginalia");
+    const indexPath = path.join(directory, "workdesk-projects.json");
+    let current: Buffer;
+    try { current = await fs.readFile(indexPath); }
+    catch { throw new Error("the committed Workdesk Project list could not be read for rollback"); }
+    if (!current.equals(committedBytes)) {
+      throw new Error("the Workdesk Project list changed after registration; it was not overwritten");
+    }
+    if (previous.bytes) {
+      const temporary = `${indexPath}.${process.pid}.${randomUUID()}.rollback.tmp`;
+      await fs.writeFile(temporary, previous.bytes, { flag: "wx" });
+      try { await fs.rename(temporary, indexPath); }
+      catch (error) { await fs.unlink(temporary).catch(() => undefined); throw error; }
+    } else {
+      await fs.unlink(indexPath);
+      if (!previous.directoryExisted) await fs.rmdir(directory).catch(() => undefined);
+    }
+  }
+
+  private async serializeRegistration<T>(workdeskRoot: string, operation: () => Promise<T>): Promise<T> {
+    const key = process.platform === "win32" ? workdeskRoot.toLowerCase() : workdeskRoot;
+    const previous = this.registrationQueues.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const queued = previous.then(() => gate);
+    this.registrationQueues.set(key, queued);
+    await previous;
+    try { return await operation(); }
+    finally {
+      release();
+      if (this.registrationQueues.get(key) === queued) this.registrationQueues.delete(key);
+    }
   }
 }

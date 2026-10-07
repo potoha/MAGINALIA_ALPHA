@@ -18,9 +18,19 @@ try {
   assertElectronSmokeMarker(first, marker, "Electron H create smoke");
 
   const entries = await readdir(temporaryDirectory, { withFileTypes: true });
-  const deskEntry = entries.find((entry) => entry.isDirectory() && entry.name !== "electron-user-data");
-  if (!deskEntry) throw new Error("Workdesk folder was not created.");
-  const deskRoot = path.join(temporaryDirectory, deskEntry.name);
+  let deskRoot;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === "electron-user-data") continue;
+    const candidate = path.join(temporaryDirectory, entry.name);
+    try {
+      const markerText = await readFile(path.join(candidate, "workdesk.magi"), "utf8");
+      if (markerText.includes("type = workdesk")) {
+        deskRoot = candidate;
+        break;
+      }
+    } catch { /* The temporary directory also contains standalone Project fixtures. */ }
+  }
+  if (!deskRoot) throw new Error("Workdesk folder was not created.");
   const memo = await readFile(path.join(deskRoot, "memo.md"), "utf8");
   if (!memo.includes("H Smoke Memo")) throw new Error("Workdesk loose memo was not created.");
   const childRoot = path.join(deskRoot, "projects");

@@ -13,6 +13,8 @@ export const G_SMOKE_FLAG = "--smoke-g";
 export const G_RESTORE_SMOKE_FLAG = "--smoke-g-restore";
 export const H_SMOKE_FLAG = "--smoke-h";
 export const H_RESTORE_SMOKE_FLAG = "--smoke-h-restore";
+export const H_ACCEPTANCE_SMOKE_FLAG = "--smoke-h-acceptance";
+export const H_ACCEPTANCE_RESTORE_SMOKE_FLAG = "--smoke-h-acceptance-restore";
 export const H5_SMOKE_FLAG = "--smoke-h5";
 export const WORKDESK_PERSISTENCE_SMOKE_FLAG = "--smoke-workdesk-persistence";
 export const WORKDESK_PERSISTENCE_RESTORE_SMOKE_FLAG = "--smoke-workdesk-persistence-restore";
@@ -70,7 +72,9 @@ export interface GSmokeMode {
 export interface HSmokeMode {
   readonly requested: boolean;
   readonly rootPath?: string;
+  readonly projectRootPath?: string;
   readonly restore?: boolean;
+  readonly acceptance?: boolean;
 }
 
 export interface H5SmokeMode {
@@ -190,6 +194,29 @@ export function parseGSmokeMode(args: readonly string[]): GSmokeMode {
 }
 
 export function parseHSmokeMode(args: readonly string[]): HSmokeMode {
+  const acceptanceRestoreIndex = args.indexOf(H_ACCEPTANCE_RESTORE_SMOKE_FLAG);
+  if (acceptanceRestoreIndex >= 0) {
+    return {
+      requested: true,
+      restore: true,
+      acceptance: true,
+      ...(args[acceptanceRestoreIndex + 1] && !args[acceptanceRestoreIndex + 1]!.startsWith("--")
+        ? { rootPath: args[acceptanceRestoreIndex + 1] } : {}),
+      ...(args[acceptanceRestoreIndex + 2] && !args[acceptanceRestoreIndex + 2]!.startsWith("--")
+        ? { projectRootPath: args[acceptanceRestoreIndex + 2] } : {}),
+    };
+  }
+  const acceptanceIndex = args.indexOf(H_ACCEPTANCE_SMOKE_FLAG);
+  if (acceptanceIndex >= 0) {
+    return {
+      requested: true,
+      acceptance: true,
+      ...(args[acceptanceIndex + 1] && !args[acceptanceIndex + 1]!.startsWith("--")
+        ? { rootPath: args[acceptanceIndex + 1] } : {}),
+      ...(args[acceptanceIndex + 2] && !args[acceptanceIndex + 2]!.startsWith("--")
+        ? { projectRootPath: args[acceptanceIndex + 2] } : {}),
+    };
+  }
   const restoreIndex = args.indexOf(H_RESTORE_SMOKE_FLAG);
   if (restoreIndex >= 0) {
     const candidate = args[restoreIndex + 1];
