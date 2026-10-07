@@ -18,17 +18,17 @@ interface ProjectRendererState {
 const READ_STATE_SCRIPT = `(() => {
   const editor = document.querySelector("#editor");
   const project = document.querySelector("#workspace-document-name");
-  const list = document.querySelector("#manuscript-list");
+  const list = document.querySelector("#explorer-tree");
   const status = document.querySelector("#document-status");
   const save = document.querySelector("#save-markdown");
   if (!editor || editor.dataset.smokeReady !== "project" || !project || !list || !status || !save) return null;
-  const buttons = [...list.querySelectorAll("button[data-manuscript-id]")];
+  const buttons = [...list.querySelectorAll("button[data-explorer-file-id]")];
   const active = buttons.find((button) => button.getAttribute("aria-current") === "page");
   return {
     ready: true,
     projectName: project.textContent ?? "",
-    files: buttons.map((button) => button.dataset.manuscriptName ?? button.textContent ?? ""),
-    activeFile: active?.dataset.manuscriptName ?? active?.textContent ?? null,
+    files: buttons.map((button) => button.dataset.explorerFileName ?? button.textContent ?? ""),
+    activeFile: active?.dataset.explorerFileName ?? active?.textContent ?? null,
     text: editor.dataset.smokeText ?? "",
     status: status.dataset.state ?? "",
     saveEnabled: !save.disabled
@@ -190,27 +190,27 @@ async function exerciseProjectMenuKeyboard(window: BrowserWindow): Promise<void>
 
 async function exerciseProjectRowKeyboard(window: BrowserWindow): Promise<void> {
   await runScript(window, `(() => {
-    const buttons = [...document.querySelectorAll("#manuscript-list button[data-manuscript-id]")];
+    const buttons = [...document.querySelectorAll("#explorer-tree button[data-explorer-file-id]")];
     if (buttons.length < 2 || !(buttons[0] instanceof HTMLButtonElement) || !(buttons.at(-1) instanceof HTMLButtonElement)) return false;
-    const activeId = buttons.find((button) => button.getAttribute("aria-current") === "page")?.dataset.manuscriptId;
+    const activeId = buttons.find((button) => button.getAttribute("aria-current") === "page")?.dataset.explorerFileId;
     const keydown = (element, key) => element.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
     buttons[0].focus();
     keydown(buttons[0], "ArrowDown");
-    if (buttons[0].getAttribute("aria-selected") !== "false" || buttons[1].getAttribute("aria-selected") !== "true") return false;
+    if (buttons[0].classList.contains("selected") || !buttons[1].classList.contains("selected")) return false;
     keydown(buttons[1], "Home");
-    if (buttons[0].getAttribute("aria-selected") !== "true") return false;
+    if (!buttons[0].classList.contains("selected")) return false;
     keydown(buttons[0], "End");
-    if (buttons.at(-1)?.getAttribute("aria-selected") !== "true") return false;
-    return buttons.find((button) => button.dataset.manuscriptId === activeId)?.getAttribute("aria-current") === "page";
+    if (!buttons.at(-1)?.classList.contains("selected")) return false;
+    return buttons.find((button) => button.dataset.explorerFileId === activeId)?.getAttribute("aria-current") === "page";
   })()`);
 }
 
 async function exerciseExplorerActions(window: BrowserWindow): Promise<void> {
   const result = await window.webContents.executeJavaScript(`(() => {
-    const file = document.querySelector('#manuscript-list button[data-manuscript-id]');
-    const row = file?.closest('.project-file-row');
+    const file = document.querySelector('#explorer-tree button[data-explorer-file-id]');
+    const row = file?.closest('.explorer-row');
     const actions = row?.querySelector('.explorer-row-actions');
-    if (!(file instanceof HTMLButtonElement) || !(row instanceof HTMLLIElement) || !(actions instanceof HTMLElement)) return null;
+    if (!(file instanceof HTMLButtonElement) || !(row instanceof HTMLDivElement) || !(actions instanceof HTMLElement)) return null;
     const labels = [...actions.querySelectorAll('button')].map((button) => button.textContent?.trim());
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     const hiddenByDefault = getComputedStyle(actions).display === 'none';
@@ -270,7 +270,7 @@ export async function runProjectSmoke(window: BrowserWindow, fixtureRoot: string
   if (!saved.includes("type: memo") || !saved.includes("追記")) throw new Error("Project smoke saved file did not retain metadata and edit.");
   await exerciseExplorerActions(window);
   await exerciseProjectRowKeyboard(window);
-  await runScript(window, `(() => { const button = [...document.querySelectorAll("#manuscript-list button[data-manuscript-id]")].find((candidate) => candidate.dataset.manuscriptName === "starter.md"); if (!(button instanceof HTMLButtonElement)) return false; button.focus(); button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); return true; })()`);
+  await runScript(window, `(() => { const button = [...document.querySelectorAll("#explorer-tree button[data-explorer-file-id]")].find((candidate) => candidate.dataset.explorerFileName === "starter.md"); if (!(button instanceof HTMLButtonElement)) return false; button.focus(); button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); return true; })()`);
   await waitForState(window, (state) => state.activeFile === "starter.md" && state.text === initialText && state.status === "saved", "existing file reopen");
 }
 
@@ -288,7 +288,37 @@ export async function runProjectRestoreSmoke(window: BrowserWindow, fixtureRoot:
       && state.status === "saved",
     "remembered Project and saved file after restart"
   );
-  await runScript(window, `(() => { const button = [...document.querySelectorAll("#manuscript-list button[data-manuscript-id]")].find((candidate) => candidate.dataset.manuscriptName === "Smoke memo.md"); if (!(button instanceof HTMLButtonElement)) return false; button.focus(); button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); return true; })()`);
+  const readTreeResult = () => window.webContents.executeJavaScript(`(() => {
+    const tree = document.querySelector("#explorer-tree");
+    const target = [...(tree?.querySelectorAll("button[data-explorer-file-name]") ?? [])]
+      .find((button) => button.dataset.explorerFileName === "資料/執筆/深い/研究ノート.md");
+    if (!(tree instanceof HTMLUListElement) || !(target instanceof HTMLButtonElement)) return null;
+    const ancestors = [];
+    let parentList = target.closest(".explorer-node")?.parentElement;
+    while (parentList instanceof HTMLUListElement && parentList !== tree) {
+      const folder = parentList.parentElement;
+      if (!(folder instanceof HTMLLIElement) || !folder.dataset.explorerFolderId) return null;
+      ancestors.push(folder.querySelector(":scope > .explorer-row .explorer-entry-title")?.textContent?.trim() ?? "");
+      parentList = folder.parentElement;
+    }
+    const title = target.querySelector(".explorer-entry-title");
+    return {
+      ancestors: ancestors.join("/"),
+      title: getComputedStyle(title).textOverflow,
+      whiteSpace: getComputedStyle(title).whiteSpace
+    };
+  })()`, true) as Promise<{ ancestors: string; title: string; whiteSpace: string } | null>;
+  const treeDeadline = Date.now() + STATE_TIMEOUT_MS;
+  let treeResult: { ancestors: string; title: string; whiteSpace: string } | null = null;
+  while (Date.now() < treeDeadline) {
+    treeResult = await readTreeResult();
+    if (treeResult?.ancestors === "深い/執筆/資料") break;
+    await delay(POLL_INTERVAL_MS);
+  }
+  if (!treeResult || treeResult.ancestors !== "深い/執筆/資料" || treeResult.title !== "ellipsis" || treeResult.whiteSpace !== "nowrap") {
+    throw new Error(`Project Explorer hierarchy or label truncation failed: ${JSON.stringify(treeResult)}.`);
+  }
+  await runScript(window, `(() => { const button = [...document.querySelectorAll("#explorer-tree button[data-explorer-file-id]")].find((candidate) => candidate.dataset.explorerFileName === "Smoke memo.md"); if (!(button instanceof HTMLButtonElement)) return false; button.focus(); button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); return true; })()`);
   await waitForState(window, (state) => state.activeFile === "Smoke memo.md" && state.text === restoredText && state.status === "saved", "reopen saved file after restart");
 }
 

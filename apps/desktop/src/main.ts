@@ -140,7 +140,8 @@ import {
   parseRepositorySmokeMode,
   parseShelfSmokeMode,
   parseWritingSmokeMode,
-  parseWorkspaceSmokeMode
+  parseWorkspaceSmokeMode,
+  parseWorkdeskPersistenceSmokeMode
 } from "./smoke-mode";
 import { runQuotationSmoke } from "./quotation-smoke";
 import { runProjectCreateSmoke, runProjectRestoreSmoke, runProjectSmoke } from "./project-smoke";
@@ -153,6 +154,7 @@ import { runExportSmoke } from "./export-smoke";
 import { runGRestoreSmoke, runGSmoke } from "./g-smoke";
 import { runHSmoke } from "./h-smoke";
 import { runH5Smoke } from "./h5-smoke";
+import { runWorkdeskPersistenceSmoke } from "./workdesk-persistence-smoke";
 import {
   LOAD_WORKSPACE_STATE_CHANNEL,
   SAVE_WORKSPACE_STATE_CHANNEL,
@@ -186,6 +188,8 @@ const exportSmoke = parseExportSmokeMode(process.argv);
 const gSmoke = parseGSmokeMode(process.argv);
 const hSmoke = parseHSmokeMode(process.argv);
 const h5Smoke = parseH5SmokeMode(process.argv);
+const workdeskPersistenceSmoke = parseWorkdeskPersistenceSmokeMode(process.argv);
+let workdeskPersistencePickerInvocationCount = 0;
 const smokeMode = quickSmokeMode
   || writingSmoke.requested
   || workspaceSmoke.requested
@@ -197,7 +201,8 @@ const smokeMode = quickSmokeMode
   || exportSmoke.requested
   || gSmoke.requested
   || hSmoke.requested
-  || h5Smoke.requested;
+  || h5Smoke.requested
+  || workdeskPersistenceSmoke.requested;
 const markdownFileService = new MarkdownFileService();
 const workspaceStateStore = new FileWorkspaceStateStore(path.join(app.getPath("userData"), "workspace-state.json"));
 const workspaceStateHandlers = createWorkspaceStateHandlers({
@@ -308,9 +313,9 @@ function createReviewerEmbeddedHostForMain() {
     return view;
   });
 }
-const workdeskService = new WorkdeskService(
-  new FileWorkdeskPathStore(path.join(app.getPath("userData"), "workdesk-paths.json"))
-);
+const userDataPath = app.getPath("userData");
+const workdeskPathStorePath = path.join(userDataPath, "workdesk-paths.json");
+const workdeskService = new WorkdeskService(new FileWorkdeskPathStore(workdeskPathStorePath));
 const repositoryService = new LocalRepositoryService({
   // Repository History asks only the main-process Workdesk coordinator for
   // validated direct-child boundaries; renderer paths never become ignores.
@@ -430,12 +435,22 @@ const projectHandlers = createProjectHandlers({
   )
 });
 const workdeskHandlers = createWorkdeskHandlers({
-  pickWorkdeskFolder: () => hSmoke.requested
-    ? Promise.resolve({ canceled: false, filePaths: hSmoke.rootPath ? [hSmoke.rootPath] : [] })
-    : dialog.showOpenDialog({
-    title: "Open Workdesk",
-    properties: ["openDirectory"]
-  }),
+  pickWorkdeskFolder: () => {
+    if (workdeskPersistenceSmoke.requested) {
+      workdeskPersistencePickerInvocationCount += 1;
+      const rootPath = workdeskPersistenceSmoke.rootPath;
+      return Promise.resolve(workdeskPersistenceSmoke.restore !== true && rootPath
+        ? { canceled: false, filePaths: [rootPath] }
+        : { canceled: true, filePaths: [] });
+    }
+    if (hSmoke.requested) {
+      return Promise.resolve({ canceled: false, filePaths: hSmoke.rootPath ? [hSmoke.rootPath] : [] });
+    }
+    return dialog.showOpenDialog({
+      title: "Open Workdesk",
+      properties: ["openDirectory"]
+    });
+  },
   pickWorkdeskParent: () => hSmoke.requested && !hSmoke.restore
     ? Promise.resolve({ canceled: false, filePaths: hSmoke.rootPath ? [hSmoke.rootPath] : [] })
     : dialog.showOpenDialog({
@@ -674,6 +689,7 @@ let exportSmokeFinished = false;
 let gSmokeFinished = false;
 let hSmokeFinished = false;
 let h5SmokeFinished = false;
+let workdeskPersistenceSmokeFinished = false;
 
 function isLiveMainWindowSender(owner: object): owner is WebContents {
   const window = mainWindow;
@@ -836,6 +852,22 @@ function completeHSmoke(): void {
   if (hSmokeFinished) return;
   hSmokeFinished = true;
   console.log("MAGINALIA_ELECTRON_H_SMOKE_OK");
+  app.quit();
+}
+
+function failWorkdeskPersistenceSmoke(error: unknown): void {
+  if (workdeskPersistenceSmokeFinished) return;
+  workdeskPersistenceSmokeFinished = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`MAGINALIA_ELECTRON_WORKDESK_PERSISTENCE_FAILED ${message}`);
+  app.exit(1);
+}
+
+function completeWorkdeskPersistenceSmoke(): void {
+  if (workdeskPersistenceSmokeFinished) return;
+  workdeskPersistenceSmokeFinished = true;
+  const stage = workdeskPersistenceSmoke.restore ? "restore" : "first-run";
+  console.log(`MAGINALIA_ELECTRON_WORKDESK_PERSISTENCE_OK stage=${stage} pickerCalls=${workdeskPersistencePickerInvocationCount} userData=${JSON.stringify(app.getPath("userData"))} pathStore=${JSON.stringify(workdeskPathStorePath)}`);
   app.quit();
 }
 
@@ -1089,6 +1121,7 @@ function createMainWindow(): BrowserWindow {
       || d5Smoke.requested
       || exportSmoke.requested
       || gSmoke.requested
+      || workdeskPersistenceSmoke.requested
       || h5Smoke.requested
       || !smokeMode,
     webPreferences: createSecureWebPreferences(path.join(__dirname, "preload.js"))
@@ -1099,7 +1132,34 @@ function createMainWindow(): BrowserWindow {
 
   const rendererPath = path.join(__dirname, "..", "renderer", "index.html");
 
-  if (writingSmoke.requested) {
+  if (workdeskPersistenceSmoke.requested) {
+    if (!workdeskPersistenceSmoke.rootPath) {
+      failWorkdeskPersistenceSmoke(new Error("The Workdesk persistence fixture path was not provided."));
+    } else {
+      window.webContents.once("did-finish-load", () => {
+        void runWorkdeskPersistenceSmoke({
+          window,
+          rootPath: workdeskPersistenceSmoke.rootPath!,
+          userDataPath: app.getPath("userData"),
+          expectedUserDataPath: process.env.MAGINALIA_SMOKE_EXPECTED_USER_DATA,
+          restore: workdeskPersistenceSmoke.restore === true,
+          pickerInvocationCount: () => workdeskPersistencePickerInvocationCount
+        }).then(
+          () => completeWorkdeskPersistenceSmoke(),
+          (error: unknown) => failWorkdeskPersistenceSmoke(error)
+        );
+      });
+      window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) failWorkdeskPersistenceSmoke(new Error(`Renderer load failed (${errorCode}): ${errorDescription}`));
+      });
+      window.webContents.on("preload-error", (_event, preloadPath, error) => {
+        failWorkdeskPersistenceSmoke(new Error(`Preload failed (${preloadPath}): ${error.message}`));
+      });
+      window.webContents.on("render-process-gone", (_event, details) => {
+        failWorkdeskPersistenceSmoke(new Error(`Renderer process exited: ${details.reason}`));
+      });
+    }
+  } else if (writingSmoke.requested) {
     if (!writingSmoke.filePath) {
       failWritingSmoke(new Error("The writing smoke fixture path was not provided."));
     } else {
@@ -1552,6 +1612,9 @@ function createMainWindow(): BrowserWindow {
     }
     if (hSmoke.requested && !hSmokeFinished) {
       failHSmoke(new Error("Workdesk smoke window closed before completion."));
+    }
+    if (workdeskPersistenceSmoke.requested && !workdeskPersistenceSmokeFinished) {
+      failWorkdeskPersistenceSmoke(new Error("Workdesk persistence smoke window closed before completion."));
     }
     if (h5Smoke.requested && !h5SmokeFinished) {
       failH5Smoke(new Error("Reviewer smoke window closed before completion."));

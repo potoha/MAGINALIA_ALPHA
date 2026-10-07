@@ -80,7 +80,7 @@ interface PreviewRendererState {
 const READ_STATE_SCRIPT = `(() => {
   const editor = document.querySelector("#editor");
   const project = document.querySelector("#workspace-document-name");
-  const manuscriptList = document.querySelector("#manuscript-list");
+  const explorerTree = document.querySelector("#explorer-tree");
   const status = document.querySelector("#document-status");
   const save = document.querySelector("#save-markdown");
   const exportButton = document.querySelector("#export-markdown");
@@ -95,11 +95,11 @@ const READ_STATE_SCRIPT = `(() => {
   const exportHeaderRight = document.querySelector("#export-header-right");
   const exportPageNumber = document.querySelector("#export-page-number");
   const exportStatus = document.querySelector("#export-status");
-  if (!editor || editor.dataset.smokeReady !== "project" || !project || !manuscriptList
+  if (!editor || editor.dataset.smokeReady !== "project" || !project || !explorerTree
     || !status || !save || !exportButton || !exportPdfButton || !exportDocxButton || !exportSettingsPanel
     || !exportPaperSize || !exportOrientation || !exportParagraphIndent || !exportHeaderLeft
     || !exportHeaderCenter || !exportHeaderRight || !exportPageNumber || !exportStatus) return null;
-  const active = [...manuscriptList.querySelectorAll("button[data-manuscript-id]")]
+  const active = [...explorerTree.querySelectorAll("button[data-explorer-file-id]")]
     .find((button) => button.getAttribute("aria-current") === "page");
   const tabs = [...document.querySelectorAll("#document-tabs .document-tab")].map((tab) => ({
     name: tab.querySelector(".document-tab-label")?.textContent ?? "",
@@ -108,7 +108,7 @@ const READ_STATE_SCRIPT = `(() => {
   return {
     smokeReady: true,
     projectName: project.textContent ?? "",
-    activeFile: active?.dataset.manuscriptName ?? active?.textContent ?? null,
+    activeFile: active?.dataset.explorerFileName ?? active?.textContent ?? null,
     text: editor.dataset.smokeText ?? "",
     status: status.dataset.state ?? "",
     saveEnabled: !save.disabled,
@@ -272,8 +272,8 @@ async function clickButton(window: BrowserWindow, selector: string, description:
 
 async function clickFile(window: BrowserWindow, name: string): Promise<void> {
   await runScript(window, `(() => {
-    const button = [...document.querySelectorAll("#manuscript-list button[data-manuscript-id]")]
-      .find((candidate) => candidate.dataset.manuscriptName === ${JSON.stringify(name)});
+    const button = [...document.querySelectorAll("#explorer-tree button[data-explorer-file-id]")]
+      .find((candidate) => candidate.dataset.explorerFileName === ${JSON.stringify(name)});
     if (!(button instanceof HTMLButtonElement)) return false;
     button.click();
     return true;

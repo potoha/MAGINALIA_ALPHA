@@ -31,13 +31,13 @@ interface D5RendererState {
 const READ_STATE_SCRIPT = `(() => {
   const editor = document.querySelector("#editor");
   const project = document.querySelector("#workspace-document-name");
-  const list = document.querySelector("#manuscript-list");
+  const list = document.querySelector("#explorer-tree");
   const status = document.querySelector("#document-status");
   const mods = document.querySelector("#mods-status");
   const references = document.querySelector("#references-status");
   const shelf = document.querySelector("#library-navigation");
   if (!editor || editor.dataset.smokeReady !== "project" || !project || !list || !status || !mods || !references || !shelf) return null;
-  const active = [...list.querySelectorAll("button[data-manuscript-id]")].find((button) => button.getAttribute("aria-current") === "page");
+  const active = [...list.querySelectorAll("button[data-explorer-file-id]")].find((button) => button.getAttribute("aria-current") === "page");
   const tabs = [...document.querySelectorAll("#document-tabs .document-tab")].map((tab) => {
     const button = tab.querySelector(".document-tab-label");
     return {
@@ -50,7 +50,7 @@ const READ_STATE_SCRIPT = `(() => {
   return {
     ready: true,
     projectName: project.textContent ?? "",
-    activeFile: active?.dataset.manuscriptName ?? active?.textContent ?? null,
+    activeFile: active?.dataset.explorerFileName ?? active?.textContent ?? null,
     text: editor.dataset.smokeText ?? "",
     status: status.dataset.state ?? "",
     tabs,
@@ -111,8 +111,8 @@ async function runScript(window: BrowserWindow, script: string, description: str
 
 async function clickFile(window: BrowserWindow, name: string): Promise<void> {
   await runScript(window, `(() => {
-    const button = [...document.querySelectorAll("#manuscript-list button[data-manuscript-id]")]
-      .find((candidate) => candidate.dataset.manuscriptName === ${JSON.stringify(name)});
+    const button = [...document.querySelectorAll("#explorer-tree button[data-explorer-file-id]")]
+      .find((candidate) => candidate.dataset.explorerFileName === ${JSON.stringify(name)});
     if (!(button instanceof HTMLButtonElement)) return false;
     button.click();
     return true;

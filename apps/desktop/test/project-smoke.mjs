@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { assertElectronSmokeMarker, runElectronSmoke } from "./electron-smoke-launcher.mjs";
@@ -20,6 +20,9 @@ try {
   if (!saved.includes("type: memo") || !saved.includes("作成")) {
     throw new Error(`Project smoke file did not retain metadata and edit: ${JSON.stringify(saved)}`);
   }
+  const nestedDirectory = path.join(projectRoot, "資料", "執筆", "深い");
+  await mkdir(nestedDirectory, { recursive: true });
+  await writeFile(path.join(nestedDirectory, "研究ノート.md"), "# Tree smoke\n\nNested Explorer entry.\n", "utf8");
   const restored = await runElectronSmoke({
     userDataRoot: userDataDirectory,
     appArgs: ["--smoke-project-restore", projectRoot]

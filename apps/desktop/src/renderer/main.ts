@@ -190,7 +190,7 @@ app.innerHTML = `
               </form>
             </div>
             <p id="empty-document-message" class="empty-document-message">Open a Project folder to see its Markdown files.</p>
-            <ul id="manuscript-list" class="manuscript-list" role="listbox" aria-label="Markdown manuscripts"></ul>
+            <ul id="explorer-tree" class="explorer-tree" aria-label="Explorer"></ul>
           </section>
           <section id="repository-navigation" class="repository-navigation view-panel" aria-labelledby="repository-heading">
             <div class="repository-heading-row">
@@ -483,7 +483,7 @@ const workspaceLabel = requiredElement<HTMLElement>("#workspace-label");
 const workspaceDocumentName = requiredElement<HTMLElement>("#workspace-document-name");
 const workspaceError = requiredElement<HTMLElement>("#workspace-error");
 const emptyDocumentMessage = requiredElement<HTMLElement>("#empty-document-message");
-const manuscriptList = requiredElement<HTMLUListElement>("#manuscript-list");
+const explorerTree = requiredElement<HTMLUListElement>("#explorer-tree");
 const workdeskProjectActions = requiredElement<HTMLElement>("#workdesk-project-actions");
 const workdeskNewProjectButton = requiredElement<HTMLButtonElement>("#workdesk-new-project");
 const workdeskRegisterProjectButton = requiredElement<HTMLButtonElement>("#workdesk-register-project");
@@ -2097,9 +2097,8 @@ controller.onSessionChange(renderDocumentTabs);
 function renderWorkspaceState(state: WorkspaceNavigationState): void {
   workspaceLabel.textContent = "Document";
   workspaceDocumentName.textContent = state.document?.displayName ?? "No Document open";
-  manuscriptList.removeAttribute("role");
-  manuscriptList.dataset.navigationMode = "workspace";
-  manuscriptList.replaceChildren();
+  explorerTree.setAttribute("aria-label", "Document Explorer");
+  explorerTree.replaceChildren();
 
   if (!state.document) {
     emptyDocumentMessage.textContent = "Open a Document folder to see its Markdown manuscripts.";
@@ -2115,17 +2114,30 @@ function renderWorkspaceState(state: WorkspaceNavigationState): void {
   emptyDocumentMessage.hidden = true;
   for (const manuscript of state.manuscripts) {
     const item = document.createElement("li");
+    item.className = "explorer-node";
+    const row = document.createElement("div");
+    row.className = "explorer-row";
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "manuscript-button";
-    button.textContent = manuscript.displayName;
-    button.dataset.manuscriptId = manuscript.manuscriptId;
+    button.className = "explorer-entry-button explorer-file-button";
+    button.dataset.explorerFileId = manuscript.manuscriptId;
+    button.dataset.explorerFileName = manuscript.displayName;
+    button.title = manuscript.displayName;
+    const icon = document.createElement("span");
+    icon.className = "explorer-entry-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = "📄";
+    const title = document.createElement("span");
+    title.className = "explorer-entry-title";
+    title.textContent = manuscript.displayName;
+    button.append(icon, title);
     if (state.activeManuscriptId === manuscript.manuscriptId) {
       button.classList.add("active");
       button.setAttribute("aria-current", "page");
     }
-    item.append(button);
-    manuscriptList.append(item);
+    row.append(button);
+    item.append(row);
+    explorerTree.append(item);
   }
 }
 
@@ -2147,23 +2159,27 @@ queueMicrotask(() => {
 function renderWorkdeskProjectNodes(projects: readonly WorkdeskProjectExplorerShortcut[]): void {
   for (const project of projects) {
     const item = document.createElement("li");
-    item.className = "project-file-row workdesk-project-node";
+    item.className = "explorer-node workdesk-project-node";
+    const row = document.createElement("div");
+    row.className = "explorer-row";
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "manuscript-button explorer-folder workdesk-project-shortcut";
-    button.setAttribute("role", "option");
-    button.setAttribute("aria-selected", "false");
+    button.className = "explorer-entry-button explorer-folder-button explorer-project-button workdesk-project-shortcut";
     button.setAttribute("aria-label", project.available
       ? `Open Project ${project.title}`
       : `Registered Project ${project.title}, unavailable on this PC. Select to retry opening.`);
     button.dataset.workdeskProjectShortcut = project.projectIdentityId;
+    const icon = document.createElement("span");
+    icon.className = "explorer-entry-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = "📁";
     const title = document.createElement("span");
-    title.className = "project-file-title";
-    title.textContent = `📁 ${project.title}`;
+    title.className = "explorer-entry-title";
+    title.textContent = project.title;
     const type = document.createElement("small");
-    type.className = "project-file-type";
+    type.className = "explorer-file-type";
     type.textContent = project.available ? "Project" : "Unavailable";
-    button.append(title, type);
+    button.append(icon, title, type);
     button.title = project.available ? `Project: ${project.title}` : `Project: ${project.title} (unavailable on this PC)`;
     button.addEventListener("click", () => {
       pendingWorkdeskProjectIdentityId = project.projectIdentityId;
@@ -2182,8 +2198,9 @@ function renderWorkdeskProjectNodes(projects: readonly WorkdeskProjectExplorerSh
       void commandRegistry.execute("maginalia.workdesk.removeProject", commandContext.snapshot());
     });
     actions.append(remove);
-    item.append(button, actions);
-    manuscriptList.append(item);
+    row.append(button, actions);
+    item.append(row);
+    explorerTree.append(item);
   }
 }
 
@@ -2208,11 +2225,10 @@ function renderProjectState(state: ProjectNavigationState): void {
   const workdeskRoot = desk !== null && state.project?.projectId === desk.workdesk.documentId ? desk : null;
   workspaceLabel.textContent = workdeskRoot ? "Workdesk" : "Project";
   workspaceDocumentName.textContent = workdeskRoot?.workdesk.title ?? state.project?.displayName ?? "No Project open";
+  explorerTree.setAttribute("aria-label", workdeskRoot ? "Workdesk Explorer" : "Project Explorer");
   setWorkdeskDocumentTypes(workdeskRoot !== null);
   workdeskProjectActions.hidden = workdeskRoot === null;
-  manuscriptList.setAttribute("role", "listbox");
-  manuscriptList.dataset.navigationMode = "project";
-  manuscriptList.replaceChildren();
+  explorerTree.replaceChildren();
   updateProjectActionAvailability(state.project !== null);
 
   if (!state.project) {
@@ -2258,27 +2274,42 @@ function renderProjectState(state: ProjectNavigationState): void {
       relativeName: file.displayName,
       kind: "markdown" as const
     }));
+  const childLists = new Map<string, HTMLUListElement>();
   for (const entry of entries) {
-    const indent = Math.max(0, entry.relativeName.split("/").length - 1);
     const item = document.createElement("li");
-    item.className = "project-file-row";
-    item.style.paddingInlineStart = `${indent * 0.9}rem`;
+    item.className = "explorer-node";
+    const parentList = entry.parentId === null ? explorerTree : childLists.get(entry.parentId);
+    if (!parentList) continue;
+    const row = document.createElement("div");
+    row.className = "explorer-row";
     if (entry.kind === "folder") {
       item.dataset.explorerFolderId = entry.entryId;
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "manuscript-button explorer-folder";
-      button.textContent = `📁 ${entry.displayName}`;
+      button.className = "explorer-entry-button explorer-folder-button";
       button.title = entry.relativeName;
-      button.setAttribute("aria-selected", String(selectedExplorerFolderId === entry.entryId));
+      button.classList.toggle("selected", selectedExplorerFolderId === entry.entryId);
+      const icon = document.createElement("span");
+      icon.className = "explorer-entry-icon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = "📁";
+      const title = document.createElement("span");
+      title.className = "explorer-entry-title";
+      title.textContent = entry.displayName;
+      button.append(icon, title);
       button.addEventListener("click", () => {
         selectedExplorerFolderId = entry.entryId;
         selectedProjectFileId = null;
         selectedExplorerEntryId = null;
         renderProjectState(projectController?.getState() ?? state);
       });
-      item.append(button);
-      manuscriptList.append(item);
+      row.append(button);
+      const children = document.createElement("ul");
+      children.className = "explorer-tree-children";
+      children.setAttribute("aria-label", `${entry.displayName} contents`);
+      item.append(row, children);
+      childLists.set(entry.entryId, children);
+      parentList.append(item);
       continue;
     }
     const file = entry.kind === "markdown"
@@ -2287,10 +2318,17 @@ function renderProjectState(state: ProjectNavigationState): void {
     if (!file) {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "manuscript-button explorer-ordinary-file";
-      button.textContent = entry.displayName;
+      button.className = "explorer-entry-button explorer-file-button explorer-ordinary-file";
       button.title = entry.relativeName;
-      button.setAttribute("aria-selected", String(selectedExplorerEntryId === entry.entryId));
+      button.classList.toggle("selected", selectedExplorerEntryId === entry.entryId);
+      const icon = document.createElement("span");
+      icon.className = "explorer-entry-icon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = "📄";
+      const title = document.createElement("span");
+      title.className = "explorer-entry-title";
+      title.textContent = entry.displayName;
+      button.append(icon, title);
       button.addEventListener("click", () => {
         selectedExplorerEntryId = entry.entryId;
         selectedProjectFileId = null;
@@ -2311,18 +2349,16 @@ function renderProjectState(state: ProjectNavigationState): void {
       actions.className = "explorer-row-actions";
       actions.setAttribute("aria-label", `Actions for ${entry.displayName}`);
       actions.append(remove);
-      item.append(button, actions);
-      manuscriptList.append(item);
+      row.append(button, actions);
+      item.append(row);
+      parentList.append(item);
       continue;
     }
-    item.dataset.projectFileId = file.fileId;
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "manuscript-button";
-    button.setAttribute("role", "option");
-    button.dataset.manuscriptId = file.fileId;
-    button.dataset.manuscriptName = file.displayName;
-    button.dataset.projectFileType = file.documentType;
+    button.className = "explorer-entry-button explorer-file-button";
+    button.dataset.explorerFileId = file.fileId;
+    button.dataset.explorerFileName = file.displayName;
     button.title = file.displayName;
     button.draggable = true;
     button.addEventListener("dragstart", (event) => {
@@ -2332,19 +2368,22 @@ function renderProjectState(state: ProjectNavigationState): void {
       if (event.dataTransfer) event.dataTransfer.effectAllowed = "copyMove";
     });
     button.tabIndex = selectedProjectFileId === file.fileId ? 0 : -1;
+    const icon = document.createElement("span");
+    icon.className = "explorer-entry-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = "📄";
     const title = document.createElement("span");
-    title.className = "project-file-title";
-    title.textContent = file.title;
+    title.className = "explorer-entry-title";
+    title.textContent = file.displayName.split("/").at(-1) ?? file.displayName;
     const type = document.createElement("small");
-    type.className = "project-file-type";
+    type.className = "explorer-file-type";
     type.textContent = file.documentType;
-    button.append(title, type);
-    button.setAttribute("aria-selected", String(selectedProjectFileId === file.fileId));
+    button.append(icon, title, type);
+    button.classList.toggle("selected", selectedProjectFileId === file.fileId);
     if (state.activeFileId === file.fileId) {
       button.classList.add("active");
       button.setAttribute("aria-current", "page");
     }
-    item.setAttribute("role", "none");
     const insertSynced = document.createElement("button");
     insertSynced.type = "button";
     insertSynced.className = "project-header-action explorer-row-action";
@@ -2368,8 +2407,9 @@ function renderProjectState(state: ProjectNavigationState): void {
     actions.className = "explorer-row-actions";
     actions.setAttribute("aria-label", `Actions for ${file.title}`);
     actions.append(insertSynced, remove);
-    item.append(button, actions);
-    manuscriptList.append(item);
+    row.append(button, actions);
+    item.append(row);
+    parentList.append(item);
   }
 }
 
@@ -2382,7 +2422,7 @@ function updateSelectedProjectFile(buttons: readonly HTMLButtonElement[], fileId
   selectedProjectFileId = fileId;
   selectedExplorerEntryId = fileId;
   for (const candidate of buttons) {
-    candidate.setAttribute("aria-selected", String(candidate.dataset.manuscriptId === fileId));
+    candidate.classList.toggle("selected", candidate.dataset.explorerFileId === fileId);
   }
 }
 
@@ -2481,16 +2521,16 @@ async function createSelectedProjectFile(): Promise<void> {
 }
 
 function bindProjectFileKeyboard(): void {
-  const buttons = [...manuscriptList.querySelectorAll<HTMLButtonElement>("button[data-manuscript-id]")];
+  const buttons = [...explorerTree.querySelectorAll<HTMLButtonElement>("button[data-explorer-file-id]")];
   buttons.forEach((button, index) => {
     button.addEventListener("focus", () => {
-      updateSelectedProjectFile(buttons, button.dataset.manuscriptId ?? null);
+      updateSelectedProjectFile(buttons, button.dataset.explorerFileId ?? null);
       buttons.forEach((candidate) => { candidate.tabIndex = candidate === button ? 0 : -1; });
     });
     button.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
-        const selected = buttons.find((candidate) => candidate.dataset.manuscriptId === selectedProjectFileId) ?? button;
+        const selected = buttons.find((candidate) => candidate.dataset.explorerFileId === selectedProjectFileId) ?? button;
         selected.click();
         return;
       }
@@ -2508,7 +2548,7 @@ function bindProjectFileKeyboard(): void {
       buttons.forEach((candidate) => { candidate.tabIndex = -1; });
       const next = buttons[Math.max(0, Math.min(buttons.length - 1, nextIndex))];
       if (next) {
-        updateSelectedProjectFile(buttons, next.dataset.manuscriptId ?? null);
+        updateSelectedProjectFile(buttons, next.dataset.explorerFileId ?? null);
         next.tabIndex = 0;
         next.focus();
       }
@@ -2560,9 +2600,9 @@ const workspaceView: WorkspaceNavigationView = {
   setWorkspaceState(state: WorkspaceNavigationState): void {
     renderWorkspaceState(state);
     updateSmokeTextForSmoke?.();
-    for (const button of manuscriptList.querySelectorAll<HTMLButtonElement>("button[data-manuscript-id]")) {
+    for (const button of explorerTree.querySelectorAll<HTMLButtonElement>("button[data-explorer-file-id]")) {
       button.addEventListener("click", () => {
-        const manuscriptId = button.dataset.manuscriptId;
+        const manuscriptId = button.dataset.explorerFileId;
         if (manuscriptId) void workspaceController?.openManuscript(manuscriptId);
       });
     }
@@ -2581,12 +2621,12 @@ const projectView: ProjectNavigationView = {
     void persistWorkspaceState();
     bindProjectFileKeyboard();
     updateSmokeTextForSmoke?.();
-    for (const button of manuscriptList.querySelectorAll<HTMLButtonElement>("button[data-manuscript-id]")) {
+    for (const button of explorerTree.querySelectorAll<HTMLButtonElement>("button[data-explorer-file-id]")) {
       button.addEventListener("click", () => {
-        const fileId = button.dataset.manuscriptId;
+        const fileId = button.dataset.explorerFileId;
         if (fileId) {
           updateSelectedProjectFile(
-            [...manuscriptList.querySelectorAll<HTMLButtonElement>("button[data-manuscript-id]")],
+            [...explorerTree.querySelectorAll<HTMLButtonElement>("button[data-explorer-file-id]")],
             fileId
           );
           void projectController?.openFile(fileId);
@@ -3456,6 +3496,7 @@ if (legacyWorkspaceMode) {
             await activateWorkdesk(result);
             return;
           }
+          let restoreError: string | null = result.kind === "error" ? result.message : null;
           // A missing primary Workdesk is a normal first-run state. Ask for
           // one explicit local folder and let the existing IPC open path bind
           // it as primary; cancellation keeps the current authoring state.
@@ -3465,12 +3506,18 @@ if (legacyWorkspaceMode) {
               await activateWorkdesk(selected);
               return;
             }
-            if (selected.kind === "error") projectView.setProjectError(selected.message);
+            if (selected.kind === "error") restoreError = selected.message;
           }
           await projectController?.restoreProject();
           await restorePersistedProjectViews();
+          if (restoreError !== null) projectView.setProjectError(restoreError);
         }).catch(() => {
-          void projectController?.restoreProject().then(() => restorePersistedProjectViews());
+          void projectController?.restoreProject().then(async () => {
+            await restorePersistedProjectViews();
+            projectView.setProjectError("The previous Workdesk could not be restored. Use Open Workdesk to choose another folder.");
+          }).catch(() => {
+            projectView.setProjectError("The previous Workdesk could not be restored. Use Open Workdesk to choose another folder.");
+          });
         });
       } else {
         const restore = projectController.restoreProject();

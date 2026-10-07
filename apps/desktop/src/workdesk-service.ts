@@ -35,6 +35,9 @@ export interface WorkdeskLocalState {
 
 export type WorkdeskBoundaryFailureCode =
   | "invalid-workdesk"
+  | "local-state-corrupt"
+  | "local-state-unreadable"
+  | "remembered-workdesk-unavailable"
   | "invalid-project"
   | "wrong-kind"
   | "unsafe-path"
@@ -119,19 +122,19 @@ export function parseWorkdeskProjectIndex(value: unknown): WorkdeskProjectIndex 
   return Object.freeze({ schemaVersion: 1, projects: Object.freeze(entries) });
 }
 
-function parseLocalState(value: unknown): WorkdeskLocalState {
+function parseValidLocalState(value: unknown): WorkdeskLocalState | undefined {
   if (!isPlainObject(value) || value.schemaVersion !== WORKDESK_PATH_STORE_SCHEMA_VERSION || !isPlainObject(value.workdesks)) {
-    return EMPTY_WORKDESK_LOCAL_STATE;
+    return undefined;
   }
   const primary = value.primaryWorkdesk;
-  if (primary !== undefined && (typeof primary !== "string" || !path.isAbsolute(primary))) return EMPTY_WORKDESK_LOCAL_STATE;
+  if (primary !== undefined && (typeof primary !== "string" || !path.isAbsolute(primary))) return undefined;
   const workdesks: Record<string, { readonly projects: Record<string, WorkdeskLocalProjectMapping> }> = {};
   for (const [workdeskId, rawDesk] of Object.entries(value.workdesks)) {
-    if (!isUuid(workdeskId) || !isPlainObject(rawDesk) || !isPlainObject(rawDesk.projects)) return EMPTY_WORKDESK_LOCAL_STATE;
+    if (!isUuid(workdeskId) || !isPlainObject(rawDesk) || !isPlainObject(rawDesk.projects)) return undefined;
     const projects: Record<string, WorkdeskLocalProjectMapping> = {};
     for (const [projectId, rawProject] of Object.entries(rawDesk.projects)) {
       if (!isUuid(projectId) || !isPlainObject(rawProject) || typeof rawProject.rootPath !== "string" || !path.isAbsolute(rawProject.rootPath)) {
-        return EMPTY_WORKDESK_LOCAL_STATE;
+        return undefined;
       }
       projects[projectId] = Object.freeze({ rootPath: rawProject.rootPath });
     }
@@ -142,6 +145,10 @@ function parseLocalState(value: unknown): WorkdeskLocalState {
     ...(primary ? { primaryWorkdesk: primary } : {}),
     workdesks: Object.freeze(workdesks),
   });
+}
+
+function parseLocalState(value: unknown): WorkdeskLocalState {
+  return parseValidLocalState(value) ?? EMPTY_WORKDESK_LOCAL_STATE;
 }
 
 export const EMPTY_WORKDESK_LOCAL_STATE: WorkdeskLocalState = Object.freeze({
@@ -159,6 +166,55 @@ export class FileWorkdeskPathStore {
     } catch {
       return EMPTY_WORKDESK_LOCAL_STATE;
     }
+  }
+
+  /** Strict startup read: only a genuinely absent state file means first run. */
+  public async loadForRestore(): Promise<WorkdeskLocalState | undefined> {
+    try {
+      const entry = await fs.lstat(this.filePath);
+      if (!entry.isFile() || entry.isSymbolicLink()) {
+        throw new WorkdeskBoundaryError(
+          "local-state-unreadable",
+          "Saved Workdesk information could not be read. Use Open Workdesk to choose another folder."
+        );
+      }
+    } catch (error) {
+      if (error instanceof WorkdeskBoundaryError) throw error;
+      const code = error instanceof Error && "code" in error ? (error as { code?: unknown }).code : undefined;
+      if (code === "ENOENT") return undefined;
+      throw new WorkdeskBoundaryError(
+        "local-state-unreadable",
+        "Saved Workdesk information could not be read. Use Open Workdesk to choose another folder."
+      );
+    }
+
+    let contents: string;
+    try {
+      contents = await fs.readFile(this.filePath, "utf8");
+    } catch (error) {
+      throw new WorkdeskBoundaryError(
+        "local-state-unreadable",
+        "Saved Workdesk information could not be read. Use Open Workdesk to choose another folder."
+      );
+    }
+
+    let value: unknown;
+    try {
+      value = JSON.parse(contents);
+    } catch {
+      throw new WorkdeskBoundaryError(
+        "local-state-corrupt",
+        "Saved Workdesk information is damaged. Use Open Workdesk to choose another folder."
+      );
+    }
+    const state = parseValidLocalState(value);
+    if (!state) {
+      throw new WorkdeskBoundaryError(
+        "local-state-corrupt",
+        "Saved Workdesk information is invalid. Use Open Workdesk to choose another folder."
+      );
+    }
+    return state;
   }
 
   public async save(state: WorkdeskLocalState): Promise<void> {
@@ -275,12 +331,15 @@ export class WorkdeskService {
   }
 
   public async restorePrimary(): Promise<ValidatedWorkdesk | undefined> {
-    const stored = await this.localStore.load();
-    if (!stored.primaryWorkdesk) return undefined;
+    const stored = await this.localStore.loadForRestore();
+    if (!stored || !stored.primaryWorkdesk) return undefined;
     try {
       return await this.open(stored.primaryWorkdesk);
     } catch {
-      return undefined;
+      throw new WorkdeskBoundaryError(
+        "remembered-workdesk-unavailable",
+        "The remembered Workdesk is no longer available or valid. Use Open Workdesk to choose another folder."
+      );
     }
   }
 

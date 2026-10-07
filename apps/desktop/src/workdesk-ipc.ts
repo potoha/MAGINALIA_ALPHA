@@ -192,6 +192,10 @@ function failure(code: string, message: string): WorkdeskFailure {
 }
 
 function asFailure(error: unknown, message: string): WorkdeskFailure {
+  if (error instanceof Error && error.name === "WorkdeskBoundaryError" && "code" in error
+    && typeof (error as Error & { readonly code?: unknown }).code === "string") {
+    return failure((error as Error & { readonly code: string }).code, error.message);
+  }
   return failure("workdesk-unavailable", error instanceof Error && error.message.length > 0 ? error.message : message);
 }
 

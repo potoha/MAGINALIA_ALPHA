@@ -18,9 +18,9 @@ interface State {
 const READ_STATE = `(() => {
   const editor = document.querySelector("#editor");
   const status = document.querySelector("#document-status");
-  const active = [...document.querySelectorAll("#manuscript-list button[data-manuscript-id]")].find((item) => item.getAttribute("aria-current") === "page");
+  const active = [...document.querySelectorAll("#explorer-tree button[data-explorer-file-id]")].find((item) => item.getAttribute("aria-current") === "page");
   if (!(editor instanceof HTMLElement) || editor.dataset.smokeReady !== "project" || !(status instanceof HTMLElement)) return null;
-  return { ready: true, active: active?.dataset.manuscriptName ?? null, text: editor.dataset.smokeText ?? "", status: status.dataset.state ?? "", tabs: [...document.querySelectorAll("#document-tabs .document-tab-label")].map((item) => item.textContent ?? ""), preview: !document.querySelector("#markdown-preview")?.hidden, direction: document.querySelector(".markdown-preview-document")?.getAttribute("data-writing-direction") ?? "" };
+  return { ready: true, active: active?.dataset.explorerFileName ?? null, text: editor.dataset.smokeText ?? "", status: status.dataset.state ?? "", tabs: [...document.querySelectorAll("#document-tabs .document-tab-label")].map((item) => item.textContent ?? ""), preview: !document.querySelector("#markdown-preview")?.hidden, direction: document.querySelector(".markdown-preview-document")?.getAttribute("data-writing-direction") ?? "" };
 })()`;
 
 const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -61,8 +61,8 @@ async function exerciseTrailingPreviewInsertion(
   insertedText: string
 ): Promise<void> {
   await script(window, `(() => {
-    const source = [...document.querySelectorAll('#manuscript-list button[data-manuscript-id]')]
-      .find((item) => item.dataset.manuscriptName === ${JSON.stringify(displayName)});
+    const source = [...document.querySelectorAll('#explorer-tree button[data-explorer-file-id]')]
+      .find((item) => item.dataset.explorerFileName === ${JSON.stringify(displayName)});
     if (!(source instanceof HTMLButtonElement)) return false;
     source.click();
     const preview = document.querySelector('#document-preview-mode');
@@ -287,7 +287,7 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
   await script(window, `(() => {
     const edit = document.querySelector('#document-edit-mode');
     const parent = [...document.querySelectorAll('#document-tabs .document-tab')].find((item) => item.querySelector('.document-tab-label')?.textContent?.startsWith('a.md'))?.querySelector('.document-tab-label');
-    const source = [...document.querySelectorAll('#manuscript-list button[data-manuscript-id]')].find((item) => item.dataset.manuscriptName === 'chapter.md');
+    const source = [...document.querySelectorAll('#explorer-tree button[data-explorer-file-id]')].find((item) => item.dataset.explorerFileName === 'chapter.md');
     const editor = document.querySelector('#editor');
     if (!(edit instanceof HTMLButtonElement) || !(parent instanceof HTMLButtonElement) || !(source instanceof HTMLElement) || !(editor instanceof HTMLElement)
       || typeof DataTransfer !== 'function' || typeof DragEvent !== 'function') return false;
@@ -327,7 +327,7 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
     const chapter = [...document.querySelectorAll('#document-tabs .document-tab')].find((item) => item.querySelector('.document-tab-label')?.textContent?.startsWith('chapter.md'))?.querySelector('.document-tab-label');
     if (!(edit instanceof HTMLButtonElement) || !(chapter instanceof HTMLButtonElement)) return false;
     chapter.click(); edit.click();
-    const source = [...document.querySelectorAll('#manuscript-list button[data-manuscript-id]')].find((item) => item.dataset.manuscriptName === 'a.md');
+    const source = [...document.querySelectorAll('#explorer-tree button[data-explorer-file-id]')].find((item) => item.dataset.explorerFileName === 'a.md');
     const editor = document.querySelector('#editor');
     if (!(source instanceof HTMLElement) || !(editor instanceof HTMLElement) || typeof DataTransfer !== 'function' || typeof DragEvent !== 'function') return false;
     const transfer = new DataTransfer();
@@ -338,7 +338,7 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
   await delay(120);
   await waitFor(window, (value) => value.active === "chapter.md" && !value.text.includes('"target":"a.md"'), "cycle attempt leaves child source unchanged");
 
-  await script(window, `(() => { const c = [...document.querySelectorAll("#manuscript-list button[data-manuscript-id]")].find((item) => item.dataset.manuscriptName === "c.md"); if (!(c instanceof HTMLButtonElement)) return false; c.click(); return true; })()`, "open C tab");
+  await script(window, `(() => { const c = [...document.querySelectorAll("#explorer-tree button[data-explorer-file-id]")].find((item) => item.dataset.explorerFileName === "c.md"); if (!(c instanceof HTMLButtonElement)) return false; c.click(); return true; })()`, "open C tab");
   await waitFor(window, (value) => value.active === "c.md" && value.tabs.length === 4, "C opens after the composed child source tab");
   await script(window, `(() => { const tabs = [...document.querySelectorAll("#document-tabs .document-tab")]; const source = tabs.find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("c.md")); const target = tabs.find((item) => item.querySelector(".document-tab-label")?.textContent?.startsWith("a.md")); if (!(source instanceof HTMLElement) || !(target instanceof HTMLElement) || typeof DataTransfer !== "function" || typeof DragEvent !== "function") return false; const transfer = new DataTransfer(); source.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: transfer })); target.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: transfer })); target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer })); source.dispatchEvent(new DragEvent("dragend", { bubbles: true, cancelable: true, dataTransfer: transfer })); return true; })()`, "drag C before A");
   await waitFor(window, (value) => value.active === "c.md" && value.status === "saved" && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md|chapter.md", "reordered tabs without source mutation");
