@@ -148,6 +148,59 @@ The command boundary represents public user actions, not every internal function
 
 When adding a new Core feature, first decide whether its user-executable actions need stable command IDs. Prefer the default answer to be yes unless the interaction is inherently continuous or state-internal.
 
+## UI/UX design workflow
+
+MAGINALIA Desktop renderer work is ordinary web UI running inside Electron. Use web layout, component, accessibility, and interaction practices where they fit, while preserving desktop-specific keyboard, window, filesystem, persistence, and Electron runtime behavior.
+
+### UI UX Pro Max
+
+`ui-ux-pro-max` is expected to be available as a **global Codex skill**.
+
+For substantial user-visible UI work, use it as a design/review aid for:
+- information hierarchy and navigation;
+- component and menu structure;
+- accessibility and keyboard behavior;
+- interaction feedback and component states;
+- spacing, typography, color, responsive behavior, and density;
+- targeted UX review before delivery.
+
+Do not vendor a project-local copy of the skill into this repository unless the Product Owner explicitly asks for that.
+
+Prefer narrow, task-specific skill queries for an existing surface. Do not regenerate or impose an unrelated whole-product design system merely because the skill supports one.
+
+Skill output is advisory. It never overrides the Product Owner, accepted `MAGINALIA_IDE` plans/ADRs, established product terminology, or repository constraints.
+
+### Figma
+
+Figma is the standard collaborative design surface for substantial MAGINALIA Desktop UI work when visual structure, hierarchy, component states, or interaction design materially changes.
+
+When the Figma connector is available, prefer this workflow for substantial UI changes:
+
+1. inspect the current implementation and relevant `MAGINALIA_IDE/plan` source;
+2. inspect the relevant existing Figma design when one exists;
+3. create or refine the proposed layout/component/state design in Figma when visual design work is needed;
+4. review the proposal with UI UX Pro Max for usability/accessibility risks;
+5. resolve any Product Owner design decision before implementation;
+6. implement against the accepted plan/design;
+7. verify keyboard/accessibility behavior and real Electron rendering;
+8. compare the implemented result against the Figma design using screenshots or equivalent visual evidence when practical.
+
+Figma is a design artifact, not the highest product authority.
+
+Authority for UI decisions is:
+
+1. latest explicit Product Owner instruction;
+2. accepted `MAGINALIA_IDE` plan / ADR / Decision Log;
+3. explicitly accepted current Figma design for the touched surface;
+4. UI UX Pro Max recommendations;
+5. current implementation.
+
+A trivial copy edit, narrow correctness fix, or non-visual bug does not require creating a Figma artifact merely to satisfy process.
+
+Do not make Figma, Google Fonts, icon CDNs, or other design services runtime dependencies of the shipped Desktop application unless an explicit product decision authorizes that dependency. If external icon/design assets are adopted, preserve licensing/provenance and package them through the normal product asset boundary rather than hotlinking them.
+
+For icon-only controls, provide accessible names and visible focus behavior. Prefer understandable text labels for unfamiliar, destructive, or high-impact actions rather than forcing normal users to infer meaning from symbols.
+
 ## Git/GitHub freeze
 
 Decision D032 remains authoritative.
