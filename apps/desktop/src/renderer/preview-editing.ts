@@ -7,6 +7,8 @@ export class PreviewCompositionGate {
   private composing = false;
   private skipFollowingInput = false;
 
+  public get isComposing(): boolean { return this.composing; }
+
   public start(): void { this.composing = true; }
 
   /** Returns true exactly once when the final composition text may be committed. */

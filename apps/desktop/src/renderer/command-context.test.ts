@@ -60,4 +60,24 @@ describe("ContextKeyService", () => {
     expect(await registry.execute("maginalia.syncedBlock.insertDocument", { "syncedBlock.insertable": true })).toEqual({ kind: "executed" });
     expect(insert).toHaveBeenCalledOnce();
   });
+
+  it("exposes Workdesk return only while a child Project is active", async () => {
+    const registry = new CommandRegistry();
+    const returnToWorkdesk = vi.fn();
+    registry.register({
+      id: "maginalia.workdesk.return",
+      title: "Return to Workdesk",
+      when: "workdesk.active && workdesk.childProject"
+    }, returnToWorkdesk);
+
+    const rootContext = { "workdesk.active": true, "workdesk.childProject": false };
+    const childContext = { "workdesk.active": true, "workdesk.childProject": true };
+    const noWorkdeskContext = { "workdesk.active": false, "workdesk.childProject": false };
+    expect(registry.discover("return", rootContext)).toEqual([]);
+    expect(await registry.execute("maginalia.workdesk.return", rootContext)).toEqual({ kind: "disabled" });
+    expect(await registry.execute("maginalia.workdesk.return", noWorkdeskContext)).toEqual({ kind: "disabled" });
+    expect(registry.discover("return", childContext).map((command) => command.id)).toEqual(["maginalia.workdesk.return"]);
+    expect(await registry.execute("maginalia.workdesk.return", childContext)).toEqual({ kind: "executed" });
+    expect(returnToWorkdesk).toHaveBeenCalledOnce();
+  });
 });

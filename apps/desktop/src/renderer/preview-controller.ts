@@ -64,6 +64,16 @@ export class PreviewController {
     if (documentId === null) this.refresh();
   }
 
+  /** Re-render one accepted inline source edit while retaining document/revision ownership. */
+  public refreshAfterInlineEdit(documentId: string, revision: number): boolean {
+    const current = this.options.writing.getDocumentState();
+    if (this.mode !== "preview" || this.inlineEditingDocumentId !== documentId
+      || current === null || current.documentId !== documentId || current.revision !== revision) return false;
+    this.inlineEditingDocumentId = null;
+    this.refresh();
+    return true;
+  }
+
   public setMode(mode: PreviewMode): void {
     if (this.mode === mode) return;
     this.mode = mode;
@@ -114,6 +124,9 @@ export class PreviewController {
     const current = this.options.writing.getDocumentState();
     if (generation !== this.generation || current === null
       || current.documentId !== snapshot.documentId || current.currentText !== snapshot.currentText) return;
+    // A delayed Reviewer lookup may change only the disposable projection, but
+    // replacing it still destroys the user's focused island and DOM selection.
+    if (this.mode === "preview" && this.inlineEditingDocumentId === snapshot.documentId) return;
     const quoteMap = new Map(partial);
     for (const marker of markers) {
       if (!quoteMap.has(marker)) quoteMap.set(marker, { state: "unresolved", reason: "Quotation unresolved." });
