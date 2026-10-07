@@ -1,4 +1,5 @@
-import { lstat, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import {
   DocumentWorkspaceService,
@@ -99,26 +100,131 @@ export interface ProjectPathStore {
 }
 
 export class FileProjectPathStore implements ProjectPathStore {
+  private writes: Promise<void> = Promise.resolve();
+
   public constructor(private readonly filePath: string) {}
 
   public async load(): Promise<string | null> {
-    try {
-      const text = await readFile(this.filePath, "utf8");
-      const value: unknown = JSON.parse(text);
-      if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-      const root = (value as { rootPath?: unknown }).rootPath;
-      return typeof root === "string" && path.isAbsolute(root) ? root : null;
-    } catch (_error: unknown) {
-      return null;
-    }
+    const snapshot = await this.readSettings();
+    if (snapshot.kind !== "valid") return null;
+    const root = snapshot.value.rootPath;
+    return typeof root === "string" ? root : null;
   }
 
   public async save(canonicalRoot: string): Promise<void> {
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    const temporary = `${this.filePath}.tmp`;
-    await writeFile(temporary, `${JSON.stringify({ rootPath: canonicalRoot })}\n`, "utf8");
-    await rename(temporary, this.filePath);
+    await this.serialize(async () => {
+      const snapshot = await this.readSettings();
+      if (snapshot.kind === "invalid") throw new Error("Project path settings cannot be safely updated.");
+      const value: Record<string, unknown> = snapshot.kind === "valid"
+        ? { ...snapshot.value }
+        : {};
+      value.rootPath = canonicalRoot;
+      if (!Object.prototype.hasOwnProperty.call(value, "defaultCreationParent")) {
+        value.defaultCreationParent = null;
+      }
+      if (snapshot.kind === "missing") {
+        await this.writeNewSettings(value);
+      } else {
+        await this.replaceSettings(snapshot.text, value);
+      }
+    });
   }
+
+  /**
+   * Ensure the app-local Project creation preference has an explicit empty
+   * value. Existing last-opened roots and configured parents are retained.
+   */
+  public async ensureDefaultCreationParentPlaceholder(): Promise<void> {
+    await this.serialize(async () => {
+      const snapshot = await this.readSettings();
+      if (snapshot.kind === "invalid") throw new Error("Project path settings cannot be safely initialized.");
+      if (snapshot.kind === "valid" && Object.prototype.hasOwnProperty.call(snapshot.value, "defaultCreationParent")) {
+        return;
+      }
+
+      if (snapshot.kind === "missing") {
+        await mkdir(path.dirname(this.filePath), { recursive: true });
+        await this.writeNewSettings({ defaultCreationParent: null });
+        return;
+      }
+
+      await this.replaceSettings(snapshot.text, {
+        ...snapshot.value,
+        defaultCreationParent: null
+      });
+    });
+  }
+
+  private async readSettings(): Promise<
+    | { readonly kind: "missing" }
+    | { readonly kind: "invalid" }
+    | { readonly kind: "valid"; readonly text: string; readonly value: Record<string, unknown> }
+  > {
+    let stats;
+    try {
+      stats = await lstat(this.filePath);
+    } catch (error: unknown) {
+      if (isMissingPathError(error)) return { kind: "missing" };
+      return { kind: "invalid" };
+    }
+    if (!stats.isFile() || stats.isSymbolicLink()) return { kind: "invalid" };
+
+    let text: string;
+    let parsed: unknown;
+    try {
+      text = await readFile(this.filePath, "utf8");
+      parsed = JSON.parse(text);
+    } catch (_error: unknown) {
+      return { kind: "invalid" };
+    }
+    if (!isValidProjectPathSettings(parsed)) return { kind: "invalid" };
+    return { kind: "valid", text, value: parsed };
+  }
+
+  private async writeNewSettings(value: Record<string, unknown>): Promise<void> {
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+    // Exclusive creation means a concurrently appearing config is never
+    // replaced by this bootstrap placeholder.
+    await writeFile(this.filePath, serializeProjectPathSettings(value), { encoding: "utf8", flag: "wx" });
+  }
+
+  private async replaceSettings(previousText: string, value: Record<string, unknown>): Promise<void> {
+    const temporary = `${this.filePath}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, serializeProjectPathSettings(value), { encoding: "utf8", flag: "wx" });
+      const current = await this.readSettings();
+      if (current.kind !== "valid" || current.text !== previousText) {
+        throw new Error("Project path settings changed during update.");
+      }
+      await rename(temporary, this.filePath);
+    } finally {
+      await unlink(temporary).catch(() => undefined);
+    }
+  }
+
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.writes.then(operation, operation);
+    this.writes = result.then(() => undefined, () => undefined);
+    return result;
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT";
+}
+
+function isValidProjectPathSettings(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  if (Object.prototype.hasOwnProperty.call(value, "rootPath") &&
+    (typeof value.rootPath !== "string" || !path.isAbsolute(value.rootPath))) return false;
+  if (Object.prototype.hasOwnProperty.call(value, "defaultCreationParent") &&
+    value.defaultCreationParent !== null &&
+    (typeof value.defaultCreationParent !== "string" || !path.isAbsolute(value.defaultCreationParent))) return false;
+  return true;
+}
+
+function serializeProjectPathSettings(value: Record<string, unknown>): string {
+  return `${JSON.stringify(value)}\n`;
 }
 
 export class MemoryProjectPathStore implements ProjectPathStore {

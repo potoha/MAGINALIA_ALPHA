@@ -1,9 +1,10 @@
-import { mkdtemp, mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, readFile, realpath, symlink, unlink, writeFile } from "node:fs/promises";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createIdentity, templateFiles, type RepositoryIdentity } from "@maginalia/repository-core";
+import { LocalRepositoryService } from "./repository-service";
 import {
   EMPTY_WORKDESK_LOCAL_STATE,
   FileWorkdeskPathStore,
@@ -160,6 +161,194 @@ describe("Workdesk portable and local state", () => {
     const store = new FileWorkdeskPathStore(path.join(root, "state.json"));
     await writeFile(path.join(root, "state.json"), '{"schemaVersion":1,"workdesks":{"bad":{}}}', "utf8");
     expect(await store.load()).toEqual(EMPTY_WORKDESK_LOCAL_STATE);
+  });
+
+  it("adopts a populated Unicode folder without changing its files or adding starter documents", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "maginalia-adopt-workdesk-"));
+    roots.push(root);
+    const localRoot = await mkdtemp(path.join(tmpdir(), "maginalia-adopt-profile-"));
+    roots.push(localRoot);
+    const notePath = path.join(root, "研究ノート", "下書き.md");
+    const originalBytes = Buffer.from("# 日本語のノート\r\n本文 😀\r\n", "utf8");
+    await mkdir(path.dirname(notePath), { recursive: true });
+    await writeFile(notePath, originalBytes);
+
+    const store = new FileWorkdeskPathStore(path.join(localRoot, "workdesk-paths.json"));
+    const service = new WorkdeskService(store);
+    const candidate = await service.prepareAdoption(root);
+    const adopted = await service.adoptPreparedFolder(candidate, Object.freeze({}), new LocalRepositoryService());
+
+    expect(adopted.workdesk.identity.kind).toBe("workbench");
+    expect(adopted.workdesk.canonicalRoot).toBe(await realpath(root));
+    expect(await readFile(notePath)).toEqual(originalBytes);
+    await expect(readFile(path.join(root, "README.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(root, "manuscript", "main.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(path.join(root, ".maginalia", "repository.json"), "utf8")).toContain(adopted.workdesk.identity.id);
+    await expect(readFile(path.join(root, "MAGINALIA-INCOMPLETE.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await store.loadForRestore()).toBeUndefined();
+  });
+
+  it.each([".git", ".maginalia", ".gitignore", "MAGINALIA-INCOMPLETE.txt"])(
+    "rejects a preexisting reserved root entry %s before writing Workdesk metadata",
+    async (reservedName) => {
+      const root = await mkdtemp(path.join(tmpdir(), "maginalia-adopt-collision-"));
+      roots.push(root);
+      const entry = path.join(root, reservedName);
+      if (reservedName === ".git" || reservedName === ".maginalia") {
+        await mkdir(entry);
+        await writeFile(path.join(entry, "keep.txt"), "preserve");
+      } else {
+        await writeFile(entry, "preserve");
+      }
+      const service = new WorkdeskService(new FileWorkdeskPathStore(path.join(root, "profile.json")));
+
+      await expect(service.prepareAdoption(root)).rejects.toMatchObject({ code: "adoption-not-allowed" });
+      expect(await readFile(reservedName === ".git" || reservedName === ".maginalia" ? path.join(entry, "keep.txt") : entry, "utf8"))
+        .toBe("preserve");
+      await expect(readFile(path.join(root, ".maginalia", "repository.json"))).rejects.toMatchObject({ code: "ENOENT" });
+      if (reservedName !== "MAGINALIA-INCOMPLETE.txt") {
+        await expect(readFile(path.join(root, "MAGINALIA-INCOMPLETE.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    },
+  );
+
+  it("rejects nested Git repositories, symlinks, and hard-linked research files", async () => {
+    const nestedRoot = await mkdtemp(path.join(tmpdir(), "maginalia-adopt-nested-git-"));
+    roots.push(nestedRoot);
+    await mkdir(path.join(nestedRoot, "notes", ".git"), { recursive: true });
+    const nested = new WorkdeskService(new FileWorkdeskPathStore(path.join(nestedRoot, "profile.json")));
+    await expect(nested.prepareAdoption(nestedRoot)).rejects.toMatchObject({ code: "adoption-not-allowed" });
+
+    const secretRoot = await mkdtemp(path.join(tmpdir(), "maginalia-adopt-secret-"));
+    roots.push(secretRoot);
+    await writeFile(path.join(secretRoot, "credentials.json"), "secret");
+    const secret = new WorkdeskService(new FileWorkdeskPathStore(path.join(secretRoot, "profile.json")));
+    await expect(secret.prepareAdoption(secretRoot)).rejects.toMatchObject({ code: "adoption-not-allowed" });
+
+    const linkedRoot = await mkdtemp(path.join(tmpdir(), "maginalia-adopt-links-"));
+    roots.push(linkedRoot);
+    const target = path.join(linkedRoot, "target.txt");
+    await writeFile(target, "private");
+    const hardlink = path.join(linkedRoot, "hardlink.txt");
+    await link(target, hardlink);
+    const linked = new WorkdeskService(new FileWorkdeskPathStore(path.join(linkedRoot, "profile.json")));
+    await expect(linked.prepareAdoption(linkedRoot)).rejects.toMatchObject({ code: "adoption-not-allowed" });
+    await unlink(hardlink);
+
+    const symlinkPath = path.join(linkedRoot, "alias.txt");
+    try {
+      await symlink(target, symlinkPath, "file");
+    } catch {
+      return; // Windows policy can forbid symlink creation; hardlink remains covered.
+    }
+    await expect(linked.prepareAdoption(linkedRoot)).rejects.toMatchObject({ code: "adoption-not-allowed" });
+  });
+
+  it("allows only one concurrent publication from a confirmed adoption candidate", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "maginalia-adopt-concurrent-"));
+    roots.push(root);
+    await writeFile(path.join(root, "notes.md"), "keep");
+    const service = new WorkdeskService(new FileWorkdeskPathStore(path.join(root, "profile.json")));
+    const candidate = await service.prepareAdoption(root);
+    const repositories = new LocalRepositoryService();
+    const attempts = await Promise.allSettled([
+      service.adoptPreparedFolder(candidate, Object.freeze({}), repositories),
+      service.adoptPreparedFolder(candidate, Object.freeze({}), repositories),
+    ]);
+
+    expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(1);
+    expect(attempts.filter((attempt) => attempt.status === "rejected")).toHaveLength(1);
+    expect(await readFile(path.join(root, "notes.md"), "utf8")).toBe("keep");
+  });
+
+  it("detects changes after adoption preflight without publishing metadata", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "maginalia-adopt-changed-"));
+    roots.push(root);
+    const notePath = path.join(root, "note.md");
+    await writeFile(notePath, "before");
+    const service = new WorkdeskService(new FileWorkdeskPathStore(path.join(root, "profile.json")));
+    const candidate = await service.prepareAdoption(root);
+    await writeFile(notePath, "after");
+
+    await expect(service.adoptPreparedFolder(candidate, Object.freeze({}), new LocalRepositoryService()))
+      .rejects.toMatchObject({ code: "adoption-changed" });
+    expect(await readFile(notePath, "utf8")).toBe("after");
+    await expect(readFile(path.join(root, ".maginalia", "repository.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(root, "MAGINALIA-INCOMPLETE.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("detects empty-directory additions after adoption preflight without publishing metadata", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "maginalia-adopt-directory-change-"));
+    roots.push(root);
+    await mkdir(path.join(root, "empty-before"));
+    const service = new WorkdeskService(new FileWorkdeskPathStore(path.join(root, "profile.json")));
+    const candidate = await service.prepareAdoption(root);
+    await mkdir(path.join(root, "empty-after"));
+
+    await expect(service.adoptPreparedFolder(candidate, Object.freeze({}), new LocalRepositoryService()))
+      .rejects.toMatchObject({ code: "adoption-changed" });
+    await expect(readFile(path.join(root, ".maginalia", "repository.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(root, "MAGINALIA-INCOMPLETE.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("leaves original bytes and an incomplete marker after a post-publication failure", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "maginalia-adopt-failure-"));
+    roots.push(root);
+    const localRoot = await mkdtemp(path.join(tmpdir(), "maginalia-adopt-failure-profile-"));
+    roots.push(localRoot);
+    const notePath = path.join(root, "ノート.md");
+    const bytes = Buffer.from("research data\r\n", "utf8");
+    await writeFile(notePath, bytes);
+    const store = new FileWorkdeskPathStore(path.join(localRoot, "workdesk-paths.json"));
+    const service = new WorkdeskService(store);
+    const candidate = await service.prepareAdoption(root);
+    const previous = process.env.MAGINALIA_TEST_WORKDESK_ADOPTION_FAILURE;
+    process.env.MAGINALIA_TEST_WORKDESK_ADOPTION_FAILURE = "after-admin-files";
+    try {
+      await expect(service.adoptPreparedFolder(candidate, Object.freeze({}), new LocalRepositoryService()))
+        .rejects.toMatchObject({ code: "adoption-failed" });
+    } finally {
+      if (previous === undefined) delete process.env.MAGINALIA_TEST_WORKDESK_ADOPTION_FAILURE;
+      else process.env.MAGINALIA_TEST_WORKDESK_ADOPTION_FAILURE = previous;
+    }
+    expect(await readFile(notePath)).toEqual(bytes);
+    expect(await readFile(path.join(root, "MAGINALIA-INCOMPLETE.txt"), "utf8")).toContain("incomplete");
+    expect(await store.loadForRestore()).toBeUndefined();
+  });
+
+  it("serializes primary and last-active context updates and reads old records as Home", async () => {
+    const desk = await fixture("workbench", "Desk");
+    const project = await fixture("project", "Registered Project");
+    const localRoot = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-context-"));
+    roots.push(localRoot);
+    const store = new FileWorkdeskPathStore(path.join(localRoot, "workdesk-paths.json"));
+    const service = new WorkdeskService(store);
+    const opened = await service.open(desk.root);
+    const boundary = await service.validateExternalProject(project.root);
+    await service.registerPortableProject(opened, project.identity);
+    await service.registerProjectPath(opened, boundary);
+    await Promise.all([
+      service.setPrimary(opened),
+      service.setLastActiveContext(opened, { kind: "project", projectIdentityId: project.identity.id }),
+    ]);
+    await expect(service.setLastActiveContext(opened, {
+      kind: "project",
+      projectIdentityId: "44444444-4444-4444-8444-444444444444",
+    })).rejects.toMatchObject({ code: "invalid-project" });
+
+    const saved = await store.loadForRestore();
+    expect(saved?.primaryWorkdesk).toBe(opened.canonicalRoot);
+    expect(saved?.workdesks[opened.identity.id]?.lastActiveContext)
+      .toEqual({ kind: "project", projectIdentityId: project.identity.id });
+    const oldRecord = {
+      schemaVersion: 1 as const,
+      primaryWorkdesk: opened.canonicalRoot,
+      workdesks: { [opened.identity.id]: { projects: {} } },
+    };
+    expect(await service.open(opened.canonicalRoot).then(async (value) => {
+      await store.save(oldRecord);
+      return service.lastActiveContext(value);
+    })).toEqual({ kind: "home" });
   });
 });
 

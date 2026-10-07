@@ -15,6 +15,8 @@ import {
   OPEN_WORKDESK_CHANNEL,
   CREATE_WORKDESK_CHANNEL,
   RESTORE_WORKDESK_CHANNEL,
+  RETURN_TO_WORKDESK_CHANNEL,
+  SAVE_WORKDESK_CONTEXT_CHANNEL,
   CREATE_WORKDESK_FILE_CHANNEL,
   CREATE_WORKDESK_PROJECT_CHANNEL,
   REGISTER_WORKDESK_PROJECT_CHANNEL,
@@ -79,6 +81,8 @@ describe("preload boundary", () => {
       "openWorkdesk",
       "createWorkdesk",
       "restoreWorkdesk",
+      "returnToWorkdesk",
+      "saveWorkdeskContext",
       "createWorkdeskFile",
       "createWorkdeskProject",
       "registerWorkdeskProject",
@@ -145,6 +149,11 @@ describe("preload boundary", () => {
     await api.openWorkdesk();
     await api.createWorkdesk({ title: "Desk" });
     await api.restoreWorkdesk();
+    await api.returnToWorkdesk();
+    await api.saveWorkdeskContext({
+      workdeskIdentityId: "11111111-1111-4111-8111-111111111111",
+      context: { kind: "home" },
+    });
     await api.createWorkdeskFile({
       workdeskId: "77777777-7777-4777-8777-777777777777",
       fileName: "memo.md",
@@ -270,6 +279,11 @@ describe("preload boundary", () => {
       { channel: OPEN_WORKDESK_CHANNEL, args: [] },
       { channel: CREATE_WORKDESK_CHANNEL, args: [{ title: "Desk" }] },
       { channel: RESTORE_WORKDESK_CHANNEL, args: [] },
+      { channel: RETURN_TO_WORKDESK_CHANNEL, args: [] },
+      {
+        channel: SAVE_WORKDESK_CONTEXT_CHANNEL,
+        args: [{ workdeskIdentityId: "11111111-1111-4111-8111-111111111111", context: { kind: "home" } }]
+      },
       {
         channel: CREATE_WORKDESK_FILE_CHANNEL,
         args: [{

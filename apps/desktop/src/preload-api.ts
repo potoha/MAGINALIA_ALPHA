@@ -123,6 +123,8 @@ import {
   REMOVE_WORKDESK_PROJECT_CHANNEL,
   REGISTER_WORKDESK_PROJECT_CHANNEL,
   RESTORE_WORKDESK_CHANNEL,
+  RETURN_TO_WORKDESK_CHANNEL,
+  SAVE_WORKDESK_CONTEXT_CHANNEL,
   type CreateWorkdeskFileRequest,
   type CopyWorkdeskFileToProjectRequest,
   type CreateWorkdeskProjectRequest,
@@ -134,7 +136,9 @@ import {
   type WorkdeskCopyResult,
   type WorkdeskOpenResult,
   type WorkdeskProjectResult,
-  type WorkdeskRestoreResult
+  type WorkdeskRestoreResult,
+  type SaveWorkdeskContextRequest,
+  type SaveWorkdeskContextResult
 } from "./workdesk-ipc";
 import {
   AUTOSAVE_FLUSH_REQUEST_CHANNEL,
@@ -196,7 +200,9 @@ export {
   OPEN_WORKDESK_PROJECT_CHANNEL,
   REMOVE_WORKDESK_PROJECT_CHANNEL,
   REGISTER_WORKDESK_PROJECT_CHANNEL,
-  RESTORE_WORKDESK_CHANNEL
+  RESTORE_WORKDESK_CHANNEL,
+  RETURN_TO_WORKDESK_CHANNEL,
+  SAVE_WORKDESK_CONTEXT_CHANNEL
 } from "./workdesk-ipc";
 export {
   OPEN_LIBRARY_CHANNEL,
@@ -304,7 +310,9 @@ export type {
   WorkdeskFileCreateResult,
   WorkdeskCopyResult,
   WorkdeskOpenResult,
-  WorkdeskRestoreResult
+  WorkdeskRestoreResult,
+  SaveWorkdeskContextRequest,
+  SaveWorkdeskContextResult
 } from "./workdesk-ipc";
 export type {
   AutosaveFlushRequest,
@@ -342,6 +350,8 @@ export interface MarkdownPreloadApi {
   openWorkdesk?(): Promise<WorkdeskOpenResult>;
   createWorkdesk?(request: CreateWorkdeskRequest): Promise<WorkdeskOpenResult>;
   restoreWorkdesk?(): Promise<WorkdeskRestoreResult>;
+  returnToWorkdesk?(): Promise<WorkdeskRestoreResult>;
+  saveWorkdeskContext?(request: SaveWorkdeskContextRequest): Promise<SaveWorkdeskContextResult>;
   createWorkdeskFile?(request: CreateWorkdeskFileRequest): Promise<WorkdeskFileCreateResult>;
   createWorkdeskProject?(request: CreateWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
   registerWorkdeskProject?(request: RegisterWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
@@ -400,6 +410,8 @@ export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   openWorkdesk(): Promise<WorkdeskOpenResult>;
   createWorkdesk(request: CreateWorkdeskRequest): Promise<WorkdeskOpenResult>;
   restoreWorkdesk(): Promise<WorkdeskRestoreResult>;
+  returnToWorkdesk(): Promise<WorkdeskRestoreResult>;
+  saveWorkdeskContext(request: SaveWorkdeskContextRequest): Promise<SaveWorkdeskContextResult>;
   createWorkdeskFile(request: CreateWorkdeskFileRequest): Promise<WorkdeskFileCreateResult>;
   createWorkdeskProject(request: CreateWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
   registerWorkdeskProject(request: RegisterWorkdeskProjectRequest): Promise<WorkdeskProjectResult>;
@@ -470,6 +482,8 @@ export function createMarkdownPreloadApi(
     openWorkdesk: () => invoke(OPEN_WORKDESK_CHANNEL) as Promise<WorkdeskOpenResult>,
     createWorkdesk: (request) => invoke(CREATE_WORKDESK_CHANNEL, request) as Promise<WorkdeskOpenResult>,
     restoreWorkdesk: () => invoke(RESTORE_WORKDESK_CHANNEL) as Promise<WorkdeskRestoreResult>,
+    returnToWorkdesk: () => invoke(RETURN_TO_WORKDESK_CHANNEL) as Promise<WorkdeskRestoreResult>,
+    saveWorkdeskContext: (request) => invoke(SAVE_WORKDESK_CONTEXT_CHANNEL, request) as Promise<SaveWorkdeskContextResult>,
     createWorkdeskFile: (request) => invoke(CREATE_WORKDESK_FILE_CHANNEL, request) as Promise<WorkdeskFileCreateResult>,
     createWorkdeskProject: (request) => invoke(CREATE_WORKDESK_PROJECT_CHANNEL, request) as Promise<WorkdeskProjectResult>,
     registerWorkdeskProject: (request) => invoke(REGISTER_WORKDESK_PROJECT_CHANNEL, request) as Promise<WorkdeskProjectResult>,

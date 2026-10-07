@@ -6,6 +6,7 @@ import {
   ipcMain,
   shell,
   type IpcMainInvokeEvent,
+  type MessageBoxOptions,
   type OpenDialogReturnValue,
   type WebContents
 } from "electron";
@@ -42,6 +43,8 @@ import {
   REMOVE_WORKDESK_PROJECT_CHANNEL,
   REGISTER_WORKDESK_PROJECT_CHANNEL,
   RESTORE_WORKDESK_CHANNEL,
+  RETURN_TO_WORKDESK_CHANNEL,
+  SAVE_WORKDESK_CONTEXT_CHANNEL,
   createWorkdeskHandlers
 } from "./workdesk-ipc";
 import {
@@ -168,7 +171,13 @@ import {
   type AutosaveFlushResponseResult
 } from "./autosave-ipc";
 import { AutosaveShutdownCoordinator } from "./autosave-shutdown";
+import { establishApplicationIdentity } from "./application-identity";
 
+// Set a product-stable Electron identity before resolving any local stores.
+// Retain the profile Electron selected before this upgrade so existing state
+// is not silently moved to a new MAGINALIA-named directory.
+const applicationIdentity = establishApplicationIdentity(app);
+const userDataPath = applicationIdentity.userDataPath;
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) {
@@ -206,16 +215,17 @@ const smokeMode = quickSmokeMode
   || h5Smoke.requested
   || workdeskPersistenceSmoke.requested;
 const markdownFileService = new MarkdownFileService();
-const workspaceStateStore = new FileWorkspaceStateStore(path.join(app.getPath("userData"), "workspace-state.json"));
+const workspaceStateStore = new FileWorkspaceStateStore(path.join(userDataPath, "workspace-state.json"));
 const workspaceStateHandlers = createWorkspaceStateHandlers({
   load: () => workspaceStateStore.load(),
   save: (state) => workspaceStateStore.save(state)
 });
 const documentWorkspaceService = new DocumentWorkspaceService();
+const projectPathStore = new FileProjectPathStore(path.join(userDataPath, "last-project.json"));
 const projectService = new ProjectService(
   documentWorkspaceService,
   markdownFileService,
-  new FileProjectPathStore(path.join(app.getPath("userData"), "last-project.json"))
+  projectPathStore
 );
 const projectAssetService = new ProjectAssetService(documentWorkspaceService);
 const libraryService = new LibraryService();
@@ -223,7 +233,7 @@ let desktopConfigurationPaths: DesktopConfigurationPaths | undefined;
 function getDesktopConfigurationPaths(): DesktopConfigurationPaths {
   // Electron chooses userData; resolving lazily ensures that path is final and
   // avoids accidentally binding Shelf discovery to bootstrap cwd/state.
-  desktopConfigurationPaths ??= resolveDesktopConfigurationPaths(app.getPath("userData"));
+  desktopConfigurationPaths ??= resolveDesktopConfigurationPaths(userDataPath);
   return desktopConfigurationPaths;
 }
 
@@ -262,7 +272,7 @@ async function getActivePrivateShelfForDesktop(owner: object) {
 let reviewerProcessManager: ReviewerProcessManager | undefined;
 function getReviewerProcessManager(): ReviewerProcessManager {
   reviewerProcessManager ??= new ReviewerProcessManager({
-    workspaceLocator: new UserDataReviewerWorkspaceLocator(app.getPath("userData")),
+    workspaceLocator: new UserDataReviewerWorkspaceLocator(userDataPath),
     // Reviewer keeps its existing explicit CLI/config boundary. The Desktop
     // supplies the deterministic, absolute application configuration path.
     ndlocrConfigPath: getDesktopConfigurationPaths().ndlocrConfigPath,
@@ -315,9 +325,9 @@ function createReviewerEmbeddedHostForMain() {
     return view;
   });
 }
-const userDataPath = app.getPath("userData");
 const workdeskPathStorePath = path.join(userDataPath, "workdesk-paths.json");
-const workdeskService = new WorkdeskService(new FileWorkdeskPathStore(workdeskPathStorePath));
+const workdeskPathStore = new FileWorkdeskPathStore(workdeskPathStorePath);
+const workdeskService = new WorkdeskService(workdeskPathStore);
 const repositoryService = new LocalRepositoryService({
   // Repository History asks only the main-process Workdesk coordinator for
   // validated direct-child boundaries; renderer paths never become ignores.
@@ -465,6 +475,22 @@ const workdeskHandlers = createWorkdeskHandlers({
     title: "Register existing Project",
     properties: ["openDirectory"]
   }),
+  confirmAdoptWorkdesk: async () => {
+    const options: MessageBoxOptions = {
+      type: "warning",
+      title: "Use this folder as Workdesk?",
+      message: "This folder is not set up as a Workdesk yet.",
+      detail: "MAGINALIA will add its Workdesk setup files. Your existing files will stay in this folder and will not be moved or replaced.",
+      buttons: ["Use this folder", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    };
+    const response = mainWindow === null
+      ? await dialog.showMessageBox(options)
+      : await dialog.showMessageBox(mainWindow, options);
+    return response.response === 0;
+  },
   service: workdeskService,
   repositories: repositoryService,
   projects: projectService,
@@ -670,7 +696,7 @@ function requestRendererModCapability(
 }
 
 const modHost = new ModHost({
-  userDataPath: app.getPath("userData"),
+  userDataPath,
   onCapabilityRequest: (modId, request) => requestRendererModCapability(modId, request),
   onError: (message, error) => console.error(
     `MAGINALIA_MOD_ERROR ${message}${error instanceof Error ? ` ${error.message}` : error === undefined ? "" : ` ${JSON.stringify(error)}`}`
@@ -871,7 +897,7 @@ function completeWorkdeskPersistenceSmoke(): void {
   if (workdeskPersistenceSmokeFinished) return;
   workdeskPersistenceSmokeFinished = true;
   const stage = workdeskPersistenceSmoke.restore ? "restore" : "first-run";
-  console.log(`MAGINALIA_ELECTRON_WORKDESK_PERSISTENCE_OK stage=${stage} pickerCalls=${workdeskPersistencePickerInvocationCount} userData=${JSON.stringify(app.getPath("userData"))} pathStore=${JSON.stringify(workdeskPathStorePath)}`);
+  console.log(`MAGINALIA_ELECTRON_WORKDESK_PERSISTENCE_OK appName=${JSON.stringify(applicationIdentity.applicationName)} stage=${stage} pickerCalls=${workdeskPersistencePickerInvocationCount} userData=${JSON.stringify(userDataPath)} pathStore=${JSON.stringify(workdeskPathStorePath)}`);
   app.quit();
 }
 
@@ -993,6 +1019,36 @@ function handleAutosaveFlushResponse(
   return { kind: "accepted" };
 }
 
+async function logWorkdeskPersistenceDiagnostic(action: "open" | "restore", result: unknown): Promise<void> {
+  if (process.env.MAGINALIA_WORKDESK_DIAGNOSTICS !== "1" && !workdeskPersistenceSmoke.requested) return;
+  let savedState: Awaited<ReturnType<FileWorkdeskPathStore["loadForRestore"]>>;
+  let stateStatus = "readable";
+  try {
+    savedState = await workdeskPathStore.loadForRestore();
+    if (savedState === undefined) stateStatus = "missing";
+  } catch (error) {
+    savedState = undefined;
+    stateStatus = error instanceof Error && "code" in error ? String((error as { code?: unknown }).code) : "unreadable";
+  }
+  const record = typeof result === "object" && result !== null
+    ? result as { readonly kind?: unknown; readonly lastActiveContext?: unknown }
+    : undefined;
+  const resultKind = typeof record?.kind === "string" ? record.kind : "unknown";
+  console.info(`MAGINALIA_WORKDESK_${action.toUpperCase()}_DIAGNOSTIC ${JSON.stringify({
+    appName: applicationIdentity.applicationName,
+    userDataPath,
+    pathStorePath: workdeskPathStorePath,
+    pathStoreState: stateStatus,
+    primaryWorkdesk: savedState?.primaryWorkdesk ?? null,
+    lastActiveContext: record?.lastActiveContext ?? null,
+    action,
+    result: resultKind,
+    reason: action === "open"
+      ? (resultKind === "opened" ? "folder-selected-and-opened" : "folder-selection-did-not-open")
+      : (resultKind === "none" ? "no-saved-primary" : resultKind === "opened" ? "remembered-primary-restored" : "restore-failed"),
+  })}`);
+}
+
 function registerMarkdownIpc(): void {
   ipcMain.handle(OPEN_MARKDOWN_CHANNEL, handleOpenMarkdown);
   ipcMain.handle(SAVE_MARKDOWN_CHANNEL, handleSaveMarkdown);
@@ -1012,9 +1068,19 @@ function registerMarkdownIpc(): void {
   const workdeskIpc = <T>(handler: (event: Electron.IpcMainInvokeEvent, ...args: readonly unknown[]) => Promise<T>) =>
     async (event: Electron.IpcMainInvokeEvent, ...args: readonly unknown[]): Promise<T> =>
       structuredClone(await handler(event, ...args));
-  ipcMain.handle(OPEN_WORKDESK_CHANNEL, workdeskIpc(workdeskHandlers.openWorkdesk));
+  ipcMain.handle(OPEN_WORKDESK_CHANNEL, async (event, ...args) => {
+    const result = await workdeskIpc(workdeskHandlers.openWorkdesk)(event, ...args);
+    await logWorkdeskPersistenceDiagnostic("open", result);
+    return result;
+  });
   ipcMain.handle(CREATE_WORKDESK_CHANNEL, workdeskIpc(workdeskHandlers.createWorkdesk));
-  ipcMain.handle(RESTORE_WORKDESK_CHANNEL, workdeskIpc(workdeskHandlers.restoreWorkdesk));
+  ipcMain.handle(RESTORE_WORKDESK_CHANNEL, async (event, ...args) => {
+    const result = await workdeskIpc(workdeskHandlers.restoreWorkdesk)(event, ...args);
+    await logWorkdeskPersistenceDiagnostic("restore", result);
+    return result;
+  });
+  ipcMain.handle(RETURN_TO_WORKDESK_CHANNEL, workdeskIpc(workdeskHandlers.returnToWorkdesk));
+  ipcMain.handle(SAVE_WORKDESK_CONTEXT_CHANNEL, workdeskIpc(workdeskHandlers.saveWorkdeskContext));
   ipcMain.handle(CREATE_WORKDESK_FILE_CHANNEL, workdeskIpc(workdeskHandlers.createWorkdeskFile));
   ipcMain.handle(CREATE_WORKDESK_PROJECT_CHANNEL, workdeskIpc(workdeskHandlers.createWorkdeskProject));
   ipcMain.handle(REGISTER_WORKDESK_PROJECT_CHANNEL, workdeskIpc(workdeskHandlers.registerWorkdeskProject));
@@ -1073,6 +1139,8 @@ function unregisterMarkdownIpc(): void {
   ipcMain.removeHandler(OPEN_WORKDESK_CHANNEL);
   ipcMain.removeHandler(CREATE_WORKDESK_CHANNEL);
   ipcMain.removeHandler(RESTORE_WORKDESK_CHANNEL);
+  ipcMain.removeHandler(RETURN_TO_WORKDESK_CHANNEL);
+  ipcMain.removeHandler(SAVE_WORKDESK_CONTEXT_CHANNEL);
   ipcMain.removeHandler(CREATE_WORKDESK_FILE_CHANNEL);
   ipcMain.removeHandler(RESOLVE_INTERNAL_LINK_CHANNEL);
   ipcMain.removeHandler(OPEN_INTERNAL_LINK_CHANNEL);
@@ -1144,7 +1212,7 @@ function createMainWindow(): BrowserWindow {
         void runWorkdeskPersistenceSmoke({
           window,
           rootPath: workdeskPersistenceSmoke.rootPath!,
-          userDataPath: app.getPath("userData"),
+          userDataPath,
           expectedUserDataPath: process.env.MAGINALIA_SMOKE_EXPECTED_USER_DATA,
           restore: workdeskPersistenceSmoke.restore === true,
           pickerInvocationCount: () => workdeskPersistencePickerInvocationCount
@@ -1430,7 +1498,7 @@ function createMainWindow(): BrowserWindow {
       void runH5Smoke({
         reviewer: getReviewerProcessManager(),
         reviewerView: getReviewerViewController(),
-        userDataPath: app.getPath("userData"),
+        userDataPath,
         owner: window.webContents,
         configuredShelf: getConfiguredPrivateShelf(),
         libraryService,
@@ -1521,7 +1589,7 @@ function createMainWindow(): BrowserWindow {
     };
     window.webContents.once("did-finish-load", () => {
       const expectedUserData = process.env.MAGINALIA_SMOKE_EXPECTED_USER_DATA;
-      if (expectedUserData && path.resolve(app.getPath("userData")) !== path.resolve(expectedUserData)) {
+      if (expectedUserData && path.resolve(userDataPath) !== path.resolve(expectedUserData)) {
         failQuickSmoke("Electron did not use the requested isolated userData directory");
         return;
       }
@@ -1694,7 +1762,13 @@ const autosaveShutdown = new AutosaveShutdownCoordinator({
 // not used because its async work is not reliable.
 app.on("before-quit", (event) => autosaveShutdown.beforeQuit(event));
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
+  try {
+    await projectPathStore.ensureDefaultCreationParentPlaceholder();
+  } catch {
+    // A malformed/unreadable app-local record is preserved for recovery.
+    console.error("MAGINALIA_PROJECT_PATH_SETTINGS_NOT_INITIALIZED");
+  }
   registerMarkdownIpc();
   modHostReady = modHost.start().catch((error: unknown) => {
     console.error("MAGINALIA_MOD_START_FAILED", error);
