@@ -10,7 +10,7 @@ Do not treat historical chat context as product truth when current repository ev
 
 ## Task bootstrap
 
-Before implementation:
+Before implementation **or review**:
 
 1. Verify the actual Git HEAD and worktree state.
 2. If the work order specifies an `expected_base_commit`, require an exact match.
@@ -20,9 +20,23 @@ Before implementation:
 4. Read `memory/README.md` and `memory/index.json`.
 5. Retrieve only the memory records relevant to the current task.
 6. Inspect the current implementation and tests before making assumptions.
-7. Read only the relevant canonical MAGINALIA_IDE plans/ADRs needed for the task.
+7. Read the relevant canonical planning sources in `MAGINALIA_IDE/plan` before deciding, reviewing, or editing behavior.
+8. Follow links from those plan files to accepted ADR / Decision Log entries when they are authoritative for the touched behavior.
+9. Explicitly check that the proposed work does not deviate from the relevant current plan.
 
 Do not preload the entire `memory/` directory.
+
+### Canonical-plan gate
+
+`MAGINALIA_IDE/plan` is the current planning source of truth for product scope and behavior.
+
+Implementation and review are not allowed to proceed from prompt wording, memory, or existing code alone when the task touches a planned product concept.
+
+Before changing or approving code, the agent must be able to name the relevant plan file(s) it checked and state why the proposed change is compatible with them.
+
+If the prompt conflicts with the current canonical plan, stop and report the conflict instead of silently choosing one interpretation.
+
+Historical chat context, prior handoffs, repository memory, and existing implementation do not override the current canonical plan.
 
 ## Structured memory
 
@@ -143,6 +157,100 @@ Do not implement or reopen production Git/GitHub fetch/pull/push/auth/conflict o
 D059 removes the frozen remote Git/GitHub product path during pre-installer maintenance. Local Git-backed History remains supported and must be kept separate from remote synchronization.
 
 Local development Git operations required to implement and commit work are allowed.
+
+## Model routing and orchestration
+
+Use the smallest capable model for the job.
+
+### GPT-6 Luna Max — default worker
+
+Use GPT-6 Luna Max for concrete, directly executable work, including:
+
+- implementation;
+- bounded bug fixing;
+- focused repository inspection;
+- ordinary code review;
+- test execution and smoke verification;
+- small or medium documentation changes;
+- narrow investigation whose result can be acted on directly.
+
+Luna Max is the default worker for actual implementation and ordinary investigation.
+
+A task does not require Sol merely because it touches many lines. Escalate when the hard part is judgment, ambiguity, architecture, cross-module ownership, or decomposition.
+
+### GPT-6.1 Sol Mid — decision and decomposition model
+
+Use GPT-6.1 Sol Mid for abstract or high-complexity work, including:
+
+- investigations spanning multiple modules where the root cause or ownership is unclear;
+- architecture or source-of-truth decisions;
+- large product/state-lifecycle decisions;
+- ambiguous failures where several subsystems could be responsible;
+- deciding whether existing systems should be unified or kept separate;
+- splitting a large task into small independent executable slices;
+- work that would otherwise require Luna to invent architecture.
+
+Sol Mid should normally return decisions and bounded executable slices rather than perform a broad implementation itself.
+
+Expected Sol output:
+
+```text
+Decision
+Root cause
+Invariants
+Slice 1
+Slice 2
+...
+Verification
+```
+
+Each slice must be simple enough for Luna Max to execute without further architectural invention.
+
+If Luna becomes uncertain during a slice, ask Sol. Do not guess.
+
+Older model-routing notes in repository memory are subordinate to this section and the latest explicit Product Owner instruction.
+
+## Scope boundary
+
+The explicit user prompt defines the authorized work boundary.
+
+Do **not** implement, refactor, clean up, migrate, rename, or otherwise change work outside that requested scope merely because adjacent debt is visible.
+
+Allowed outside-scope activity is limited to:
+
+- reading code needed to understand the requested task;
+- running verification needed to prove the requested task;
+- reporting unrelated defects without fixing them.
+
+If the requested work cannot be completed safely without changing another area, stop and explain the dependency. Do not silently broaden the task.
+
+A Sol decomposition must preserve the same scope boundary. Decomposition is not permission to add adjacent roadmap work.
+
+## Five-hour quota safe-stop and resume
+
+Treat the current rolling 5-hour quota as an execution safety boundary.
+
+When quota telemetry is available:
+
+1. Check the remaining 5-hour quota before starting a substantial slice and again at natural checkpoints.
+2. If the remaining quota falls below **15%**, do not start another implementation slice.
+3. Finish only the smallest safe atomic operation already in progress if stopping mid-operation would leave the repository inconsistent.
+4. Create a resume checkpoint/context that records at minimum:
+   - current task and authorized scope;
+   - canonical plan files already read;
+   - current branch / HEAD / worktree state;
+   - files changed;
+   - completed slices;
+   - tests and evidence already obtained;
+   - exact next action;
+   - known blockers / uncertainties;
+   - any Sol decision that must be preserved.
+5. Stop execution after the checkpoint is durable.
+6. Read the current 5-hour quota reset time from available quota telemetry. Do not guess it.
+7. Create a **one-time** scheduled resume for **one minute after that reset time**.
+8. The resume instruction must first reload the checkpoint, re-check Git/worktree state and the relevant canonical plan, then continue only the unfinished authorized scope.
+
+If quota telemetry or scheduling capability is unavailable, do not invent values or claim a resume was scheduled. Stop safely, preserve the checkpoint, and report the missing capability explicitly.
 
 ## Implementation behavior
 
