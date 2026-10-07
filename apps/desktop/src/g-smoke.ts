@@ -44,6 +44,11 @@ async function script(window: BrowserWindow, source: string, description: string
   if (!await window.webContents.executeJavaScript(source, true) as boolean) throw new Error(`G smoke ${description} was unavailable.`);
 }
 
+async function pressEnter(window: BrowserWindow): Promise<void> {
+  window.webContents.sendInputEvent({ type: "keyDown", keyCode: "ENTER" });
+  window.webContents.sendInputEvent({ type: "keyUp", keyCode: "ENTER" });
+}
+
 async function waitForScript(window: BrowserWindow, source: string, description: string): Promise<void> {
   const deadline = Date.now() + TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -133,6 +138,328 @@ async function exerciseTrailingPreviewInsertion(
     return editor instanceof HTMLElement && !/[\\u200b-\\u200d\\u2060]/u.test(editor.dataset.smokeText ?? '');
   })()`, true) as boolean;
   if (!hasNoPlaceholder) throw new Error(`G smoke persisted a Preview placeholder in ${displayName}.`);
+}
+
+async function exercisePreviewEnter(
+  window: BrowserWindow,
+  displayName: string,
+  initialSource: string,
+  lineEnding: "\n" | "\r\n"
+): Promise<void> {
+  await script(window, `(() => {
+    const source = [...document.querySelectorAll('#explorer-tree button[data-explorer-file-id]')]
+      .find((item) => item.dataset.explorerFileName === ${JSON.stringify(displayName)});
+    const preview = document.querySelector('#document-preview-mode');
+    if (!(source instanceof HTMLButtonElement) || !(preview instanceof HTMLButtonElement)) return false;
+    source.click();
+    if (preview.getAttribute('aria-pressed') !== 'true') preview.click();
+    return true;
+  })()`, `open ${displayName} for Enter smoke`);
+  await waitFor(window, (value) => value.active === displayName && value.preview && value.text === initialSource, `${displayName} initial Preview`);
+  await script(window, `(() => {
+    const editable = [...document.querySelectorAll('.markdown-preview-editable-text')].find((item) => item.textContent === '前🌸日本語後続');
+    if (!(editable instanceof HTMLElement) || editable.firstChild === null) return false;
+    editable.focus();
+    const selection = document.getSelection();
+    if (selection === null) return false;
+    const range = document.createRange();
+    range.setStart(editable.firstChild, '前🌸'.length);
+    range.setEnd(editable.firstChild, '前🌸日本語'.length);
+    selection.removeAllRanges(); selection.addRange(range);
+    editable.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
+    const replacement = document.createTextNode('日本語確定');
+    range.deleteContents(); range.insertNode(replacement);
+    range.setStartAfter(replacement); range.collapse(true);
+    selection.removeAllRanges(); selection.addRange(range);
+    editable.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText', data: '日本語確定', isComposing: true, bubbles: true }));
+    const composing = new InputEvent('beforeinput', { inputType: 'insertParagraph', isComposing: true, bubbles: true, cancelable: true });
+    editable.dispatchEvent(composing);
+    const legacyImeEnter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    Object.defineProperty(legacyImeEnter, 'keyCode', { value: 229 });
+    editable.dispatchEvent(legacyImeEnter);
+    const compositionend = new CompositionEvent('compositionend', { bubbles: true, data: '日本語確定' });
+    editable.dispatchEvent(compositionend);
+    const editor = document.querySelector('#editor');
+    const expected = ${JSON.stringify(initialSource.replace("日本語", "日本語確定"))};
+    return editor instanceof HTMLElement && editor.dataset.smokeText === expected
+      && !composing.defaultPrevented && !legacyImeEnter.defaultPrevented
+      && document.activeElement === editable && editable.textContent === '前🌸日本語確定後続';
+  })()`, `${displayName} commits Japanese composition without an Enter and ignores composing Enter`);
+
+  const composedSource = initialSource.replace("日本語", "日本語確定");
+  const splitAt = "前🌸日本語確定";
+  const line = "前🌸日本語確定後続";
+  const lineIndex = composedSource.indexOf(line);
+  if (lineIndex < 0) throw new Error(`G smoke ${displayName} fixture is missing the Japanese line.`);
+  const enteredSource = `${composedSource.slice(0, lineIndex)}${splitAt}${lineEnding}${composedSource.slice(lineIndex + splitAt.length)}`;
+  await script(window, `(() => {
+    const editable = [...document.querySelectorAll('.markdown-preview-editable-text')].find((item) => item.textContent === '前🌸日本語確定後続');
+    if (!(editable instanceof HTMLElement) || editable.firstChild === null) return false;
+    editable.normalize();
+    editable.focus();
+    const selection = document.getSelection();
+    if (selection === null) return false;
+    const range = document.createRange();
+    range.setStart(editable.firstChild, '前🌸日本語確定'.length);
+    range.collapse(true);
+    selection.removeAllRanges(); selection.addRange(range);
+    return true;
+  })()`, `${displayName} positions the source caret for native Enter`);
+  await pressEnter(window);
+  await waitFor(window, (value) => value.active === displayName && value.text === enteredSource, `${displayName} exact line-break source edit`);
+  const caretReady = await window.webContents.executeJavaScript(`(() => {
+    const preview = document.querySelector('#markdown-preview');
+    const editor = document.querySelector('#editor');
+    const target = document.activeElement;
+    const selection = document.getSelection();
+    if (!(preview instanceof HTMLElement) || preview.hidden || !(editor instanceof HTMLElement)
+      || !(target instanceof HTMLElement) || !target.classList.contains('markdown-preview-editable-text')
+      || selection === null || !selection.isCollapsed || selection.anchorNode === null) return false;
+    const relative = document.createRange();
+    relative.selectNodeContents(target);
+    relative.setEnd(selection.anchorNode, selection.anchorOffset);
+    const sourceCaret = Number(target.dataset.previewSourceStart) + relative.toString().length;
+    const expectedCaret = ${JSON.stringify(enteredSource)}.indexOf(${JSON.stringify(`${splitAt}${lineEnding}`)}) + ${JSON.stringify(`${splitAt}${lineEnding}`)}.length;
+    const visibleBreak = [...preview.querySelectorAll('br.markdown-preview-source-line-break')].find((item) => Number(item.dataset.previewSourceStart) === expectedCaret - ${lineEnding.length});
+    return sourceCaret === expectedCaret && editor.dataset.smokeText === ${JSON.stringify(enteredSource)}
+      && visibleBreak instanceof HTMLBRElement && visibleBreak.getAttribute('contenteditable') === 'false'
+      && Number(visibleBreak.dataset.previewSourceEnd) - Number(visibleBreak.dataset.previewSourceStart) === ${lineEnding.length};
+  })()`, true) as boolean;
+  if (!caretReady) throw new Error(`G smoke did not show the source-mapped ${displayName} line break and restore its caret after Enter.`);
+
+  const emptyLineSource = enteredSource.replace(`${splitAt}${lineEnding}`, `${splitAt}${lineEnding}${lineEnding}`);
+  await script(window, `(() => {
+    const editable = [...document.querySelectorAll('.markdown-preview-editable-text')].find((item) => item.textContent === ${JSON.stringify(splitAt)});
+    if (!(editable instanceof HTMLElement) || editable.firstChild === null) return false;
+    editable.focus();
+    const selection = document.getSelection();
+    if (selection === null) return false;
+    const range = document.createRange();
+    range.setStart(editable.firstChild, editable.textContent.length);
+    range.collapse(true);
+    selection.removeAllRanges(); selection.addRange(range);
+    return true;
+  })()`, `${displayName} positions Enter before an existing source line break`);
+  await pressEnter(window);
+  await waitFor(window, (value) => value.text === emptyLineSource, `${displayName} renderer-local empty line`);
+  const emptyLineCaretReady = await window.webContents.executeJavaScript(`(() => {
+    const target = document.activeElement;
+    const editor = document.querySelector('#editor');
+    const selection = document.getSelection();
+    if (!(target instanceof HTMLElement) || target.dataset.previewCaretOnly !== 'true'
+      || target.textContent !== '' || !(editor instanceof HTMLElement) || selection === null || !selection.isCollapsed) return false;
+    const relative = document.createRange();
+    relative.selectNodeContents(target);
+    if (selection.anchorNode === null) return false;
+    relative.setEnd(selection.anchorNode, selection.anchorOffset);
+    const sourceCaret = Number(target.dataset.previewSourceStart) + relative.toString().length;
+    const expectedCaret = ${JSON.stringify(emptyLineSource)}.indexOf(${JSON.stringify(`${splitAt}${lineEnding}${lineEnding}`)}) + ${JSON.stringify(`${splitAt}${lineEnding}`)}.length;
+    return sourceCaret === expectedCaret && editor.dataset.smokeText === ${JSON.stringify(emptyLineSource)}
+      && !/[\\u200b-\\u200d\\u2060]/u.test(editor.dataset.smokeText ?? '');
+  })()`, true) as boolean;
+  if (!emptyLineCaretReady) throw new Error(`G smoke did not use a renderer-only source-mapped empty caret in ${displayName}.`);
+  await window.webContents.insertText("空行");
+  const filledEmptyLineSource = emptyLineSource.replace(`${splitAt}${lineEnding}${lineEnding}`, `${splitAt}${lineEnding}空行${lineEnding}`);
+  await waitFor(window, (value) => value.text === filledEmptyLineSource, `${displayName} typing into the empty Preview line`);
+  await window.webContents.insertText("挿入");
+  const continuedSource = filledEmptyLineSource.replace("空行", "空行挿入");
+  await waitFor(window, (value) => value.text === continuedSource, `${displayName} continued Preview typing`);
+  await script(window, `(() => { const edit = document.querySelector('#document-edit-mode'); if (!(edit instanceof HTMLButtonElement)) return false; edit.click(); return true; })()`, `return ${displayName} to Edit`);
+  await waitFor(window, (value) => value.active === displayName && !value.preview && value.text === continuedSource, `${displayName} Edit round-trip`);
+  await script(window, `(() => { const preview = document.querySelector('#document-preview-mode'); if (!(preview instanceof HTMLButtonElement)) return false; preview.click(); return true; })()`, `return ${displayName} to Preview`);
+  await waitFor(window, (value) => value.preview && value.text === continuedSource, `${displayName} Preview round-trip`);
+}
+
+async function exercisePreviewEnterAtEnd(
+  window: BrowserWindow,
+  displayName: string,
+  initialSource: string
+): Promise<void> {
+  await script(window, `(() => {
+    const source = [...document.querySelectorAll('#explorer-tree button[data-explorer-file-id]')]
+      .find((item) => item.dataset.explorerFileName === ${JSON.stringify(displayName)});
+    const preview = document.querySelector('#document-preview-mode');
+    if (!(source instanceof HTMLButtonElement) || !(preview instanceof HTMLButtonElement)) return false;
+    source.click();
+    if (preview.getAttribute('aria-pressed') !== 'true') preview.click();
+    return true;
+  })()`, `open ${displayName} for trailing Enter smoke`);
+  await waitFor(window, (value) => value.active === displayName && value.preview && value.text === initialSource, `${displayName} initial Preview`);
+  await script(window, `(() => {
+    const editable = [...document.querySelectorAll('.markdown-preview-editable-text')].find((item) => item.textContent === ${JSON.stringify(initialSource)});
+    if (!(editable instanceof HTMLElement) || editable.firstChild === null) return false;
+    editable.focus();
+    const selection = document.getSelection();
+    if (selection === null) return false;
+    const range = document.createRange();
+    range.setStart(editable.firstChild, editable.textContent.length);
+    range.collapse(true);
+    selection.removeAllRanges(); selection.addRange(range);
+    return true;
+  })()`, `${displayName} positions Enter at document end`);
+  await pressEnter(window);
+  const firstState = await waitFor(window, (value) => value.active === displayName
+    && (value.text === `${initialSource}\n` || value.text === `${initialSource}\r\n`), `${displayName} first trailing line break`);
+  const lineEnding = firstState.text.slice(initialSource.length);
+  const afterFirst = firstState.text;
+  await script(window, `(() => {
+    const trailing = document.querySelector('.markdown-preview-trailing-insertion');
+    const editor = document.querySelector('#editor');
+    return trailing instanceof HTMLParagraphElement && editor instanceof HTMLElement
+      && trailing.dataset.previewTrailingActive === 'true'
+      && Number(trailing.dataset.previewSourceStart) === editor.dataset.smokeText?.length
+      && Number(trailing.dataset.previewSourceEnd) === editor.dataset.smokeText?.length;
+  })()`, `${displayName} maps the end caret without another separator`);
+  await script(window, `(() => {
+    const trailing = document.querySelector('.markdown-preview-trailing-insertion');
+    if (!(trailing instanceof HTMLParagraphElement) || document.activeElement !== trailing) return false;
+    return true;
+  })()`, `${displayName} positions repeated trailing Enter`);
+  await pressEnter(window);
+  const afterSecond = `${afterFirst}${lineEnding}`;
+  await waitFor(window, (value) => value.active === displayName && value.text === afterSecond, `${displayName} repeated line break`);
+  await script(window, `(() => { const trailing = document.querySelector('.markdown-preview-trailing-insertion'); if (!(trailing instanceof HTMLParagraphElement)) return false; trailing.click(); return true; })()`, `${displayName} repeated trailing click`);
+  if ((await state(window))?.text !== afterSecond) throw new Error(`G smoke repeated ${displayName} trailing click added a separator.`);
+  await window.webContents.insertText("次");
+  const continued = `${afterSecond}次`;
+  await waitFor(window, (value) => value.active === displayName && value.text === continued, `${displayName} continued typing after repeated Enter`);
+  const noPlaceholder = await window.webContents.executeJavaScript(`(() => {
+    const editor = document.querySelector('#editor');
+    return editor instanceof HTMLElement && !/[\\u200b-\\u200d\\u2060]/u.test(editor.dataset.smokeText ?? '');
+  })()`, true) as boolean;
+  if (!noPlaceholder) throw new Error(`G smoke persisted a Preview caret placeholder in ${displayName}.`);
+}
+
+async function exercisePreviewEnterBeforeProtected(
+  window: BrowserWindow,
+  displayName: string,
+  sourceText: string,
+  prose: string,
+  marker: string,
+  objectSelector: string
+): Promise<void> {
+  await script(window, `(() => {
+    const source = [...document.querySelectorAll('#explorer-tree button[data-explorer-file-id]')]
+      .find((item) => item.dataset.explorerFileName === ${JSON.stringify(displayName)});
+    const preview = document.querySelector('#document-preview-mode');
+    if (!(source instanceof HTMLButtonElement) || !(preview instanceof HTMLButtonElement)) return false;
+    source.click();
+    if (preview.getAttribute('aria-pressed') !== 'true') preview.click();
+    return true;
+  })()`, `open ${displayName} for protected-object Enter smoke`);
+  await waitFor(window, (value) => value.active === displayName && value.preview && value.text === sourceText, `${displayName} initial Preview`);
+  await waitForScript(window, `document.querySelector(${JSON.stringify(objectSelector)}) instanceof HTMLElement`, `${displayName} protected object projection`);
+  await script(window, `(() => {
+    const editable = [...document.querySelectorAll('.markdown-preview-editable-text')].find((item) => item.textContent === ${JSON.stringify(prose)});
+    if (!(editable instanceof HTMLElement) || editable.firstChild === null) return false;
+    editable.focus();
+    const selection = document.getSelection();
+    if (selection === null) return false;
+    const range = document.createRange();
+    range.setStart(editable.firstChild, editable.textContent.length);
+    range.collapse(true);
+    selection.removeAllRanges(); selection.addRange(range);
+    return true;
+  })()`, `${displayName} positions Enter before its protected object`);
+  await pressEnter(window);
+  const enteredSource = sourceText.replace(`${prose}\n${marker}`, `${prose}\n\n${marker}`);
+  await waitFor(window, (value) => value.active === displayName && value.text === enteredSource, `${displayName} source line break before protected object`);
+  const mappedBeforeObject = await window.webContents.executeJavaScript(`(() => {
+    const root = document.querySelector('.markdown-preview-document');
+    const editor = document.querySelector('#editor');
+    const caret = document.activeElement;
+    const object = root?.querySelector(${JSON.stringify(objectSelector)});
+    const objectBlock = object?.closest('[data-preview-block-source-start]');
+    const selection = document.getSelection();
+    if (!(root instanceof HTMLElement) || !(editor instanceof HTMLElement) || !(caret instanceof HTMLElement)
+      || caret.dataset.previewCaretOnly !== 'true' || caret.textContent !== '' || !(object instanceof HTMLElement)
+      || !(objectBlock instanceof HTMLElement) || selection === null || !selection.isCollapsed) return false;
+    const caretIndex = Array.prototype.indexOf.call(root.children, caret.parentElement);
+    const objectIndex = Array.prototype.indexOf.call(root.children, objectBlock);
+    const source = editor.dataset.smokeText ?? '';
+    return caretIndex >= 0 && objectIndex === caretIndex + 1
+      && Number(objectBlock.dataset.previewBlockSourceStart) === source.indexOf(${JSON.stringify(marker)})
+      && source === ${JSON.stringify(enteredSource)} && source.split(${JSON.stringify(marker)}).length === 2
+      && object.querySelector('.markdown-preview-editable-text') === null
+      && !/[\\u200b-\\u200d\\u2060]/u.test(source);
+  })()`, true) as boolean;
+  if (!mappedBeforeObject) throw new Error(`G smoke did not restore the ${displayName} caret directly before its unchanged protected object.`);
+}
+
+async function exercisePreviewEnterUndoRedo(window: BrowserWindow, displayName: string, sourceText: string): Promise<void> {
+  await script(window, `(() => {
+    const source = [...document.querySelectorAll('#explorer-tree button[data-explorer-file-id]')]
+      .find((item) => item.dataset.explorerFileName === ${JSON.stringify(displayName)});
+    const preview = document.querySelector('#document-preview-mode');
+    if (!(source instanceof HTMLButtonElement) || !(preview instanceof HTMLButtonElement)) return false;
+    source.click();
+    if (preview.getAttribute('aria-pressed') !== 'true') preview.click();
+    return true;
+  })()`, `open ${displayName} for source-edit undo/redo`);
+  await waitFor(window, (value) => value.active === displayName && value.preview && value.text === sourceText, `${displayName} initial Preview`);
+  await script(window, `(() => {
+    const editable = [...document.querySelectorAll('.markdown-preview-editable-text')].find((item) => item.textContent === ${JSON.stringify(sourceText)});
+    if (!(editable instanceof HTMLElement) || editable.firstChild === null) return false;
+    editable.focus();
+    const selection = document.getSelection();
+    if (selection === null) return false;
+    const range = document.createRange();
+    range.setStart(editable.firstChild, 'Undo前'.length);
+    range.collapse(true);
+    selection.removeAllRanges(); selection.addRange(range);
+    return true;
+  })()`, `${displayName} positions a source-mapped Enter`);
+  await pressEnter(window);
+  const beforeCaret = sourceText.slice(0, 'Undo前'.length);
+  const afterCaret = sourceText.slice('Undo前'.length);
+  const entered = await waitFor(window, (value) => value.active === displayName
+    && ["\n", "\r\n", "\r"].some((lineEnding) => value.text === `${beforeCaret}${lineEnding}${afterCaret}`), `${displayName} source-edit Enter`);
+  const afterEnter = entered.text;
+  await script(window, `(() => { const undo = document.querySelector('[data-command-id="maginalia.editor.undo"]'); if (!(undo instanceof HTMLButtonElement)) return false; undo.click(); return true; })()`, `${displayName} Undo command`);
+  await waitFor(window, (value) => value.active === displayName && value.text === sourceText, `${displayName} source-edit undo`);
+  await script(window, `(() => { const redo = document.querySelector('[data-command-id="maginalia.editor.redo"]'); if (!(redo instanceof HTMLButtonElement)) return false; redo.click(); return true; })()`, `${displayName} Redo command`);
+  await waitFor(window, (value) => value.active === displayName && value.text === afterEnter, `${displayName} source-edit redo`);
+}
+
+async function exerciseStructuralEnterFallback(window: BrowserWindow, displayName: string, sourceText: string): Promise<void> {
+  await script(window, `(() => {
+    const source = [...document.querySelectorAll('#explorer-tree button[data-explorer-file-id]')]
+      .find((item) => item.dataset.explorerFileName === ${JSON.stringify(displayName)});
+    const preview = document.querySelector('#document-preview-mode');
+    if (!(source instanceof HTMLButtonElement) || !(preview instanceof HTMLButtonElement)) return false;
+    source.click();
+    if (preview.getAttribute('aria-pressed') !== 'true') preview.click();
+    return true;
+  })()`, `open ${displayName} for structural Enter smoke`);
+  await waitFor(window, (value) => value.active === displayName && value.preview && value.text === sourceText, `${displayName} initial Preview`);
+  await waitForScript(window, `(() => {
+    const quote = document.querySelector('.rendered-quote-ref');
+    return quote instanceof HTMLElement && quote.querySelector('.markdown-preview-editable-text') === null;
+  })()`, `${displayName} protected QuoteRef projection`);
+  for (const [selector, description] of [
+    ['h1 .markdown-preview-editable-text', 'heading'],
+    ['li .markdown-preview-editable-text', 'list item'],
+    ['blockquote .markdown-preview-editable-text', 'blockquote'],
+    ['strong .markdown-preview-editable-text', 'syntax-wrapped label'],
+    ['.markdown-table th .markdown-preview-editable-table-cell', 'table cell']
+  ] as const) {
+    await script(window, `(() => {
+      const editable = document.querySelector(${JSON.stringify(selector)});
+      if (!(editable instanceof HTMLElement) || editable.firstChild === null) return false;
+      editable.focus();
+      const selection = document.getSelection();
+      if (selection === null) return false;
+      const range = document.createRange();
+      range.setStart(editable.firstChild, Math.min(1, editable.textContent.length));
+      range.collapse(true);
+      selection.removeAllRanges(); selection.addRange(range);
+      return true;
+    })()`, `${displayName} positions Enter in ${description}`);
+    await pressEnter(window);
+    await waitFor(window, (value) => value.active === displayName && !value.preview && value.text === sourceText, `${displayName} ${description} Edit fallback`);
+    await script(window, `(() => { const preview = document.querySelector('#document-preview-mode'); if (!(preview instanceof HTMLButtonElement)) return false; preview.click(); return true; })()`, `reopen ${displayName} Preview after ${description}`);
+    await waitFor(window, (value) => value.active === displayName && value.preview, `${displayName} Preview after ${description}`);
+  }
 }
 
 /** Real Electron coverage of G's command/preview/link/search seams. */
@@ -403,6 +730,36 @@ export async function runGSmoke(window: BrowserWindow, fixtureRoot: string): Pro
   await exerciseTrailingPreviewInsertion(window, "trailing-paragraph.md", "ordinary final paragraph", "\n\n", "Paragraph trailing text");
   await exerciseTrailingPreviewInsertion(window, "trailing-quote.md", trailingQuoteRef, "\n\n", "Quote trailing text");
   await exerciseTrailingPreviewInsertion(window, "trailing-synced.md", trailingSyncedBlock, "\n", "Synced trailing text");
+  const enterCrlfSource = "# 見出し\r\n\r\n前🌸日本語後続\r\n次の行\r\n";
+  await exercisePreviewEnter(window, "preview-enter-crlf.md", enterCrlfSource, "\r\n");
+  const enterLfSource = "# 見出し\n\n前🌸日本語後続\n次の行\n";
+  await exercisePreviewEnter(window, "preview-enter-lf.md", enterLfSource, "\n");
+  await exercisePreviewEnterAtEnd(window, "preview-enter-tail.md", "末尾の文");
+  const protectedProse = "保護対象前";
+  await exercisePreviewEnterBeforeProtected(window, "preview-enter-protected-quote.md",
+    `${protectedProse}\n${trailingQuoteRef}`, protectedProse, trailingQuoteRef, ".rendered-quote-ref");
+  const protectedImage = "![[assets/preview-enter.png]]";
+  await exercisePreviewEnterBeforeProtected(window, "preview-enter-protected-image.md",
+    `${protectedProse}\n${protectedImage}`, protectedProse, protectedImage, ".rendered-local-media");
+  await exercisePreviewEnterBeforeProtected(window, "preview-enter-protected-synced.md",
+    `${protectedProse}\n${trailingSyncedBlock}`, protectedProse, trailingSyncedBlock, ".rendered-synced-block");
+  await exercisePreviewEnterUndoRedo(window, "preview-enter-undo.md", "Undo前後");
+  const enterStructuralSource = [
+    "# 見出し",
+    "",
+    "- 項目",
+    "",
+    "> 引用",
+    "",
+    "本文 **強調** [リンク](https://example.test)",
+    "",
+    trailingQuoteRef,
+    "",
+    "| A | B |",
+    "| --- | --- |",
+    "| 1 | 2 |"
+  ].join("\n");
+  await exerciseStructuralEnterFallback(window, "preview-enter-structural.md", enterStructuralSource);
   await script(window, `(() => { const tab = [...document.querySelectorAll('#document-tabs .document-tab')].find((item) => item.querySelector('.document-tab-label')?.textContent?.startsWith('a.md')); const button = tab?.querySelector('.document-tab-label'); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`, "restore A as active Preview tab");
   await waitFor(window, (value) => value.active === "a.md", "A active after trailing Preview coverage");
   if (path.basename(path.resolve(fixtureRoot)).length === 0) throw new Error("G smoke fixture root was invalid.");
@@ -415,7 +772,7 @@ export async function runGRestoreSmoke(window: BrowserWindow): Promise<void> {
     window,
     (value) => value.ready
       && value.active === "a.md"
-      && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md|chapter.md|trailing-heading.md|trailing-paragraph.md|trailing-quote.md|trailing-synced.md",
+      && value.tabs.map((tab) => tab.trim()).join("|") === "c.md|a.md|b.md|chapter.md|trailing-heading.md|trailing-paragraph.md|trailing-quote.md|trailing-synced.md|preview-enter-crlf.md|preview-enter-lf.md|preview-enter-tail.md|preview-enter-protected-quote.md|preview-enter-protected-image.md|preview-enter-protected-synced.md|preview-enter-undo.md|preview-enter-structural.md",
     "restored C, A, B, and composed-source tab order"
   );
 }

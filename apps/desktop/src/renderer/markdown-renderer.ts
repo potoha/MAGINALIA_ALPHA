@@ -308,6 +308,8 @@ export interface PreviewEditableTextRange {
   readonly start: number;
   readonly end: number;
   readonly text: string;
+  /** Enter may insert a source line break at this range without guessing Markdown structure. */
+  readonly allowEnter?: boolean;
 }
 
 export interface PreviewEditableOptions {
@@ -318,21 +320,43 @@ export interface PreviewEditableOptions {
     | { readonly kind: "error" };
   readonly onEditingChange?: (editing: boolean) => void;
   readonly onSelectionChange?: (range: { readonly start: number; readonly end: number } | null) => void;
+  readonly onEnterApplied?: (result: { readonly revision: number; readonly offset: number }) => void;
+  readonly onEnterFallback?: () => void;
+  /** One renderer-local caret target consumed by the render that owns this revision. */
+  readonly restoreCaretOffset?: number;
 }
 
-interface SourceLine { readonly text: string; readonly start: number; }
+interface SourceLine {
+  readonly text: string;
+  /** First source offset belonging to the line text, after a possible BOM. */
+  readonly start: number;
+  /** Raw line start, before a possible BOM. */
+  readonly sourceStart: number;
+  /** Source offset immediately after line text and before its line ending. */
+  readonly end: number;
+  /** Source offset after the exact LF, CRLF, or CR line ending. */
+  readonly sourceEnd: number;
+}
 
 function sourceLines(text: string, sourceOffset = 0): readonly SourceLine[] {
   const lines: SourceLine[] = [];
   let cursor = 0;
   while (cursor <= text.length) {
-    const newline = text.indexOf("\n", cursor);
-    const rawEnd = newline < 0 ? text.length : newline;
-    const end = rawEnd > cursor && text[rawEnd - 1] === "\r" ? rawEnd - 1 : rawEnd;
+    let rawEnd = cursor;
+    while (rawEnd < text.length && text[rawEnd] !== "\n" && text[rawEnd] !== "\r") rawEnd += 1;
+    let sourceEnd = rawEnd;
+    if (text[rawEnd] === "\r" && text[rawEnd + 1] === "\n") sourceEnd += 2;
+    else if (text[rawEnd] === "\r" || text[rawEnd] === "\n") sourceEnd += 1;
     const bom = sourceOffset === 0 && cursor === 0 && text.startsWith("\uFEFF") ? 1 : 0;
-    lines.push({ text: text.slice(cursor + bom, end), start: sourceOffset + cursor + bom });
-    if (newline < 0) break;
-    cursor = newline + 1;
+    lines.push({
+      text: text.slice(cursor + bom, rawEnd),
+      start: sourceOffset + cursor + bom,
+      sourceStart: sourceOffset + cursor,
+      end: sourceOffset + rawEnd,
+      sourceEnd: sourceOffset + sourceEnd
+    });
+    if (sourceEnd === rawEnd) break;
+    cursor = sourceEnd;
   }
   return lines;
 }
@@ -346,14 +370,14 @@ export function projectMarkdownPreviewSource(
 }
 
 /** Collect only source ranges whose visible Markdown text is unambiguous. */
-function editableInlineRanges(text: string, sourceStart: number): readonly PreviewEditableTextRange[] {
+function editableInlineRanges(text: string, sourceStart: number, allowEnter = true): readonly PreviewEditableTextRange[] {
   // Raw HTML/comments, QuoteRefs, media and code remain protected in H.7.2.
   if (/<(?:!--|\/?[A-Za-z])/u.test(text)) return [];
   const ranges: PreviewEditableTextRange[] = [];
-  const visit = (value: string, base: number): void => {
+  const visit = (value: string, base: number, canInsertLineBreak = allowEnter): void => {
     let cursor = 0;
     const push = (start: number, end: number): void => {
-      if (end > start) ranges.push({ start: base + start, end: base + end, text: value.slice(start, end) });
+      if (end > start) ranges.push({ start: base + start, end: base + end, text: value.slice(start, end), allowEnter: canInsertLineBreak });
     };
     while (cursor < value.length) {
       const marker = quoteMarkerAt(value, cursor);
@@ -377,13 +401,13 @@ function editableInlineRanges(text: string, sourceStart: number): readonly Previ
         // only the label is editable, never its destination. Provider embeds
         // remain protected presentation structures.
         const embed = describeEmbed(href);
-        if (embed === null || embed.kind === "generic-web") visit(link[1], base + cursor + 1);
+        if (embed === null || embed.kind === "generic-web") visit(link[1], base + cursor + 1, false);
         cursor += link[0].length;
         continue;
       }
       const wrapped = /^(\*\*|__|\*|_)([^\n]+?)\1/u.exec(value.slice(cursor));
       if (wrapped !== null && wrapped[2].length > 0) {
-        visit(wrapped[2], base + cursor + wrapped[1].length);
+        visit(wrapped[2], base + cursor + wrapped[1].length, false);
         cursor += wrapped[0].length;
         continue;
       }
@@ -397,16 +421,40 @@ function editableInlineRanges(text: string, sourceStart: number): readonly Previ
   return Object.freeze(ranges);
 }
 
+interface PreviewSourceLineBreak {
+  readonly start: number;
+  readonly end: number;
+}
+
+interface PreviewBlockDescriptor {
+  readonly start: number;
+  readonly end: number;
+  readonly editableRanges: readonly PreviewEditableTextRange[];
+  readonly lineBreaks: readonly PreviewSourceLineBreak[];
+}
+
 /**
- * Renderer-local source maps in rendered-block order.  It reads original
- * UTF-16 source offsets (including BOM/CRLF), never normalized preview text.
+ * Renderer-local source descriptors in parsed-block order. All positions are
+ * measured against the original UTF-16 source, including BOM and CRLF width.
  */
-export function collectEditablePreviewRanges(text: string, sourceOffset = 0): readonly (readonly PreviewEditableTextRange[])[] {
+function collectPreviewBlockDescriptors(text: string, sourceOffset = 0): readonly PreviewBlockDescriptor[] {
   const lines = sourceLines(text, sourceOffset);
   const values = lines.map((line) => line.text);
-  const blocks: (readonly PreviewEditableTextRange[])[] = [];
+  const blocks: PreviewBlockDescriptor[] = [];
+  const push = (startIndex: number, endIndex: number, editableRanges: readonly PreviewEditableTextRange[], lineBreaks: readonly PreviewSourceLineBreak[] = []): void => {
+    const first = lines[startIndex];
+    const last = lines[endIndex];
+    if (first === undefined || last === undefined) return;
+    blocks.push(Object.freeze({
+      start: first.sourceStart,
+      end: last.end,
+      editableRanges: Object.freeze([...editableRanges]),
+      lineBreaks: Object.freeze([...lineBreaks])
+    }));
+  };
   let index = 0;
   while (index < lines.length) {
+    const startIndex = index;
     const line = lines[index]!;
     if (line.text.trim().length === 0) { index += 1; continue; }
     const fence = openingMarkdownFence(line.text);
@@ -414,17 +462,17 @@ export function collectEditablePreviewRanges(text: string, sourceOffset = 0): re
       index += 1;
       while (index < lines.length && !isMarkdownFenceClosing(lines[index]!.text, fence)) index += 1;
       if (index < lines.length) index += 1;
-      blocks.push(Object.freeze([]));
+      push(startIndex, index - 1, []);
       continue;
     }
     const heading = parseMarkdownHeading(line.text);
     if (heading !== null) {
-      blocks.push(editableInlineRanges(heading.content, line.start + heading.contentStart));
+      push(startIndex, startIndex, editableInlineRanges(heading.content, line.start + heading.contentStart, false));
       index += 1;
       continue;
     }
     if (isSyncedBlockStructuralLine(line.text)) {
-      blocks.push(Object.freeze([]));
+      push(startIndex, startIndex, []);
       index += 1;
       continue;
     }
@@ -439,67 +487,142 @@ export function collectEditablePreviewRanges(text: string, sourceOffset = 0): re
         index += 1;
         if (row.length < count) continue;
       }
-      blocks.push(Object.freeze([]));
+      push(startIndex, Math.max(startIndex, index - 1), []);
       continue;
     }
-    if (line.text.startsWith(">")) {
+    if (isMarkdownBlockquoteLine(line.text)) {
       const quote: SourceLine[] = [];
-      while (index < lines.length && lines[index]!.text.startsWith(">")) quote.push(lines[index++]!);
+      while (index < lines.length && isMarkdownBlockquoteLine(lines[index]!.text)) quote.push(lines[index++]!);
       const first = quote[0];
       const prefix = first === undefined ? 0 : (/^>\s?/u.exec(first.text)?.[0].length ?? 1);
-      blocks.push(quote.length === 1 && first !== undefined
-        ? editableInlineRanges(first.text.slice(prefix), first.start + prefix)
-        : Object.freeze([]));
+      push(startIndex, index - 1, quote.length === 1 && first !== undefined
+        ? editableInlineRanges(first.text.slice(prefix), first.start + prefix, false)
+        : []);
       continue;
     }
-    const list = /^(?:([-*+])\s+|(\d+)\.\s+)(.+)$/u.exec(line.text);
+    const list = parseMarkdownListItem(line.text);
     if (list !== null) {
-      const ordered = list[2] !== undefined;
+      const ordered = list.ordered;
       const regions: PreviewEditableTextRange[] = [];
       while (index < lines.length) {
-        const item = /^(?:([-*+])\s+|(\d+)\.\s+)(.+)$/u.exec(lines[index]!.text);
-        if (item === null || (item[2] !== undefined) !== ordered) break;
+        const item = parseMarkdownListItem(lines[index]!.text);
+        if (item === null || item.ordered !== ordered) break;
         const source = lines[index]!;
-        regions.push(...editableInlineRanges(item[3], source.start + item[0].length - item[3].length));
+        regions.push(...editableInlineRanges(item.content, source.start + item.contentStart, false));
         index += 1;
       }
-      blocks.push(Object.freeze(regions));
+      push(startIndex, index - 1, regions);
       continue;
     }
     const paragraph: SourceLine[] = [line];
     index += 1;
     while (index < lines.length && lines[index]!.text.trim().length > 0
       && openingMarkdownFence(lines[index]!.text) === null
-      && !/^(#{1,6})\s+/u.test(lines[index]!.text)
+      && parseMarkdownHeading(lines[index]!.text) === null
       && !isSyncedBlockStructuralLine(lines[index]!.text)
-      && !lines[index]!.text.startsWith(">")
-      && !/^(?:[-*+]\s+|\d+\.\s+)/u.test(lines[index]!.text)
+      && !isMarkdownBlockquoteLine(lines[index]!.text)
+      && parseMarkdownListItem(lines[index]!.text) === null
       && tableStart(values, index) === null) paragraph.push(lines[index++]!);
-    // A hard-wrapped paragraph contains non-contiguous source gaps; leave it
-    // protected rather than normalize its line endings or Markdown layout.
-    blocks.push(paragraph.length === 1 ? editableInlineRanges(line.text, line.start) : Object.freeze([]));
+    const lineBreaks = paragraph.slice(0, -1)
+      .filter((source) => source.sourceEnd > source.end)
+      .map((source) => Object.freeze({ start: source.end, end: source.sourceEnd }));
+    push(startIndex, index - 1, paragraph.flatMap((source) => editableInlineRanges(source.text, source.start)), lineBreaks);
   }
   return Object.freeze(blocks);
 }
 
-interface EditableRenderState {
-  readonly ranges: readonly PreviewEditableTextRange[];
-  cursor: number;
+/** Preserve the range projection API used by existing Preview consumers. */
+export function collectEditablePreviewRanges(text: string, sourceOffset = 0): readonly (readonly PreviewEditableTextRange[])[] {
+  return Object.freeze(collectPreviewBlockDescriptors(text, sourceOffset).map((block) => block.editableRanges));
 }
 
-function appendEditableText(
-  parent: HTMLElement,
-  text: string,
-  state: EditableRenderState | undefined,
-  options: MarkdownPreviewRenderOptions
-): void {
-  const range = state?.ranges[state.cursor];
-  if (range === undefined || range.text !== text || options.editable === undefined) {
-    parent.append(document.createTextNode(text));
-    return;
+interface EditableRenderState {
+  readonly ranges: readonly PreviewEditableTextRange[];
+  readonly lineBreaks: readonly PreviewSourceLineBreak[];
+  readonly renderSourceLineBreaks: boolean;
+  cursor: number;
+  lineBreakCursor: number;
+}
+
+function sourceRangeAtSelection(element: HTMLElement): PreviewEditableTextRange | null {
+  const selection = document.getSelection();
+  const anchor = selection?.anchorNode;
+  const focus = selection?.focusNode;
+  if (selection === null || anchor === null || focus === null || anchor === undefined || focus === undefined
+    || !element.contains(anchor) || !element.contains(focus)) return null;
+  try {
+    const offset = (node: Node, value: number): number => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      range.setEnd(node, value);
+      return range.toString().length;
+    };
+    const startOffset = offset(anchor, selection.anchorOffset);
+    const endOffset = offset(focus, selection.focusOffset);
+    const start = Number(element.dataset.previewSourceStart);
+    const end = Number(element.dataset.previewSourceEnd);
+    const localStart = Math.min(startOffset, endOffset);
+    const localEnd = Math.max(startOffset, endOffset);
+    if (!Number.isInteger(start) || !Number.isInteger(end) || localEnd > end - start) return null;
+    return {
+      start: start + localStart,
+      end: start + localEnd,
+      text: (element.textContent ?? "").slice(localStart, localEnd)
+    };
+  } catch {
+    return null;
   }
-  if (state !== undefined) state.cursor += 1;
-  const editable = options.editable;
+}
+
+function installPreviewEnterHandling(
+  element: HTMLElement,
+  composition: PreviewCompositionGate,
+  editable: PreviewEditableOptions,
+  allowEnter: boolean
+): void {
+  let keyboardEnterHandled = false;
+  const fallback = (): void => editable.onEnterFallback?.();
+  const handle = (): void => {
+    if (!allowEnter) { fallback(); return; }
+    const range = sourceRangeAtSelection(element);
+    if (range === null) { fallback(); return; }
+    const revision = Number(element.dataset.previewRevision);
+    const result = editable.onEdit({
+      revision,
+      range,
+      replacement: editable.defaultLineEnding ?? "\n"
+    });
+    if (result.kind !== "applied") { fallback(); return; }
+    element.dataset.previewSourceEnd = String(result.range.end);
+    element.dataset.previewRevision = String(result.revision);
+    editable.onEnterApplied?.({ revision: result.revision, offset: result.range.end });
+  };
+  element.addEventListener("beforeinput", (event) => {
+    const input = event as InputEvent;
+    if (input.inputType !== "insertParagraph" && input.inputType !== "insertLineBreak") return;
+    if (input.isComposing || composition.isComposing) return;
+    event.preventDefault();
+    if (keyboardEnterHandled) {
+      keyboardEnterHandled = false;
+      return;
+    }
+    handle();
+  });
+  element.addEventListener("keydown", (event) => {
+    if (event.keyCode === 229 || event.isComposing || composition.isComposing) return;
+    if (event.key !== "Enter" || event.defaultPrevented) return;
+    event.preventDefault();
+    keyboardEnterHandled = true;
+    queueMicrotask(() => { keyboardEnterHandled = false; });
+    handle();
+  });
+}
+
+function createEditableTextIsland(
+  range: PreviewEditableTextRange,
+  editable: PreviewEditableOptions,
+  allowEnter = range.allowEnter === true
+): HTMLSpanElement {
   const element = document.createElement("span");
   element.className = "markdown-preview-editable-text";
   element.contentEditable = "true";
@@ -507,12 +630,12 @@ function appendEditableText(
   element.dataset.previewSourceStart = String(range.start);
   element.dataset.previewSourceEnd = String(range.end);
   element.dataset.previewRevision = String(editable.revision);
-  element.textContent = text;
+  element.textContent = range.text;
   const composition = new PreviewCompositionGate();
   const apply = (compositionFinal = false): void => {
     if (!compositionFinal && !composition.mayCommitInput()) return;
     const replacement = element.textContent ?? "";
-    // New block structure needs Edit mode; a text island never guesses it.
+    // New block structure is handled only by the explicit Enter transaction.
     if (/\r|\n/u.test(replacement)) return;
     const result = editable.onEdit({
       revision: Number(element.dataset.previewRevision),
@@ -532,7 +655,44 @@ function appendEditableText(
   element.addEventListener("input", () => apply());
   element.addEventListener("focus", () => editable.onEditingChange?.(true));
   element.addEventListener("blur", () => editable.onEditingChange?.(false));
-  parent.append(element);
+  installPreviewEnterHandling(element, composition, editable, allowEnter);
+  return element;
+}
+
+function appendEditableText(
+  parent: HTMLElement,
+  text: string,
+  state: EditableRenderState | undefined,
+  options: MarkdownPreviewRenderOptions
+): void {
+  for (const part of text.split(/(\n)/u)) {
+    if (part === "") continue;
+    if (part === "\n") {
+      // Editable prose displays hard-wrapped source lines without making the
+      // separator part of any contenteditable island or serialized Markdown.
+      if (state?.renderSourceLineBreaks === true) {
+        const sourceBreak = state.lineBreaks[state.lineBreakCursor++];
+        const lineBreak = document.createElement("br");
+        lineBreak.contentEditable = "false";
+        lineBreak.className = "markdown-preview-source-line-break";
+        if (sourceBreak !== undefined) {
+          lineBreak.dataset.previewSourceStart = String(sourceBreak.start);
+          lineBreak.dataset.previewSourceEnd = String(sourceBreak.end);
+        }
+        parent.append(lineBreak);
+      } else {
+        parent.append(document.createTextNode(part));
+      }
+      continue;
+    }
+    const range = state?.ranges[state.cursor];
+    if (range !== undefined && range.text === part && options.editable !== undefined) {
+      state!.cursor += 1;
+      parent.append(createEditableTextIsland(range, options.editable));
+    } else {
+      parent.append(document.createTextNode(part));
+    }
+  }
 }
 
 function appendEditableTableCell(
@@ -573,6 +733,7 @@ function appendEditableTableCell(
   element.addEventListener("input", () => apply());
   element.addEventListener("focus", () => editable.onEditingChange?.(true));
   element.addEventListener("blur", () => editable.onEditingChange?.(false));
+  installPreviewEnterHandling(element, composition, editable, false);
   parent.append(element);
 }
 
@@ -588,11 +749,12 @@ function appendTrailingEditablePosition(
   element.spellcheck = true;
   element.setAttribute("role", "textbox");
   element.setAttribute("aria-label", "Add text after document");
-  element.setAttribute("aria-multiline", "false");
+  element.setAttribute("aria-multiline", "true");
   element.dataset.previewSourceStart = String(sourceText.length);
   element.dataset.previewSourceEnd = String(sourceText.length);
   element.dataset.previewRevision = String(editable.revision);
-  element.dataset.previewTrailingActive = "false";
+  const restoredAtEnd = editable.restoreCaretOffset === sourceText.length;
+  element.dataset.previewTrailingActive = String(restoredAtEnd);
 
   const composition = new PreviewCompositionGate();
   const placeCaretAtEnd = (): void => {
@@ -652,8 +814,66 @@ function appendTrailingEditablePosition(
     if (document.activeElement !== element) element.focus();
     if (element.dataset.previewTrailingActive !== "true") activate();
   });
+  installPreviewEnterHandling(element, composition, editable, true);
   root.append(element);
   return element;
+}
+
+function addRendererOnlyCaretIsland(
+  root: HTMLElement,
+  trailing: HTMLElement,
+  offset: number,
+  editable: PreviewEditableOptions
+): HTMLElement {
+  const block = document.createElement("p");
+  block.className = "markdown-prose markdown-preview-empty-line";
+  const island = createEditableTextIsland({ start: offset, end: offset, text: "", allowEnter: true }, editable, true);
+  island.dataset.previewCaretOnly = "true";
+  block.append(island);
+  const nextBlock = Array.from(root.children).find((candidate) => {
+    if (candidate === trailing) return false;
+    const sourceStart = Number((candidate as HTMLElement).dataset.previewBlockSourceStart);
+    return Number.isInteger(sourceStart) && sourceStart >= offset;
+  });
+  root.insertBefore(block, nextBlock ?? trailing);
+  return island;
+}
+
+function restorePreviewCaret(
+  root: HTMLElement,
+  trailing: HTMLElement,
+  offset: number,
+  editable: PreviewEditableOptions
+): void {
+  const candidates = Array.from(root.querySelectorAll<HTMLElement>(".markdown-preview-editable-text"))
+    .filter((item) => item.dataset.previewRevision === String(editable.revision))
+    .filter((item) => {
+      const start = Number(item.dataset.previewSourceStart);
+      const end = Number(item.dataset.previewSourceEnd);
+      return Number.isInteger(start) && Number.isInteger(end) && start <= offset && offset <= end;
+    })
+    .sort((left, right) => {
+      const leftStart = Number(left.dataset.previewSourceStart);
+      const rightStart = Number(right.dataset.previewSourceStart);
+      return Number(rightStart === offset) - Number(leftStart === offset);
+    });
+  const target = candidates[0] ?? addRendererOnlyCaretIsland(root, trailing, offset, editable);
+  target.focus();
+  const selection = document.getSelection();
+  if (selection !== null) {
+    const range = document.createRange();
+    const start = Number(target.dataset.previewSourceStart);
+    const localOffset = Math.max(0, Math.min(offset - start, (target.textContent ?? "").length));
+    if (target.firstChild?.nodeType === Node.TEXT_NODE) {
+      range.setStart(target.firstChild, localOffset);
+    } else {
+      range.setStart(target, 0);
+    }
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  editable.onSelectionChange?.({ start: offset, end: offset });
 }
 
 function appendTableControls(parent: HTMLElement, target: MarkdownTableTarget, currentCell: () => MarkdownTableCellTarget | undefined, options: MarkdownPreviewRenderOptions): void {
@@ -809,13 +1029,21 @@ export function renderMarkdownPreview(
   const root = document.createElement("article");
   root.className = "markdown-preview-document";
   root.dataset.writingDirection = direction;
-  const rangesByBlock = options.editable === undefined ? [] : collectEditablePreviewRanges(projection.body, projection.start);
+  const blockDescriptors = collectPreviewBlockDescriptors(projection.body, projection.start);
   const tablesByBlock = options.editable === undefined ? [] : collectMarkdownTables(projection.body, projection.start);
   let tableIndex = 0;
   let lastRenderedBlock: HTMLElement | undefined;
+  let trailingEditable: HTMLParagraphElement | undefined;
   const blocks = parseMarkdownBlocks(projection.body, quotes, internalLinks, media);
   blocks.forEach((block, blockIndex) => {
-    const editableState = options.editable === undefined ? undefined : { ranges: rangesByBlock[blockIndex] ?? [], cursor: 0 };
+    const descriptor = blockDescriptors[blockIndex];
+    const editableState = options.editable === undefined || descriptor === undefined ? undefined : {
+      ranges: descriptor.editableRanges,
+      lineBreaks: descriptor.lineBreaks,
+      renderSourceLineBreaks: block.kind === "paragraph" && block.presentation === "prose",
+      cursor: 0,
+      lineBreakCursor: 0
+    };
     let element: HTMLElement;
     switch (block.kind) {
       case "heading": element = document.createElement(`h${block.depth}`); appendInlines(element, block.content, options, editableState); break;
@@ -918,11 +1146,16 @@ export function renderMarkdownPreview(
         break;
       }
     }
+    if (descriptor !== undefined) {
+      element.dataset.previewBlockSourceStart = String(descriptor.start);
+      element.dataset.previewBlockSourceEnd = String(descriptor.end);
+    }
     root.append(element);
     lastRenderedBlock = element;
   });
   if (options.editable !== undefined) {
     const trailing = appendTrailingEditablePosition(root, text, blocks.at(-1), options.editable);
+    trailingEditable = trailing;
     root.addEventListener("click", (event) => {
       if (event.target !== root) return;
       const lastBounds = lastRenderedBlock?.getBoundingClientRect();
@@ -963,6 +1196,9 @@ export function renderMarkdownPreview(
     root.addEventListener("focusin", selection);
   }
   container.replaceChildren(root);
+  if (options.editable !== undefined && options.editable.restoreCaretOffset !== undefined && trailingEditable !== undefined) {
+    restorePreviewCaret(root, trailingEditable, options.editable.restoreCaretOffset, options.editable);
+  }
 }
 
 function clean(value: string | null | undefined): string {

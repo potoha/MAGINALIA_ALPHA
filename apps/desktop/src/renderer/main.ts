@@ -931,6 +931,7 @@ function saveExportSettingsFromControls(): void {
 }
 restoreExportSettingsControls();
 let previewMediaGeneration = 0;
+let pendingPreviewEnterCaret: { readonly documentId: string; readonly revision: number; readonly offset: number } | null = null;
 let activeTableTarget: ActiveTableTarget | null = null;
 let commandContextReady = false;
 let pendingInternalLinkOpen: { readonly fileId: string } | null = null;
@@ -1110,10 +1111,13 @@ const previewController = new PreviewController({
       const text = state.document?.currentText ?? "";
       const generation = ++previewMediaGeneration;
       const projectId = projectController?.getState().project?.projectId ?? null;
+      const restoreCaret = state.document !== null && pendingPreviewEnterCaret?.documentId === state.document.documentId
+        && pendingPreviewEnterCaret.revision === state.document.revision ? pendingPreviewEnterCaret : null;
       const editable = state.document !== null && typeof state.document.revision === "number"
         ? {
           revision: state.document.revision,
           defaultLineEnding: controller.getLineEnding(),
+          restoreCaretOffset: restoreCaret?.offset,
           onEdit: (request: { readonly revision: number; readonly range: { readonly start: number; readonly end: number }; readonly replacement: string }) =>
             controller.applySourceEdit({
               documentId: state.document!.documentId,
@@ -1121,6 +1125,22 @@ const previewController = new PreviewController({
               range: request.range,
               replacement: request.replacement
             }),
+          onEnterApplied: ({ revision, offset }: { readonly revision: number; readonly offset: number }) => {
+            const current = controller.getDocumentState();
+            const documentId = state.document!.documentId;
+            if (current === null || current.documentId !== documentId || current.revision !== revision) return;
+            const caret = { documentId, revision, offset };
+            pendingPreviewEnterCaret = caret;
+            if (!previewController.refreshAfterInlineEdit(documentId, revision) && pendingPreviewEnterCaret === caret) {
+              pendingPreviewEnterCaret = null;
+            }
+          },
+          onEnterFallback: () => {
+            const current = controller.getDocumentState();
+            if (current?.documentId !== state.document!.documentId) return;
+            pendingPreviewEnterCaret = null;
+            void executeCommand("maginalia.renderer.showEdit");
+          },
           onEditingChange: (editing: boolean) => {
             if (editing) {
               previewController.setInlineEditing(state.document!.documentId);
@@ -1160,6 +1180,7 @@ const previewController = new PreviewController({
         }
       };
       renderMarkdownPreview(previewContainer, text, state.quoteMap, state.direction, previewOptions);
+      if (restoreCaret !== null && pendingPreviewEnterCaret === restoreCaret) pendingPreviewEnterCaret = null;
       const linkApi = typeof window.maginalia.resolveInternalLink === "function"
         ? { resolveInternalLink: (request: { readonly projectId: string; readonly target: string }) => window.maginalia.resolveInternalLink(request) }
         : null;

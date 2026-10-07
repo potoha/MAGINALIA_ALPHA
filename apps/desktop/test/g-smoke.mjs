@@ -24,6 +24,30 @@ try {
   await writeFile(path.join(projectRoot, "trailing-paragraph.md"), "ordinary final paragraph", "utf8");
   await writeFile(path.join(projectRoot, "trailing-quote.md"), trailingQuoteRef, "utf8");
   await writeFile(path.join(projectRoot, "trailing-synced.md"), trailingSyncedBlock, "utf8");
+  await writeFile(path.join(projectRoot, "preview-enter-crlf.md"), "# 見出し\r\n\r\n前🌸日本語後続\r\n次の行\r\n", "utf8");
+  await writeFile(path.join(projectRoot, "preview-enter-lf.md"), "# 見出し\n\n前🌸日本語後続\n次の行\n", "utf8");
+  await writeFile(path.join(projectRoot, "preview-enter-tail.md"), "末尾の文", "utf8");
+  const protectedProse = "保護対象前";
+  await writeFile(path.join(projectRoot, "preview-enter-protected-quote.md"), `${protectedProse}\n${trailingQuoteRef}`, "utf8");
+  const protectedImage = "![[assets/preview-enter.png]]";
+  await writeFile(path.join(projectRoot, "preview-enter-protected-image.md"), `${protectedProse}\n${protectedImage}`, "utf8");
+  await writeFile(path.join(projectRoot, "preview-enter-protected-synced.md"), `${protectedProse}\n${trailingSyncedBlock}`, "utf8");
+  await writeFile(path.join(projectRoot, "preview-enter-undo.md"), "Undo前後", "utf8");
+  await writeFile(path.join(projectRoot, "preview-enter-structural.md"), [
+    "# 見出し",
+    "",
+    "- 項目",
+    "",
+    "> 引用",
+    "",
+    "本文 **強調** [リンク](https://example.test)",
+    "",
+    trailingQuoteRef,
+    "",
+    "| A | B |",
+    "| --- | --- |",
+    "| 1 | 2 |"
+  ].join("\n"), "utf8");
   const result = await runElectronSmoke({ userDataRoot, appArgs: ["--smoke-g", projectRoot] });
   assertElectronSmokeMarker(result, marker, "Electron G smoke");
   const restored = await runElectronSmoke({ userDataRoot, appArgs: ["--smoke-g-restore", projectRoot] });

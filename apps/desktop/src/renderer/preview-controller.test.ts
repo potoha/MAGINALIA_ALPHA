@@ -6,10 +6,10 @@ import { PreviewController, type PreviewView, type PreviewWritingPort } from "./
 import type { RendererPreferenceStore } from "./renderer-preferences";
 
 class FakeWriting implements PreviewWritingPort {
-  public document: DocumentState | null;
+  public document: (DocumentState & { readonly revision?: number }) | null;
   private readonly listeners = new Set<(document: DocumentState | null) => void>();
   public constructor(text: string | null) {
-    this.document = text === null ? null : openDocument({ documentId: "doc-1", displayName: "draft.md", text });
+    this.document = text === null ? null : { ...openDocument({ documentId: "doc-1", displayName: "draft.md", text }), revision: 0 };
   }
   public getDocumentState(): DocumentState | null { return this.document; }
   public onDocumentChange(listener: (document: DocumentState | null) => void): () => void {
@@ -18,7 +18,7 @@ class FakeWriting implements PreviewWritingPort {
   }
   public setText(text: string): void {
     if (this.document === null) return;
-    this.document = { ...this.document, currentText: text };
+    this.document = { ...this.document, currentText: text, revision: (this.document.revision ?? 0) + 1 };
     for (const listener of this.listeners) listener(this.document);
   }
 }
@@ -71,6 +71,58 @@ describe("PreviewController", () => {
     expect(vi.mocked(view.setPreviewState).mock.calls).toHaveLength(before);
     controller.setInlineEditing(null);
     expect(vi.mocked(view.setPreviewState).mock.calls.at(-1)?.[0].document?.currentText).toBe("during composition");
+  });
+
+  it("allows an explicit revision-owned refresh after an Enter source edit", () => {
+    const writing = new FakeWriting("before after");
+    const view: PreviewView = { setPreviewState: vi.fn() };
+    const controller = new PreviewController({ writing, api: null, view, preferences });
+    controller.setMode("preview");
+    controller.setInlineEditing("doc-1");
+    const beforeEdit = vi.mocked(view.setPreviewState).mock.calls.length;
+    writing.setText("before\nafter");
+    expect(vi.mocked(view.setPreviewState)).toHaveBeenCalledTimes(beforeEdit);
+    expect(controller.refreshAfterInlineEdit("doc-1", 1)).toBe(true);
+    expect(vi.mocked(view.setPreviewState).mock.calls.at(-1)?.[0].document?.currentText).toBe("before\nafter");
+    expect(controller.isInlineEditing()).toBe(false);
+    expect(controller.refreshAfterInlineEdit("doc-1", 0)).toBe(false);
+  });
+
+  it("does not let a delayed QuoteRef result replace a focused island and resolves again on blur", async () => {
+    const marker = '<!-- maginalia:quote-ref v1 {"quoteId":"a","mode":"normal"} -->';
+    const writing = new FakeWriting(marker);
+    const view: PreviewView = { setPreviewState: vi.fn() };
+    const pending: ((result: ResolveReferencesResult) => void)[] = [];
+    const api = {
+      resolveReferences: vi.fn(() => new Promise<ResolveReferencesResult>((resolve) => pending.push(resolve)))
+    };
+    const controller = new PreviewController({ writing, api, view, preferences });
+    controller.setMode("preview");
+    controller.setInlineEditing("doc-1");
+    const whileFocused = vi.mocked(view.setPreviewState).mock.calls.length;
+    const resolved = (quote: string): ResolveReferencesResult => ({
+      kind: "resolved",
+      sources: [],
+      unresolved: [],
+      resolved: [{
+        occurrence: { offset: 0, marker, quoteRef: null },
+        quoteRef: null,
+        quotation: { quote, authors: [], title: "Title", pageLabel: "1" },
+        source: {}
+      }]
+    } as unknown as ResolveReferencesResult);
+
+    pending[0]?.(resolved("stale result"));
+    await Promise.resolve();
+    expect(vi.mocked(view.setPreviewState)).toHaveBeenCalledTimes(whileFocused);
+    expect(controller.isInlineEditing()).toBe(true);
+
+    controller.setInlineEditing(null);
+    expect(api.resolveReferences).toHaveBeenCalledTimes(2);
+    pending[1]?.(resolved("fresh result"));
+    await Promise.resolve();
+    expect(vi.mocked(view.setPreviewState).mock.calls.at(-1)?.[0].quoteMap.get(marker))
+      .toMatchObject({ state: "resolved", text: "fresh result" });
   });
 
   it("leaves a failed Reviewer lookup as an unresolved preview item", async () => {

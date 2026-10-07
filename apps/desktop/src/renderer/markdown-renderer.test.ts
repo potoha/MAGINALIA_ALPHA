@@ -36,7 +36,7 @@ describe("Markdown preview parser", () => {
     expect(table?.start).toBe(source.indexOf("| A | B |"));
   });
 
-  it("leaves protected tables, fenced code, raw HTML and hard-wrapped paragraphs unmapped", () => {
+  it("maps hard-wrapped prose lines separately and leaves protected blocks unmapped", () => {
     const source = [
       "before",
       "after",
@@ -51,7 +51,39 @@ describe("Markdown preview parser", () => {
       "",
       "<!-- protected -->"
     ].join("\n");
-    expect(collectEditablePreviewRanges(source).map((ranges) => ranges.length)).toEqual([0, 0, 0, 0]);
+    const ranges = collectEditablePreviewRanges(source);
+    expect(ranges.map((block) => block.map((range) => range.text))).toEqual([["before", "after"], [], [], []]);
+    for (const range of ranges.flat()) expect(source.slice(range.start, range.end)).toBe(range.text);
+  });
+
+  it("keeps multiline Japanese and CRLF source offsets exact for Enter mapping", () => {
+    const source = "\uFEFF前🌸\r\n次の行\r\n\r\n最後";
+    const ranges = collectEditablePreviewRanges(source);
+    expect(ranges.map((block) => block.map((range) => range.text))).toEqual([["前🌸", "次の行"], ["最後"]]);
+    for (const range of ranges.flat()) expect(source.slice(range.start, range.end)).toBe(range.text);
+    expect(ranges[0]?.[0]).toMatchObject({ start: 1, allowEnter: true });
+    expect(ranges[0]?.[1]).toMatchObject({ start: source.indexOf("次の行"), allowEnter: true });
+  });
+
+  it("keeps standalone CR and mixed line-ending source offsets exact", () => {
+    const source = "前\r後\r\n次";
+    const ranges = collectEditablePreviewRanges(source);
+    expect(ranges.map((block) => block.map((range) => range.text))).toEqual([["前", "後", "次"]]);
+    expect(ranges.flat().map((range) => range.start)).toEqual([
+      source.indexOf("前"), source.indexOf("後"), source.indexOf("次")
+    ]);
+    for (const range of ranges.flat()) expect(source.slice(range.start, range.end)).toBe(range.text);
+  });
+
+  it("allows Enter only in plain prose islands and preserves inline structural editing", () => {
+    const source = "# 見出し\n\n- 項目\n\n> 引用\n\nplain **強調** [link](https://example.test)";
+    const ranges = collectEditablePreviewRanges(source);
+    expect(ranges[0]?.[0]).toMatchObject({ text: "見出し", allowEnter: false });
+    expect(ranges[1]?.[0]).toMatchObject({ text: "項目", allowEnter: false });
+    expect(ranges[2]?.[0]).toMatchObject({ text: "引用", allowEnter: false });
+    expect(ranges[3]?.map((range) => [range.text, range.allowEnter])).toEqual([
+      ["plain ", true], ["強調", false], [" ", true], ["link", false]
+    ]);
   });
   it("keeps raw HTML and scripts as text rather than executable nodes", () => {
     const nodes = parseMarkdownInlines("before <script>alert(1)</script> <img src=x>");

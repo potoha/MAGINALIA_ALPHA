@@ -1769,6 +1769,10 @@ button:focus-visible {
   text-indent: 1em;
 }
 
+.markdown-preview-document .markdown-preview-empty-line {
+  min-height: 1em;
+}
+
 .markdown-preview-document .markdown-structural-paragraph {
   margin: 1em 0;
 }
