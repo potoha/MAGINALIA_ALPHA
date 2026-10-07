@@ -190,6 +190,8 @@ const hSmoke = parseHSmokeMode(process.argv);
 const h5Smoke = parseH5SmokeMode(process.argv);
 const workdeskPersistenceSmoke = parseWorkdeskPersistenceSmokeMode(process.argv);
 let workdeskPersistencePickerInvocationCount = 0;
+let hSmokePickerInvocationCount = 0;
+let hSmokeWorkdeskRoot: string | null = null;
 const smokeMode = quickSmokeMode
   || writingSmoke.requested
   || workspaceSmoke.requested
@@ -444,7 +446,9 @@ const workdeskHandlers = createWorkdeskHandlers({
         : { canceled: true, filePaths: [] });
     }
     if (hSmoke.requested) {
-      return Promise.resolve({ canceled: false, filePaths: hSmoke.rootPath ? [hSmoke.rootPath] : [] });
+      hSmokePickerInvocationCount += 1;
+      const rootPath = hSmokeWorkdeskRoot ?? hSmoke.rootPath;
+      return Promise.resolve({ canceled: false, filePaths: rootPath ? [rootPath] : [] });
     }
     return dialog.showOpenDialog({
       title: "Open Workdesk",
@@ -1458,11 +1462,14 @@ function createMainWindow(): BrowserWindow {
     } else {
       window.webContents.once("did-finish-load", () => {
         void runHSmoke({
+          window,
           fixtureRoot: hSmoke.rootPath!,
           restore: hSmoke.restore === true,
           workdesks: workdeskService,
           repositories: repositoryService,
-          projects: projectService
+          projects: projectService,
+          workdeskPickerInvocationCount: () => hSmokePickerInvocationCount,
+          rememberWorkdeskRoot: (rootPath) => { hSmokeWorkdeskRoot = rootPath; }
         }).then(
           () => completeHSmoke(),
           (error: unknown) => failHSmoke(error)

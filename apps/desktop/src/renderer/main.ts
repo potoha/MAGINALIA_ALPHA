@@ -110,6 +110,7 @@ import {
 import { CENTRAL_SERVICE_VIEW_MANIFEST, WORKBENCH_VIEW_MANIFEST } from "./workbench-views";
 import { shouldPromptForPrimaryWorkdesk } from "./workdesk-startup";
 import { workdeskProjectShortcutsForRoot, type WorkdeskProjectExplorerShortcut } from "./workdesk-project-explorer";
+import { restoreWorkdeskForReturn } from "./workdesk-return";
 import { routeCreateProjectAction } from "./project-creation-routing";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -152,6 +153,9 @@ app.innerHTML = `
               <div id="workdesk-project-actions" class="project-header-actions" hidden aria-label="Workdesk Project actions">
                 <button id="workdesk-new-project" class="project-header-action" type="button" title="New Project" aria-label="New Project">+P</button>
                 <button id="workdesk-register-project" class="project-header-action" type="button" title="Register existing Project" aria-label="Register existing Project">Add</button>
+              </div>
+              <div id="workdesk-child-actions" class="project-header-actions" hidden aria-label="Workdesk navigation">
+                <button id="workdesk-return" class="project-header-action" data-workbench-command="maginalia.workdesk.return" type="button" title="Return to Workdesk" aria-label="Return to Workdesk">↩</button>
               </div>
             </div>
             <div id="project-new-menu" class="project-action-menu" role="menu" aria-label="New Markdown file" hidden>
@@ -485,6 +489,8 @@ const workspaceError = requiredElement<HTMLElement>("#workspace-error");
 const emptyDocumentMessage = requiredElement<HTMLElement>("#empty-document-message");
 const explorerTree = requiredElement<HTMLUListElement>("#explorer-tree");
 const workdeskProjectActions = requiredElement<HTMLElement>("#workdesk-project-actions");
+const workdeskChildActions = requiredElement<HTMLElement>("#workdesk-child-actions");
+const workdeskReturnButton = requiredElement<HTMLButtonElement>("#workdesk-return");
 const workdeskNewProjectButton = requiredElement<HTMLButtonElement>("#workdesk-new-project");
 const workdeskRegisterProjectButton = requiredElement<HTMLButtonElement>("#workdesk-register-project");
 const createProjectTitle = requiredElement<HTMLInputElement>("#create-project-title");
@@ -1263,7 +1269,11 @@ const updateCommandContext = (): void => {
     "document.type": "markdown",
     "view.id": previewController.getMode(),
     "project.active": projectController?.getState().project !== null,
-    "workdesk.active": activeWorkdesk !== null
+    "workdesk.active": activeWorkdesk !== null,
+    "workdesk.childProject": activeWorkdesk !== null
+      && project !== null
+      && project !== undefined
+      && project.projectId !== activeWorkdesk.workdesk.documentId
   });
 };
 commandContextReady = true;
@@ -1585,6 +1595,36 @@ commandRegistry.register({
   const api = getWorkdeskApi();
   if (!api) throw new Error("Workdesk is unavailable.");
   await openWorkdesk(api);
+});
+commandRegistry.register({
+  id: "maginalia.workdesk.return",
+  title: "Return to Workdesk",
+  category: "Workdesk",
+  keywords: ["back", "parent", "root", "navigation"],
+  when: "workdesk.active && workdesk.childProject"
+}, async () => {
+  const desk = activeWorkdesk;
+  const navigation = projectController;
+  const childProjectId = navigation?.getState().project?.projectId;
+  if (!desk || !navigation || !childProjectId || childProjectId === desk.workdesk.documentId) return;
+  const api = getWorkdeskApi();
+  if (!api) {
+    projectView.setProjectError("Workdesk is unavailable. Reload MAGINALIA to try again.");
+    return;
+  }
+  const workdeskIdentityId = desk.workdesk.workdeskIdentityId;
+  await restoreWorkdeskForReturn({
+    restore: api.restoreWorkdesk,
+    activate: async (result) => {
+      // Restore is asynchronous. Do not navigate away from a different child
+      // Project or a Workdesk that the user selected in the meantime.
+      if (activeWorkdesk?.workdesk.workdeskIdentityId !== workdeskIdentityId
+        || projectController !== navigation
+        || navigation.getState().project?.projectId !== childProjectId) return;
+      await activateWorkdesk(result);
+    },
+    showError: (message) => projectView.setProjectError(message)
+  });
 });
 commandRegistry.register({
   id: "maginalia.workdesk.create",
@@ -2244,11 +2284,14 @@ function entriesContainId(
 function renderProjectState(state: ProjectNavigationState): void {
   const desk = activeWorkdesk;
   const workdeskRoot = desk !== null && state.project?.projectId === desk.workdesk.documentId ? desk : null;
+  const workdeskChild = desk !== null && state.project !== null
+    && state.project.projectId !== desk.workdesk.documentId;
   workspaceLabel.textContent = workdeskRoot ? "Workdesk" : "Project";
   workspaceDocumentName.textContent = workdeskRoot?.workdesk.title ?? state.project?.displayName ?? "No Project open";
   explorerTree.setAttribute("aria-label", workdeskRoot ? "Workdesk Explorer" : "Project Explorer");
   setWorkdeskDocumentTypes(workdeskRoot !== null);
   workdeskProjectActions.hidden = workdeskRoot === null;
+  workdeskChildActions.hidden = !workdeskChild;
   explorerTree.replaceChildren();
   updateProjectActionAvailability(state.project !== null);
 
@@ -3317,6 +3360,7 @@ const shelfSmokeMode = smokeQuery === "shelf";
 const d5SmokeMode = smokeQuery === "d5" || smokeQuery === "d5-restore";
 const exportSmokeMode = smokeQuery === "export";
 const gSmokeMode = smokeQuery === "g" || smokeQuery === "g-restore";
+const workdeskSmokeMode = smokeQuery === "h";
 const gRestoreSmokeMode = smokeQuery === "g-restore";
 const projectSmokeMode = smokeQuery === "project";
 const projectRestoreSmokeMode = smokeQuery === "project-restore" || smokeQuery === "d5-restore" || gRestoreSmokeMode;
@@ -3330,7 +3374,8 @@ const projectLikeSmokeMode = projectSmokeMode
   || shelfSmokeMode
   || d5SmokeMode
   || exportSmokeMode
-  || gSmokeMode;
+  || gSmokeMode
+  || workdeskSmokeMode;
 openButton.textContent = writingSmokeMode ? "Open" : legacyWorkspaceMode ? "Open Document" : "Open Project";
 repositoryNavigation.hidden = writingSmokeMode;
 projectHeaderActions.hidden = writingSmokeMode || legacyWorkspaceMode;
@@ -3429,6 +3474,8 @@ if (writingSmokeMode || workspaceSmokeMode || quotationSmokeMode || repositorySm
         ? "quotation"
         : shelfSmokeMode
             ? "shelf"
+            : workdeskSmokeMode
+              ? "workdesk"
             : projectLikeSmokeMode
               ? "project"
             : "repository";
@@ -3847,6 +3894,9 @@ if (writingSmokeMode) {
   });
   workdeskRegisterProjectButton.addEventListener("click", () => {
     void commandRegistry.execute("maginalia.workdesk.registerProject", commandContext.snapshot());
+  });
+  workdeskReturnButton.addEventListener("click", () => {
+    void commandRegistry.execute("maginalia.workdesk.return", commandContext.snapshot());
   });
 }
 

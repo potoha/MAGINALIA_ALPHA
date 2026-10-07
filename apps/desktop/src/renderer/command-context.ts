@@ -32,7 +32,10 @@ export const COMMAND_CONTEXT_KEYS = [
   "project.active",
   // Portable parent navigation state; still a scalar, never a path or a
   // Workdesk service object. It scopes Workdesk-only creation commands.
-  "workdesk.active"
+  "workdesk.active",
+  // True only while the current Explorer displays a child Project of that
+  // active Workdesk.
+  "workdesk.childProject"
 ] as const;
 
 export type CommandContextKey = typeof COMMAND_CONTEXT_KEYS[number];

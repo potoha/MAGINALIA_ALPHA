@@ -28,7 +28,10 @@ try {
   const childEntry = children.find((entry) => entry.isDirectory());
   if (!childEntry) throw new Error("Workdesk child Project was not created.");
   const copy = await readFile(path.join(childRoot, childEntry.name, "memo.md"), "utf8");
-  if (copy !== memo) throw new Error("Workdesk copy was not independent byte-preserving Markdown.");
+  if (!memo.includes("H Smoke unsaved update")) throw new Error("Returning to Workdesk did not preserve the edited memo text.");
+  if (!copy.includes("H Smoke Memo") || copy.includes("H Smoke unsaved update")) {
+    throw new Error("The child Project copy changed when the Workdesk memo was edited.");
+  }
 
   const restored = await runElectron(userDataRoot, temporaryDirectory, true);
   assertElectronSmokeMarker(restored, marker, "Electron H restore smoke");
