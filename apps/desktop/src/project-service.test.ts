@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { DocumentWorkspaceService } from "./document-workspace";
 import { MarkdownFileService } from "./markdown-file-service";
 import { parseProjectMetadata } from "./project-metadata";
-import { MemoryProjectPathStore, ProjectService, withCopiedDocumentType } from "./project-service";
+import { FileProjectPathStore, MemoryProjectPathStore, ProjectService, withCopiedDocumentType } from "./project-service";
 
 async function withTempDirectory<T>(run: (directory: string) => Promise<T>): Promise<T> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "maginalia-project-"));
@@ -20,6 +20,82 @@ function opened<T extends { kind: string }>(value: T): Extract<T, { kind: "opene
   expect(value.kind).toBe("opened");
   return value as Extract<T, { kind: "opened" }>;
 }
+
+describe("FileProjectPathStore local settings", () => {
+  it("creates an empty default-creation-parent placeholder when the file is absent", async () => {
+    await withTempDirectory(async (directory) => {
+      const filePath = path.join(directory, "profile", "last-project.json");
+      const store = new FileProjectPathStore(filePath);
+
+      await store.ensureDefaultCreationParentPlaceholder();
+
+      expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({ defaultCreationParent: null });
+      expect(await store.load()).toBeNull();
+    });
+  });
+
+  it("preserves the last-opened root and configured creation parent", async () => {
+    await withTempDirectory(async (directory) => {
+      const filePath = path.join(directory, "last-project.json");
+      const previousRoot = path.join(directory, "previous-project");
+      const configuredParent = path.join(directory, "chosen-projects-folder");
+      await writeFile(filePath, `${JSON.stringify({ rootPath: previousRoot })}\n`, "utf8");
+      const store = new FileProjectPathStore(filePath);
+
+      await store.ensureDefaultCreationParentPlaceholder();
+      expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
+        rootPath: previousRoot,
+        defaultCreationParent: null
+      });
+
+      await writeFile(filePath, `${JSON.stringify({ rootPath: previousRoot, defaultCreationParent: configuredParent })}\n`, "utf8");
+      await store.ensureDefaultCreationParentPlaceholder();
+      const beforeSave = JSON.parse(await readFile(filePath, "utf8"));
+      expect(beforeSave).toEqual({ rootPath: previousRoot, defaultCreationParent: configuredParent });
+
+      const nextRoot = path.join(directory, "next-project");
+      await store.save(nextRoot);
+      expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
+        rootPath: nextRoot,
+        defaultCreationParent: configuredParent
+      });
+    });
+  });
+
+  it("is idempotent after initialization", async () => {
+    await withTempDirectory(async (directory) => {
+      const filePath = path.join(directory, "last-project.json");
+      const store = new FileProjectPathStore(filePath);
+      await store.ensureDefaultCreationParentPlaceholder();
+      const initialized = await readFile(filePath, "utf8");
+
+      await store.ensureDefaultCreationParentPlaceholder();
+
+      expect(await readFile(filePath, "utf8")).toBe(initialized);
+    });
+  });
+
+  it("does not replace malformed or unreadable settings", async () => {
+    await withTempDirectory(async (directory) => {
+      const malformedPath = path.join(directory, "malformed.json");
+      const malformed = "{not valid json\n";
+      await writeFile(malformedPath, malformed, "utf8");
+      await expect(new FileProjectPathStore(malformedPath).ensureDefaultCreationParentPlaceholder()).rejects.toThrow();
+      expect(await readFile(malformedPath, "utf8")).toBe(malformed);
+
+      const invalidShapePath = path.join(directory, "invalid-shape.json");
+      const invalidShape = `${JSON.stringify({ rootPath: "relative-project-path" })}\n`;
+      await writeFile(invalidShapePath, invalidShape, "utf8");
+      await expect(new FileProjectPathStore(invalidShapePath).ensureDefaultCreationParentPlaceholder()).rejects.toThrow();
+      expect(await readFile(invalidShapePath, "utf8")).toBe(invalidShape);
+
+      const unreadablePath = path.join(directory, "unreadable.json");
+      await mkdir(unreadablePath);
+      await expect(new FileProjectPathStore(unreadablePath).ensureDefaultCreationParentPlaceholder()).rejects.toThrow();
+      expect((await lstat(unreadablePath)).isDirectory()).toBe(true);
+    });
+  });
+});
 
 describe("Project service", () => {
   it("resolves a Synced Block source through owned Project containment without exposing a path", async () => {

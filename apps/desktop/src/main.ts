@@ -221,10 +221,11 @@ const workspaceStateHandlers = createWorkspaceStateHandlers({
   save: (state) => workspaceStateStore.save(state)
 });
 const documentWorkspaceService = new DocumentWorkspaceService();
+const projectPathStore = new FileProjectPathStore(path.join(userDataPath, "last-project.json"));
 const projectService = new ProjectService(
   documentWorkspaceService,
   markdownFileService,
-  new FileProjectPathStore(path.join(userDataPath, "last-project.json"))
+  projectPathStore
 );
 const projectAssetService = new ProjectAssetService(documentWorkspaceService);
 const libraryService = new LibraryService();
@@ -1761,7 +1762,13 @@ const autosaveShutdown = new AutosaveShutdownCoordinator({
 // not used because its async work is not reliable.
 app.on("before-quit", (event) => autosaveShutdown.beforeQuit(event));
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
+  try {
+    await projectPathStore.ensureDefaultCreationParentPlaceholder();
+  } catch {
+    // A malformed/unreadable app-local record is preserved for recovery.
+    console.error("MAGINALIA_PROJECT_PATH_SETTINGS_NOT_INITIALIZED");
+  }
   registerMarkdownIpc();
   modHostReady = modHost.start().catch((error: unknown) => {
     console.error("MAGINALIA_MOD_START_FAILED", error);
