@@ -49,6 +49,20 @@ async function runRendererAction(window: BrowserWindow, script: string, descript
   if (result !== true) throw new Error(`Workdesk smoke could not perform ${description}.`);
 }
 
+async function runOverflowAction(window: BrowserWindow, actionId: string, description: string): Promise<void> {
+  await runRendererAction(window, `(() => {
+    const trigger = document.querySelector("#project-overflow");
+    const menu = document.querySelector("#project-overflow-menu");
+    const action = document.querySelector(${JSON.stringify(`#${actionId}`)});
+    if (!(trigger instanceof HTMLButtonElement) || !(menu instanceof HTMLElement)
+      || !(action instanceof HTMLButtonElement) || action.hidden) return false;
+    if (menu.hidden) trigger.click();
+    if (menu.hidden || trigger.getAttribute("aria-expanded") !== "true") return false;
+    action.click();
+    return true;
+  })()`, description);
+}
+
 export async function runHSmoke(options: {
   readonly window: BrowserWindow;
   readonly fixtureRoot: string;
@@ -167,12 +181,67 @@ export async function runHSmoke(options: {
   await waitForRenderer(options.window,
     `document.querySelector("#editor")?.dataset.smokeReady === "workdesk"`,
     "the Workdesk smoke renderer");
-  await runRendererAction(options.window,
-    `(() => { const open = document.querySelector("#open-workdesk"); if (!(open instanceof HTMLButtonElement)) return false; open.click(); return true; })()`,
-    "opening the registered Workdesk through Explorer actions");
+  await runOverflowAction(options.window, "open-workdesk", "opening the Workdesk through Explorer actions");
   await waitForRenderer(options.window,
-    `document.querySelector("#workspace-label")?.textContent === "Workdesk" && document.querySelector("[data-workdesk-project-shortcut]") !== null`,
+    `document.querySelector("#workspace-label")?.textContent === "Workdesk" && document.querySelector("[data-workdesk-project-shortcut]") !== null && [...document.querySelectorAll("#explorer-tree [data-explorer-section]")].map((item) => item.dataset.explorerSection).join(",") === "projects,files"`,
     "Workdesk shortcuts in the Explorer root");
+  const workdeskHierarchy = await options.window.webContents.executeJavaScript(`(() => ({
+    primaryActions: [...document.querySelectorAll("#project-primary-actions > .project-menu-anchor > #project-new, #workdesk-project-actions > #workdesk-new-project")].map((button) => button.textContent?.trim()),
+    overflowName: document.querySelector("#project-overflow")?.getAttribute("aria-label") ?? null,
+    addExistingVisible: document.querySelector("#workdesk-register-project")?.hidden === false,
+    legacyCreate: document.querySelector("#project-create") !== null,
+    title: document.querySelector("#workspace-document-name")?.textContent?.trim() ?? null
+  }))()`, true) as { primaryActions: string[]; overflowName: string | null; addExistingVisible: boolean; legacyCreate: boolean; title: string | null };
+  if (workdeskHierarchy.primaryActions.join(",") !== "+ New,New Project"
+    || workdeskHierarchy.overflowName !== "More Workdesk actions"
+    || !workdeskHierarchy.addExistingVisible || workdeskHierarchy.legacyCreate
+    || workdeskHierarchy.title !== "H Smoke Desk") {
+    throw new Error(`Workdesk Explorer hierarchy did not match the normal-user layout: ${JSON.stringify(workdeskHierarchy)}.`);
+  }
+  const originalSize = options.window.getSize();
+  options.window.setSize(420, 640);
+  await delay(60);
+  const narrowWorkdesk = await options.window.webContents.executeJavaScript(`(() => {
+    const panel = document.querySelector("#workspace-navigation");
+    const actions = document.querySelector("#project-primary-actions");
+    const trigger = document.querySelector("#project-overflow");
+    const menu = document.querySelector("#project-overflow-menu");
+    if (!(panel instanceof HTMLElement) || !(actions instanceof HTMLElement)
+      || !(trigger instanceof HTMLButtonElement) || !(menu instanceof HTMLElement)) return false;
+    trigger.click();
+    const panelRect = panel.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const fits = panel.scrollWidth <= panel.clientWidth + 1
+      && actions.scrollWidth <= actions.clientWidth + 1
+      && !menu.hidden
+      && menuRect.left >= panelRect.left - 1
+      && menuRect.right <= panelRect.right + 1;
+    trigger.click();
+    return {
+      fits: fits && menu.hidden && trigger.getAttribute("aria-expanded") === "false",
+      panel: { scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth, left: panelRect.left, right: panelRect.right },
+      actions: { scrollWidth: actions.scrollWidth, clientWidth: actions.clientWidth },
+      menu: { left: menuRect.left, right: menuRect.right, hiddenAfterClose: menu.hidden }
+    };
+  })()`, true) as { fits: boolean; panel?: unknown; actions?: unknown; menu?: unknown };
+  options.window.setSize(originalSize[0], originalSize[1]);
+  await delay(60);
+  if (!narrowWorkdesk.fits) throw new Error(`Workdesk Explorer overflowed or its anchored menu clipped at 420px width: ${JSON.stringify(narrowWorkdesk)}.`);
+  const workdeskMenuKeyboard = await options.window.webContents.executeJavaScript(`(() => {
+    const trigger = document.querySelector("#project-overflow");
+    const menu = document.querySelector("#project-overflow-menu");
+    const first = document.querySelector("#workdesk-register-project");
+    if (!(trigger instanceof HTMLButtonElement) || !(menu instanceof HTMLElement) || !(first instanceof HTMLButtonElement)) return false;
+    trigger.focus();
+    trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    return new Promise((resolve) => queueMicrotask(() => {
+      const opened = !menu.hidden && trigger.getAttribute("aria-expanded") === "true" && document.activeElement === first;
+      if (!opened) return resolve(false);
+      first.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      resolve(menu.hidden && trigger.getAttribute("aria-expanded") === "false" && document.activeElement === trigger);
+    }));
+  })()`, true) as boolean;
+  if (!workdeskMenuKeyboard) throw new Error("Workdesk overflow keyboard focus or Escape dismissal failed.");
 
   const projectPickerCountBeforeNew = options.projectPickerInvocationCount();
   const workdeskPickerCountBeforeNew = options.workdeskPickerInvocationCount();
@@ -186,7 +255,7 @@ export async function runHSmoke(options: {
     `(() => { const input = document.querySelector("#create-project-title"); const form = document.querySelector("#project-create-form"); if (!(input instanceof HTMLInputElement) || !(form instanceof HTMLFormElement)) return false; input.value = "H Smoke Project C"; form.requestSubmit(); return true; })()`,
     "creating a Project with the Workdesk title form");
   await waitForRenderer(options.window,
-    `document.querySelector("#workspace-label")?.textContent === "Project" && document.querySelector("#workspace-document-name")?.textContent === "H Smoke Project C"`,
+    `document.querySelector("#workspace-label")?.textContent === "Project" && document.querySelector("#workspace-document-name")?.textContent === "H Smoke Project C" && [...document.querySelectorAll("#explorer-tree [data-explorer-section]")].map((item) => item.dataset.explorerSection).join(",") === "files"`,
     "New Project opening immediately");
   if (options.projectPickerInvocationCount() !== projectPickerCountBeforeNew
     || options.workdeskPickerInvocationCount() !== workdeskPickerCountBeforeNew) {
@@ -210,9 +279,7 @@ export async function runHSmoke(options: {
     "Workdesk after New Project");
   const projectPickerCountBeforeAdd = options.projectPickerInvocationCount();
   const registrationPromptCountBeforeAdd = options.registrationPromptInvocationCount();
-  await runRendererAction(options.window,
-    `(() => { const button = document.querySelector("#workdesk-register-project"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`,
-    "adding an existing Project from Workdesk");
+  await runOverflowAction(options.window, "workdesk-register-project", "adding an existing Project from Workdesk");
   try {
     await waitForRenderer(options.window,
       `document.querySelector("#workspace-label")?.textContent === "Project" && document.querySelector("#workspace-document-name")?.textContent === "H Smoke 外部 Project"`,
@@ -264,9 +331,7 @@ export async function runHSmoke(options: {
   const registrationsBeforeNo = await options.workdesks.listRegisteredProjects(workdesk);
   const pickerCountBeforeNo = options.projectPickerInvocationCount();
   const promptCountBeforeNo = options.registrationPromptInvocationCount();
-  await runRendererAction(options.window,
-    `(() => { const button = document.querySelector("#workdesk-register-project"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`,
-    "choosing No in the existing Project registration prompt");
+  await runOverflowAction(options.window, "workdesk-register-project", "choosing No in the existing Project registration prompt");
   await waitForRenderer(options.window,
     `document.querySelector("#workspace-label")?.textContent === "Workdesk"`,
     "staying on Workdesk after choosing No");
@@ -280,9 +345,7 @@ export async function runHSmoke(options: {
 
   const pickerCountBeforeUnregisteredOpen = options.projectPickerInvocationCount();
   const promptCountBeforeUnregisteredOpen = options.registrationPromptInvocationCount();
-  await runRendererAction(options.window,
-    `(() => { const button = document.querySelector("#workdesk-register-project"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`,
-    "choosing Open without registration in the existing Project prompt");
+  await runOverflowAction(options.window, "workdesk-register-project", "choosing Open without registration in the existing Project prompt");
   await waitForRenderer(options.window,
     `document.querySelector("#workspace-label")?.textContent === "Project" && document.querySelector("#workdesk-home")?.disabled === false`,
     "opening a Project without registering it");
@@ -422,7 +485,7 @@ export async function runHSmoke(options: {
     `(() => { const button = document.querySelector("#workdesk-home"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`,
     "returning after the remembered Workdesk loses its marker");
   await waitForRenderer(options.window,
-    `document.querySelector("#workspace-error")?.hidden === false && Boolean(document.querySelector("#workspace-error")?.textContent?.trim())`,
+    `document.querySelector("#workspace-recovery")?.hidden === false && document.querySelector("#workspace-repair")?.hidden === false && Boolean(document.querySelector("#workspace-recovery-message")?.textContent?.includes("ファイルはそのまま利用できます")) && document.querySelector("#workspace-error")?.hidden !== false`,
     "the visible Workdesk identity recovery message");
   await waitForRenderer(options.window,
     `[...document.querySelectorAll("#explorer-tree button[data-explorer-file-name]")].some((button) => button.dataset.explorerFileName === "memo.md")`,
@@ -481,9 +544,26 @@ export async function runHNavigationAcceptanceSmoke(options: {
     if (lastActive.kind !== "project" || lastActive.projectIdentityId !== projectId) {
       throw new Error("The last active real Project was not restored after restart.");
     }
-    await waitForRenderer(options.window,
-      `document.querySelector("#workspace-label")?.textContent === "Project" && document.querySelector("#workdesk-home")?.disabled === false`,
-      "the real Project restored on application startup");
+    try {
+      await waitForRenderer(options.window,
+        `document.querySelector("#workspace-label")?.textContent === "Project" && document.querySelector("#workdesk-home")?.disabled === false`,
+        "the real Project restored on application startup");
+    } catch (error) {
+      const ui = await options.window.webContents.executeJavaScript(`(() => ({
+        label: document.querySelector("#workspace-label")?.textContent ?? null,
+        title: document.querySelector("#workspace-document-name")?.textContent ?? null,
+        error: document.querySelector("#workspace-error")?.textContent ?? null,
+        recovery: document.querySelector("#workspace-recovery-message")?.textContent ?? null,
+        homeDisabled: document.querySelector("#workdesk-home")?.disabled ?? null,
+        shortcuts: [...document.querySelectorAll("[data-workdesk-project-shortcut]")].map((item) => item.textContent?.trim())
+      }))()`, true);
+      const lastActiveContext = await options.workdesks.lastActiveContext(restoredWorkdesk);
+      const mapping = await options.workdesks.resolveRegisteredProject(restoredWorkdesk, projectId).then(
+        (value) => ({ kind: "resolved", canonicalRoot: value.canonicalRoot }),
+        (failure: unknown) => ({ kind: "error", message: failure instanceof Error ? failure.message : String(failure) })
+      );
+      throw new Error(`${error instanceof Error ? error.message : String(error)} UI=${JSON.stringify(ui)} context=${JSON.stringify(lastActiveContext)} mapping=${JSON.stringify(mapping)}.`);
+    }
     if (options.workdeskPickerInvocationCount() !== 0 || options.projectPickerInvocationCount() !== 0) {
       throw new Error("Startup restore opened a folder picker.");
     }
@@ -510,9 +590,7 @@ export async function runHNavigationAcceptanceSmoke(options: {
     `document.querySelector("#editor")?.dataset.smokeReady === "workdesk"`,
     "the Workdesk acceptance renderer");
   const workdeskPickersBeforeOpen = options.workdeskPickerInvocationCount();
-  await runRendererAction(options.window,
-    `(() => { const button = document.querySelector("#open-workdesk"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`,
-    "opening the real Workdesk");
+  await runOverflowAction(options.window, "open-workdesk", "opening the real Workdesk");
   await waitForRenderer(options.window,
     `document.querySelector("#workspace-label")?.textContent === "Workdesk" && document.querySelector("#workdesk-register-project") !== null`,
     "the real Workdesk Home");
@@ -523,9 +601,7 @@ export async function runHNavigationAcceptanceSmoke(options: {
   const beforeAdd = await options.workdesks.listRegisteredProjects(workdesk);
   const projectPickersBeforeAdd = options.projectPickerInvocationCount();
   const registrationPromptsBeforeAdd = options.registrationPromptInvocationCount();
-  await runRendererAction(options.window,
-    `(() => { const button = document.querySelector("#workdesk-register-project"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`,
-    "adding the real Project to Workdesk");
+  await runOverflowAction(options.window, "workdesk-register-project", "adding the real Project to Workdesk");
   await waitForRenderer(options.window,
     `document.querySelector("#workspace-label")?.textContent === "Project" && document.querySelector("#workdesk-home")?.disabled === false`,
     "the real Project opening immediately after Add existing Project");

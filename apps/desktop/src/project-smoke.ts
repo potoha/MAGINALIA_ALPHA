@@ -71,10 +71,20 @@ async function assertProjectPanelFits(window: BrowserWindow): Promise<void> {
   const result = await window.webContents.executeJavaScript(`(() => {
     const panel = document.querySelector("#workspace-navigation");
     if (!(panel instanceof HTMLElement)) return { fits: false, reason: "panel-missing" };
-    return { fits: panel.scrollWidth <= panel.clientWidth + 1, scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth };
-  })()`, true) as { fits: boolean; scrollWidth?: number; clientWidth?: number; reason?: string };
+    return {
+      fits: panel.scrollWidth <= panel.clientWidth + 1,
+      scrollWidth: panel.scrollWidth,
+      clientWidth: panel.clientWidth,
+      children: [...panel.children].map((child) => ({
+        className: child instanceof HTMLElement ? child.className : "",
+        scrollWidth: child.scrollWidth,
+        clientWidth: child.clientWidth,
+        width: child.getBoundingClientRect().width
+      }))
+    };
+  })()`, true) as { fits: boolean; scrollWidth?: number; clientWidth?: number; reason?: string; children?: readonly unknown[] };
   if (!result.fits) {
-    throw new Error(`Project panel overflow: ${result.reason ?? `${result.scrollWidth} > ${result.clientWidth}`}`);
+    throw new Error(`Project panel overflow: ${result.reason ?? `${result.scrollWidth} > ${result.clientWidth}`}; children=${JSON.stringify(result.children ?? [])}`);
   }
 }
 
@@ -148,14 +158,14 @@ async function exerciseProjectMenuKeyboard(window: BrowserWindow): Promise<void>
     const items = (menu) => [...menu.querySelectorAll('button[role="menuitem"]')];
     const keydown = (element, key) => element.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
     const newItems = items(newMenu);
-    const overflowItems = items(overflowMenu);
-    // H adds Workdesk create/open beside the established Project actions;
-    // both menus remain keyboard-addressable through the same menu surface.
+    const overflowItems = items(overflowMenu).filter((item) => !item.hidden && !item.disabled);
+    const allOverflowItems = items(overflowMenu);
     const documentTypes = newItems.map((item) => item.getAttribute("data-document-type")).filter(Boolean).sort();
     if (documentTypes.join(",") !== "body,draft,memo,other"
       || !newMenu.querySelector("#explorer-new-folder")
       || newItems.length !== 5
-      || overflowItems.length !== 4) return fail("menu-items");
+      || allOverflowItems.length !== 4
+      || overflowItems.length !== 3) return fail("menu-items");
 
     plus.focus();
     keydown(plus, "ArrowDown");
@@ -179,9 +189,14 @@ async function exerciseProjectMenuKeyboard(window: BrowserWindow): Promise<void>
         keydown(overflowItems[0], "End");
         if (document.activeElement !== overflowItems.at(-1)) return resolve(fail("overflow-end"));
         keydown(overflowItems.at(-1), "Escape");
-        resolve(overflowMenu.hidden && overflow.getAttribute("aria-expanded") === "false" && document.activeElement === overflow
+        if (!overflowMenu.hidden || overflow.getAttribute("aria-expanded") !== "false" || document.activeElement !== overflow) {
+          return resolve(fail("overflow-escape"));
+        }
+        overflow.click();
+        document.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        resolve(overflowMenu.hidden && overflow.getAttribute("aria-expanded") === "false"
           ? { ok: true }
-          : fail("overflow-escape"));
+          : fail("outside-dismissal"));
       });
     }));
   })()`, true) as { ok: boolean; step?: string };
@@ -255,6 +270,17 @@ export async function runProjectSmoke(window: BrowserWindow, fixtureRoot: string
     overflow.click(); button.click(); return true;
   })()`, "open-project overflow action");
   await waitForState(window, (state) => state.projectName === rootName && state.activeFile === "starter.md" && state.text === initialText, "Project and first file");
+  const hierarchy = await window.webContents.executeJavaScript(`(() => ({
+    label: document.querySelector("#workspace-label")?.textContent?.trim() ?? null,
+    newLabel: document.querySelector("#project-new")?.textContent?.trim() ?? null,
+    sections: [...document.querySelectorAll("#explorer-tree [data-explorer-section]")].map((item) => item.dataset.explorerSection),
+    menuName: document.querySelector("#project-overflow")?.getAttribute("aria-label") ?? null,
+    legacyCreate: document.querySelector("#project-create") !== null
+  }))()`, true) as { label: string | null; newLabel: string | null; sections: string[]; menuName: string | null; legacyCreate: boolean };
+  if (hierarchy.label !== "Project" || hierarchy.newLabel !== "+ New"
+    || hierarchy.sections.join(",") !== "files" || hierarchy.menuName !== "More Project actions" || hierarchy.legacyCreate) {
+    throw new Error(`Project Explorer hierarchy did not match the normal-user layout: ${JSON.stringify(hierarchy)}.`);
+  }
   await assertProjectPanelFits(window);
   await exerciseProjectMenuKeyboard(window);
 
@@ -320,40 +346,4 @@ export async function runProjectRestoreSmoke(window: BrowserWindow, fixtureRoot:
   }
   await runScript(window, `(() => { const button = [...document.querySelectorAll("#explorer-tree button[data-explorer-file-id]")].find((candidate) => candidate.dataset.explorerFileName === "Smoke memo.md"); if (!(button instanceof HTMLButtonElement)) return false; button.focus(); button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); return true; })()`);
   await waitForState(window, (state) => state.activeFile === "Smoke memo.md" && state.text === restoredText && state.status === "saved", "reopen saved file after restart");
-}
-
-export async function runProjectCreateSmoke(window: BrowserWindow, parentRoot: string): Promise<void> {
-  const projectName = "Coffee Smoke";
-  await setProjectSmokeViewport(window);
-  await waitForState(window, (state) => state.ready && state.status === "empty", "Project renderer readiness");
-  await assertProjectPanelFits(window);
-  await runScript(window, `(() => {
-    const overflow = document.querySelector("#project-overflow");
-    const create = document.querySelector("#project-create");
-    const plus = document.querySelector("#project-new");
-    const title = document.querySelector("#create-project-title");
-    const form = document.querySelector("#project-create-form");
-    if (!(overflow instanceof HTMLButtonElement) || !(create instanceof HTMLButtonElement)
-      || !(plus instanceof HTMLButtonElement)
-      || !(title instanceof HTMLInputElement) || !(form instanceof HTMLFormElement)) return false;
-    if (!plus.disabled) return false;
-    overflow.click(); create.click();
-    if (form.hidden) return false;
-    form.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-    if (!form.hidden || !plus.disabled) return false;
-    overflow.click(); create.click();
-    title.value = ${JSON.stringify(projectName)}; form.requestSubmit(); return true;
-  })()`);
-  await waitForState(window, (state) => state.projectName === projectName && state.files.length === 0 && state.status === "empty", "new Project creation");
-  await assertProjectPanelFits(window);
-  await exerciseProjectMenuKeyboard(window);
-  await exerciseProjectEscape(window);
-  await createProjectFileThroughHeader(window, "Smoke memo", "memo");
-  await waitForState(window, (state) => state.activeFile === "Smoke memo.md" && state.status === "saved", "new Project file");
-  await runScript(window, `(() => { document.querySelector("#editor")?.dispatchEvent(new CustomEvent("maginalia-smoke-append", { detail: "\\n作成" })); return true; })()`);
-  await waitForState(window, (state) => state.activeFile === "Smoke memo.md" && state.status === "modified" && state.saveEnabled, "new Project edit");
-  await window.webContents.executeJavaScript("document.querySelector('#save-markdown')?.click();", true);
-  await waitForState(window, (state) => state.activeFile === "Smoke memo.md" && state.status === "saved" && !state.saveEnabled, "new Project save");
-  const saved = await readFile(path.join(parentRoot, projectName, "Smoke memo.md"), "utf8");
-  if (!saved.includes("type: memo") || !saved.includes("作成")) throw new Error("Project creation smoke did not save metadata and content.");
 }

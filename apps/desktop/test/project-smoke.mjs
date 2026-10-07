@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { assertElectronSmokeMarker, runElectronSmoke } from "./electron-smoke-launcher.mjs";
@@ -10,14 +11,16 @@ let userDataDirectory;
 try {
   temporaryDirectory = await mkdtemp(path.join(tmpdir(), "maginalia-project-smoke-"));
   userDataDirectory = await mkdtemp(path.join(tmpdir(), "maginalia-project-userdata-"));
+  const projectRoot = temporaryDirectory;
+  await writeFile(path.join(projectRoot, "project.magi"), `version = 1\ntype = project\nid = ${randomUUID()}\nparent = null\n`, "utf8");
+  await writeFile(path.join(projectRoot, "starter.md"), "# Project smoke\n\nInitial authored text.\n", "utf8");
   const result = await runElectronSmoke({
     userDataRoot: userDataDirectory,
-    appArgs: ["--smoke-project-create", temporaryDirectory]
+    appArgs: ["--smoke-project", projectRoot]
   });
   assertElectronSmokeMarker(result, marker, "Electron project smoke");
-  const projectRoot = path.join(temporaryDirectory, "Coffee Smoke");
   const saved = await readFile(path.join(projectRoot, "Smoke memo.md"), "utf8");
-  if (!saved.includes("type: memo") || !saved.includes("作成")) {
+  if (!saved.includes("type: memo") || !saved.includes("追記")) {
     throw new Error(`Project smoke file did not retain metadata and edit: ${JSON.stringify(saved)}`);
   }
   const nestedDirectory = path.join(projectRoot, "資料", "執筆", "深い");

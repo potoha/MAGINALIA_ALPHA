@@ -27,8 +27,10 @@ class WritingViewStub implements WritingView {
 class ProjectViewStub implements ProjectNavigationView {
   public state: ProjectNavigationState = { project: null, files: [], activeFileId: null };
   public error: string | null = null;
+  public identityRecovery: { readonly code: string; readonly message: string } | null = null;
   public setProjectState(state: ProjectNavigationState): void { this.state = state; }
   public setProjectError(message: string | null): void { this.error = message; }
+  public setProjectIdentityRecovery(recovery: { readonly code: string; readonly message: string } | null): void { this.identityRecovery = recovery; }
 }
 
 const files: readonly ProjectFileSummary[] = [
@@ -237,7 +239,7 @@ describe("ProjectNavigationController", () => {
     expect(test.view.error).toBe("Linked document unavailable");
   });
 
-  it("keeps a folder identity recovery alert visible after the Project opens", async () => {
+  it("keeps folder identity recovery separate from operational errors after the Project opens", async () => {
     const recovery = { code: "marker-conflict", message: "Resolve the conflicting .magi markers." };
     const test = harness("cancel", (file) => opened(file), false, undefined, () => ({
       kind: "opened",
@@ -247,8 +249,10 @@ describe("ProjectNavigationController", () => {
     }));
 
     await test.navigation.openProject();
-    expect(test.view.error).toBe(recovery.message);
+    expect(test.view.error).toBeNull();
+    expect(test.view.identityRecovery).toEqual(recovery);
     await test.navigation.openFile(files[1]!.fileId);
-    expect(test.view.error).toBe(recovery.message);
+    expect(test.view.error).toBeNull();
+    expect(test.view.identityRecovery).toEqual(recovery);
   });
 });

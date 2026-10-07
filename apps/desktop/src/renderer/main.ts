@@ -111,7 +111,7 @@ import { CENTRAL_SERVICE_VIEW_MANIFEST, WORKBENCH_VIEW_MANIFEST } from "./workbe
 import { restoreRememberedWorkdeskContext, shouldPromptForPrimaryWorkdesk } from "./workdesk-startup";
 import { workdeskProjectShortcutsForRoot, type WorkdeskProjectExplorerShortcut } from "./workdesk-project-explorer";
 import { restoreWorkdeskForReturn } from "./workdesk-return";
-import { routeCreateProjectAction } from "./project-creation-routing";
+import { projectIdentityRecoveryNotice, workdeskIdentityRecoveryNotice, type FolderIdentityRecoveryNotice } from "./folder-identity-recovery-copy";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -141,32 +141,45 @@ app.innerHTML = `
         <div id="primary-sidebar-resizer" class="sidebar-resizer" data-workbench-resize="primary-sidebar" role="separator" aria-label="Resize primary sidebar" aria-orientation="vertical" tabindex="0"></div>
         <div class="view-container primary-view-container">
           <section id="workspace-navigation" class="workspace-navigation view-panel" aria-labelledby="workspace-document-heading">
-            <h2 id="workspace-document-heading" class="visually-hidden">Project Registry</h2>
+            <h2 id="workspace-document-heading" class="visually-hidden">Explorer</h2>
             <div class="project-header">
               <div class="workspace-document-heading">
                 <span id="workspace-label" class="workspace-label">Project</span>
-                <strong id="workspace-document-name">No Project open</strong>
+                <div class="workspace-document-title">
+                  <strong id="workspace-document-name">No Project open</strong>
+                  <div id="project-header-actions" class="project-header-actions">
+                    <div class="project-menu-anchor">
+                      <button id="project-overflow" class="project-header-action" type="button" aria-label="More Project actions" title="More Project actions" aria-haspopup="menu" aria-controls="project-overflow-menu" aria-expanded="false">⋯</button>
+                      <div id="project-overflow-menu" class="project-action-menu project-overflow-menu" role="menu" aria-label="Project actions" hidden>
+                        <button id="workdesk-register-project" type="button" role="menuitem">Add existing Project…</button>
+                        <button id="open-project" type="button" role="menuitem">Open another Project…</button>
+                        <hr class="project-action-menu-separator" role="separator">
+                        <button id="open-workdesk" type="button" role="menuitem">Open Workdesk…</button>
+                        <button id="workdesk-create" type="button" role="menuitem">Create Workdesk…</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div id="project-header-actions" class="project-header-actions">
-                <button id="project-new" class="project-header-action" type="button" aria-label="New Markdown file" title="New Markdown file" aria-haspopup="menu" aria-controls="project-new-menu" aria-expanded="false">+</button>
-                <button id="project-overflow" class="project-header-action" type="button" aria-label="Project actions" title="Project actions" aria-haspopup="menu" aria-controls="project-overflow-menu" aria-expanded="false">…</button>
+            </div>
+            <div id="project-primary-actions" class="project-primary-actions">
+              <div class="project-menu-anchor">
+                <button id="project-new" class="project-header-action project-primary-action" type="button" aria-label="New Markdown file" title="New Markdown file" aria-haspopup="menu" aria-controls="project-new-menu" aria-expanded="false">+ New</button>
+                <div id="project-new-menu" class="project-action-menu project-new-menu" role="menu" aria-label="New file" hidden>
+                  <span class="project-action-menu-label">New Markdown</span>
+                  ${PROJECT_DOCUMENT_TYPES.map((type) => `<button type="button" role="menuitem" data-document-type="${type}">${type}</button>`).join("")}
+                  <button id="explorer-new-folder" type="button" role="menuitem">New Folder</button>
+                </div>
               </div>
               <div id="workdesk-project-actions" class="project-header-actions" hidden aria-label="Workdesk Project actions">
-                <button id="workdesk-new-project" class="project-header-action" type="button" title="New Project">New Project</button>
-                <button id="workdesk-register-project" class="project-header-action" type="button" title="Add existing Project">Add existing Project</button>
+                <button id="workdesk-new-project" class="project-header-action project-primary-action" type="button" title="New Project">New Project</button>
               </div>
             </div>
-            <div id="project-new-menu" class="project-action-menu" role="menu" aria-label="New Markdown file" hidden>
-              <span class="project-action-menu-label">New Markdown</span>
-              ${PROJECT_DOCUMENT_TYPES.map((type) => `<button type="button" role="menuitem" data-document-type="${type}">${type}</button>`).join("")}
-              <button id="explorer-new-folder" type="button" role="menuitem">New Folder</button>
-            </div>
-            <div id="project-overflow-menu" class="project-action-menu" role="menu" aria-label="Project actions" hidden>
-              <button id="open-project" type="button" role="menuitem">Open another Project…</button>
-              <button id="project-create" type="button" role="menuitem">Create Project</button>
-              <button id="open-workdesk" type="button" role="menuitem">Open Workdesk</button>
-              <button id="workdesk-create" type="button" role="menuitem">Create Workdesk</button>
-            </div>
+            <section id="workspace-recovery" class="workspace-recovery" aria-labelledby="workspace-recovery-title" hidden>
+              <strong id="workspace-recovery-title"></strong>
+              <p id="workspace-recovery-message" role="status" aria-live="polite"></p>
+              <button id="workspace-repair" type="button" hidden>管理情報を修復</button>
+            </section>
             <form id="project-create-form" class="project-create-form" hidden>
               <label class="visually-hidden" for="create-project-title">New Project name</label>
               <input id="create-project-title" type="text" maxlength="200" autocomplete="off" placeholder="New Project name" required>
@@ -468,6 +481,7 @@ const openProjectButton = requiredElement<HTMLButtonElement>("#open-project");
 const openProjectMenuItem = openProjectButton;
 const openWorkdeskButton = requiredElement<HTMLButtonElement>("#open-workdesk");
 const createWorkdeskButton = requiredElement<HTMLButtonElement>("#workdesk-create");
+const workspaceRepairButton = requiredElement<HTMLButtonElement>("#workspace-repair");
 const saveButton = requiredElement<HTMLButtonElement>("#save-markdown");
 const exportButton = requiredElement<HTMLButtonElement>("#export-markdown");
 const exportPdfButton = requiredElement<HTMLButtonElement>("#export-pdf");
@@ -483,12 +497,17 @@ const documentName = requiredElement<HTMLElement>("#document-name");
 const documentStatus = requiredElement<HTMLElement>("#document-status");
 const exportStatus = requiredElement<HTMLElement>("#export-status");
 const workspaceLabel = requiredElement<HTMLElement>("#workspace-label");
+const workspaceDocumentHeading = requiredElement<HTMLElement>("#workspace-document-heading");
 const workspaceDocumentName = requiredElement<HTMLElement>("#workspace-document-name");
 const workspaceError = requiredElement<HTMLElement>("#workspace-error");
+const workspaceRecovery = requiredElement<HTMLElement>("#workspace-recovery");
+const workspaceRecoveryTitle = requiredElement<HTMLElement>("#workspace-recovery-title");
+const workspaceRecoveryMessage = requiredElement<HTMLElement>("#workspace-recovery-message");
 const emptyDocumentMessage = requiredElement<HTMLElement>("#empty-document-message");
 const explorerTree = requiredElement<HTMLUListElement>("#explorer-tree");
 const workdeskProjectActions = requiredElement<HTMLElement>("#workdesk-project-actions");
 const workdeskHomeButton = requiredElement<HTMLButtonElement>("#workdesk-home");
+const projectPrimaryActions = requiredElement<HTMLElement>("#project-primary-actions");
 const workdeskNewProjectButton = requiredElement<HTMLButtonElement>("#workdesk-new-project");
 const workdeskRegisterProjectButton = requiredElement<HTMLButtonElement>("#workdesk-register-project");
 const createProjectTitle = requiredElement<HTMLInputElement>("#create-project-title");
@@ -549,7 +568,6 @@ const projectNewMenu = requiredElement<HTMLElement>("#project-new-menu");
 const explorerNewFolderButton = requiredElement<HTMLButtonElement>("#explorer-new-folder");
 const projectOverflowButton = requiredElement<HTMLButtonElement>("#project-overflow");
 const projectOverflowMenu = requiredElement<HTMLElement>("#project-overflow-menu");
-const projectCreateButton = requiredElement<HTMLButtonElement>("#project-create");
 const projectCreateForm = requiredElement<HTMLFormElement>("#project-create-form");
 const projectCreateCancelButton = requiredElement<HTMLButtonElement>("#project-create-cancel");
 const projectInlineCreate = requiredElement<HTMLElement>("#project-inline-create");
@@ -1284,7 +1302,15 @@ const updateCommandContext = (): void => {
       && project.projectId !== activeWorkdesk.workdesk.documentId
   });
   openProjectMenuItem.hidden = activeWorkdesk !== null;
-  projectCreateButton.textContent = workdeskHomeActive ? "New Project…" : "Create Project";
+  workdeskRegisterProjectButton.hidden = !workdeskHomeActive;
+  openWorkdeskButton.textContent = activeWorkdesk !== null || activeWorkdeskRecovery !== null
+    ? "Switch Workdesk…"
+    : "Open Workdesk…";
+  const actionLabel = workdeskHomeActive ? "More Workdesk actions" : "More Project actions";
+  projectOverflowButton.setAttribute("aria-label", actionLabel);
+  projectOverflowButton.title = actionLabel;
+  projectOverflowMenu.setAttribute("aria-label", workdeskHomeActive ? "Workdesk actions" : "Project actions");
+  workdeskNewProjectButton.disabled = !workdeskHomeActive || selectedProjectDocumentType !== null;
 };
 commandContextReady = true;
 controller.onDocumentChange(() => {
@@ -2277,6 +2303,23 @@ function renderWorkdeskProjectNodes(projects: readonly WorkdeskProjectExplorerSh
   }
 }
 
+function appendExplorerSectionHeading(section: "projects" | "files"): void {
+  const item = document.createElement("li");
+  item.className = "explorer-section-heading";
+  item.dataset.explorerSection = section;
+  const heading = document.createElement("h3");
+  heading.textContent = section.toUpperCase();
+  item.append(heading);
+  explorerTree.append(item);
+}
+
+function appendExplorerEmptyState(message: string): void {
+  const item = document.createElement("li");
+  item.className = "explorer-empty-entry";
+  item.textContent = message;
+  explorerTree.append(item);
+}
+
 function setWorkdeskDocumentTypes(enabled: boolean): void {
   for (const button of projectNewMenu.querySelectorAll<HTMLButtonElement>("button[data-document-type]")) {
     const isBody = button.dataset.documentType === "body";
@@ -2301,11 +2344,14 @@ function renderProjectState(state: ProjectNavigationState): void {
   const isWorkdeskRoot = workdeskRoot !== null || recoveryRoot !== null;
   const workdeskChild = primaryWorkdeskAvailable && state.project !== null
     && state.project.projectId !== activeWorkdeskRootDocumentId();
-  workspaceLabel.textContent = recoveryRoot ? "Workdesk recovery" : workdeskRoot ? "Workdesk" : "Project";
+  workspaceLabel.textContent = recoveryRoot || workdeskRoot ? "Workdesk" : "Project";
+  workspaceDocumentHeading.textContent = isWorkdeskRoot ? "Workdesk Explorer" : "Project Explorer";
   workspaceDocumentName.textContent = recoveryRoot?.workdesk.title ?? workdeskRoot?.workdesk.title ?? state.project?.displayName ?? "No Project open";
+  workspaceDocumentName.title = workspaceDocumentName.textContent;
   explorerTree.setAttribute("aria-label", isWorkdeskRoot ? "Workdesk Explorer" : "Project Explorer");
   setWorkdeskDocumentTypes(isWorkdeskRoot);
-  workdeskProjectActions.hidden = workdeskRoot === null;
+  workdeskProjectActions.hidden = projectPrimaryActions.hidden || workdeskRoot === null;
+  workdeskRegisterProjectButton.hidden = workdeskRoot === null;
   workdeskHomeButton.disabled = isWorkdeskRoot || !primaryWorkdeskAvailable || state.project === null;
   workdeskHomeButton.setAttribute("aria-pressed", String(isWorkdeskRoot));
   workdeskHomeButton.classList.toggle("workbench-home-action-primary", workdeskChild);
@@ -2336,15 +2382,16 @@ function renderProjectState(state: ProjectNavigationState): void {
     selectedExplorerEntryId = selectedProjectFileId;
   }
   const workdeskShortcuts = workdeskProjectShortcutsForRoot(workdeskRoot, state.project.projectId);
-  renderWorkdeskProjectNodes(workdeskShortcuts);
-  if (state.files.length === 0 && explorerEntries.length === 0 && workdeskShortcuts.length === 0) {
-    emptyDocumentMessage.textContent = workdeskRoot
-      ? "This Workdesk has no loose Markdown documents or registered Projects yet. Use + to create one."
-      : "This Project has no Markdown files yet. Use + to create one.";
-    emptyDocumentMessage.hidden = false;
-    return;
+  if (isWorkdeskRoot) {
+    appendExplorerSectionHeading("projects");
   }
-
+  renderWorkdeskProjectNodes(workdeskShortcuts);
+  if (isWorkdeskRoot && workdeskShortcuts.length === 0) {
+    appendExplorerEmptyState(recoveryRoot
+      ? "Repair Workdesk management information to use registered Projects."
+      : "No Projects added yet.");
+  }
+  appendExplorerSectionHeading("files");
   emptyDocumentMessage.hidden = true;
   const entries = explorerDocumentId === state.project.projectId && explorerEntries.length > 0
     ? explorerEntries
@@ -2355,6 +2402,9 @@ function renderProjectState(state: ProjectNavigationState): void {
       relativeName: file.displayName,
       kind: "markdown" as const
     }));
+  if (entries.length === 0) {
+    appendExplorerEmptyState(isWorkdeskRoot ? "No loose Workdesk files yet." : "No Project files yet.");
+  }
   const childLists = new Map<string, HTMLUListElement>();
   for (const entry of entries) {
     const item = document.createElement("li");
@@ -2508,7 +2558,8 @@ function updateSelectedProjectFile(buttons: readonly HTMLButtonElement[], fileId
 }
 
 function menuItems(menu: HTMLElement): HTMLButtonElement[] {
-  return [...menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')];
+  return [...menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')]
+    .filter((button) => !button.hidden && !button.disabled);
 }
 
 function focusMenuItem(menu: HTMLElement, index: number): void {
@@ -2523,6 +2574,13 @@ function setProjectMenuOpen(menu: HTMLElement, trigger: HTMLButtonElement, open:
   trigger.setAttribute("aria-expanded", String(open));
 }
 
+function setWorkspaceRecoveryNotice(notice: FolderIdentityRecoveryNotice | null): void {
+  workspaceRecovery.hidden = notice === null;
+  workspaceRecoveryTitle.textContent = notice?.title ?? "";
+  workspaceRecoveryMessage.textContent = notice?.message ?? "";
+  workspaceRepairButton.hidden = notice?.canRepairWorkdesk !== true;
+}
+
 function cancelProjectFileCreation(restoreFocus = true): void {
   projectInlineCreate.hidden = true;
   selectedProjectDocumentType = null;
@@ -2532,10 +2590,11 @@ function cancelProjectFileCreation(restoreFocus = true): void {
 }
 
 function cancelProjectCreation(restoreFocus = true): void {
+  const focusTarget = projectCreationFromWorkdesk ? workdeskNewProjectButton : projectNewButton;
   projectCreateForm.hidden = true;
   createProjectTitle.value = "";
   projectCreationFromWorkdesk = false;
-  if (restoreFocus) projectOverflowButton.focus();
+  if (restoreFocus) focusTarget.focus();
 }
 
 function beginProjectCreation(fromWorkdesk: boolean): void {
@@ -2728,6 +2787,9 @@ const projectView: ProjectNavigationView = {
   setProjectError(message: string | null): void {
     workspaceError.textContent = message ?? "";
     workspaceError.hidden = message === null;
+  },
+  setProjectIdentityRecovery(recovery): void {
+    setWorkspaceRecoveryNotice(recovery === null ? null : projectIdentityRecoveryNotice(recovery.code));
   }
 };
 
@@ -3260,10 +3322,10 @@ async function activateWorkdesk(result: WorkdeskOpenResult): Promise<boolean> {
     activeWorkdesk = null;
     activeWorkdeskRecovery = result;
     primaryWorkdeskAvailable = true;
+    setWorkspaceRecoveryNotice(workdeskIdentityRecoveryNotice(result.recovery.code));
     projectView.setProjectError(null);
     updateCommandContext();
     projectView.setProjectState(navigation.getState());
-    projectView.setProjectError(result.recovery.message);
     return true;
   }
   if (result.kind !== "opened") {
@@ -3277,6 +3339,7 @@ async function activateWorkdesk(result: WorkdeskOpenResult): Promise<boolean> {
   activeWorkdesk = result;
   activeWorkdeskRecovery = null;
   primaryWorkdeskAvailable = true;
+  setWorkspaceRecoveryNotice(null);
   projectView.setProjectError(null);
   updateCommandContext();
   // ProjectNavigationController deliberately owns DocumentSession handoff;
@@ -3446,21 +3509,21 @@ const workdeskRestoreSmokeMode = smokeQuery === "h-restore" || smokeQuery === "h
 const gRestoreSmokeMode = smokeQuery === "g-restore";
 const projectSmokeMode = smokeQuery === "project";
 const projectRestoreSmokeMode = smokeQuery === "project-restore" || smokeQuery === "d5-restore" || gRestoreSmokeMode || workdeskRestoreSmokeMode;
-const projectCreateSmokeMode = smokeQuery === "project-create";
 const workbenchSmokeMode = smokeQuery === "workbench";
 const smokeDecisionQueue: DirtySwitchDecision[] = [];
 const legacyWorkspaceMode = workspaceSmokeMode || quotationSmokeMode || repositorySmokeMode;
 const projectLikeSmokeMode = projectSmokeMode
   || projectRestoreSmokeMode
-  || projectCreateSmokeMode
   || shelfSmokeMode
   || d5SmokeMode
   || exportSmokeMode
   || gSmokeMode
   || workdeskSmokeMode;
-openButton.textContent = writingSmokeMode ? "Open" : legacyWorkspaceMode ? "Open Document" : "Open Project";
+openButton.textContent = writingSmokeMode ? "Open" : legacyWorkspaceMode ? "Open Document" : "Open another Project…";
+openButton.hidden = !writingSmokeMode && !legacyWorkspaceMode;
 repositoryNavigation.hidden = writingSmokeMode;
 projectHeaderActions.hidden = writingSmokeMode || legacyWorkspaceMode;
+projectPrimaryActions.hidden = writingSmokeMode || legacyWorkspaceMode;
 projectNewMenu.hidden = true;
 projectOverflowMenu.hidden = true;
 projectInlineCreate.hidden = true;
@@ -3496,16 +3559,6 @@ for (const button of projectNewMenu.querySelectorAll<HTMLButtonElement>("button[
 }
 explorerNewFolderButton.addEventListener("click", () => {
   void commandRegistry.execute("maginalia.explorer.newFolder", commandContext.snapshot());
-});
-
-projectCreateButton.addEventListener("click", () => {
-  cancelProjectFileCreation(false);
-  setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
-  const workdeskRootActive = activeWorkdesk !== null
-    && projectController?.getState().project?.projectId === activeWorkdesk.workdesk.documentId;
-  routeCreateProjectAction(workdeskRootActive,
-    () => { void commandRegistry.execute("maginalia.workdesk.createProject", commandContext.snapshot()); },
-    () => beginProjectCreation(false));
 });
 
 projectCreateCancelButton.addEventListener("click", () => cancelProjectCreation());
@@ -3619,7 +3672,6 @@ if (legacyWorkspaceMode) {
     openProjectButton.disabled = true;
     projectNewButton.disabled = true;
     projectOverflowButton.disabled = true;
-    projectCreateButton.disabled = true;
     createProjectButton.disabled = true;
     newFileForm.querySelectorAll("input, select, button").forEach((element) => {
       (element as HTMLInputElement | HTMLSelectElement | HTMLButtonElement).disabled = true;
@@ -3982,12 +4034,21 @@ if (writingSmokeMode) {
     const previousProjectId = projectController.getState().project?.projectId;
     void projectController.openProject().then(() => clearWorkdeskAfterProjectReplacement(previousProjectId));
   };
-  openButton.addEventListener("click", () => {
-    openStandaloneProject();
-  });
-  openProjectButton.addEventListener("click", () => {
+  commandRegistry.register({
+    id: "maginalia.project.open",
+    title: "Open another Project",
+    description: "Choose a Project folder to open manually.",
+    category: "Project",
+    keywords: ["project", "open", "folder", "manual"]
+  }, () => {
     setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
     openStandaloneProject();
+  });
+  openButton.addEventListener("click", () => {
+    void commandRegistry.execute("maginalia.project.open", commandContext.snapshot());
+  });
+  openProjectButton.addEventListener("click", () => {
+    void commandRegistry.execute("maginalia.project.open", commandContext.snapshot());
   });
   openWorkdeskButton.addEventListener("click", () => {
     setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
@@ -4001,7 +4062,11 @@ if (writingSmokeMode) {
     void commandRegistry.execute("maginalia.workdesk.createProject", commandContext.snapshot());
   });
   workdeskRegisterProjectButton.addEventListener("click", () => {
+    setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
     void commandRegistry.execute("maginalia.workdesk.registerProject", commandContext.snapshot());
+  });
+  workspaceRepairButton.addEventListener("click", () => {
+    void commandRegistry.execute("maginalia.workdesk.open", commandContext.snapshot());
   });
   workdeskHomeButton.addEventListener("click", () => {
     void commandRegistry.execute("maginalia.workdesk.return", commandContext.snapshot());

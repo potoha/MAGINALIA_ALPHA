@@ -152,7 +152,7 @@ import {
   parseWorkdeskPersistenceSmokeMode
 } from "./smoke-mode";
 import { runQuotationSmoke } from "./quotation-smoke";
-import { runProjectCreateSmoke, runProjectRestoreSmoke, runProjectSmoke } from "./project-smoke";
+import { runProjectRestoreSmoke, runProjectSmoke } from "./project-smoke";
 import { runRepositorySmoke } from "./repository-smoke";
 import { runShelfSmoke } from "./shelf-smoke";
 import { runWorkspaceSmoke } from "./workspace-smoke";
@@ -436,9 +436,7 @@ const projectHandlers = createProjectHandlers({
       title: "Open Project",
       properties: ["openDirectory"]
     }),
-  pickProjectParent: () => projectSmoke.requested && projectSmoke.create
-    ? Promise.resolve({ canceled: false, filePaths: projectSmoke.rootPath ? [projectSmoke.rootPath] : [] })
-    : dialog.showOpenDialog({
+  pickProjectParent: () => dialog.showOpenDialog({
       title: "Choose a folder for the new Project",
       properties: ["openDirectory"]
     }),
@@ -1338,9 +1336,7 @@ function createMainWindow(): BrowserWindow {
       window.webContents.once("did-finish-load", () => {
         const smoke = projectSmoke.restore
           ? runProjectRestoreSmoke(window, projectSmoke.rootPath!)
-          : projectSmoke.create
-            ? runProjectCreateSmoke(window, projectSmoke.rootPath!)
-            : runProjectSmoke(window, projectSmoke.rootPath!);
+          : runProjectSmoke(window, projectSmoke.rootPath!);
         void smoke.then(
           () => completeProjectSmoke(),
           (error: unknown) => failProjectSmoke(error)
@@ -1671,7 +1667,7 @@ function createMainWindow(): BrowserWindow {
     : workspaceSmoke.requested
       ? { query: { smoke: "workspace" } }
       : projectSmoke.requested
-        ? { query: { smoke: projectSmoke.restore ? "project-restore" : projectSmoke.create ? "project-create" : "project" } }
+        ? { query: { smoke: projectSmoke.restore ? "project-restore" : "project" } }
       : quotationSmoke.requested
       ? { query: { smoke: "quotation" } }
         : repositorySmoke.requested
