@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promise
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
+import { serializeFolderMarker } from "@maginalia/repository-core";
 import { serializeQuoteRef } from "@maginalia/writing-core";
 import { ConfiguredPrivateShelf } from "./configured-private-shelf";
 import { LibraryService } from "./library-service";
@@ -202,10 +203,22 @@ describe("shelf_location.yml", () => {
 
       const configured = new ConfiguredPrivateShelf(new ShelfLocationRegistry(configPath), new LibraryService());
       expect(await configured.isPrivateShelfUnconfigured()).toBe(true);
-      await expect(configured.configureAndOpen({}, shelfRoot)).resolves.toMatchObject({
+      const shelfDataPaths = [
+        path.join(shelfRoot, "library.json"),
+        path.join(shelfRoot, "books", "book.json"),
+        path.join(shelfRoot, "annotations", "annotation.json"),
+      ];
+      const shelfDataBefore = await Promise.all(shelfDataPaths.map((filePath) => readFile(filePath)));
+      const active = await configured.configureAndOpen({}, shelfRoot);
+      expect(active).toMatchObject({
         kind: "private-shelf",
         records: [{ annotationId: ANNOTATION_ID }],
       });
+      expect(active.kind).toBe("private-shelf");
+      if (active.kind !== "private-shelf") throw new Error("Expected configured Private Shelf");
+      expect(active.folderIdentityId).toMatch(/^[0-9a-f-]{36}$/iu);
+      expect(await readFile(path.join(shelfRoot, "shelf.magi"), "utf8")).toContain(`id = ${active.folderIdentityId}`);
+      expect(await Promise.all(shelfDataPaths.map((filePath) => readFile(filePath)))).toEqual(shelfDataBefore);
       await expect(new ShelfLocationRegistry(configPath).load()).resolves.toEqual({
         kind: "loaded",
         config: {
@@ -220,6 +233,30 @@ describe("shelf_location.yml", () => {
           },
         },
       });
+    });
+  });
+
+  it("keeps Shelf records readable and unchanged while exposing conflicting folder markers", async () => {
+    await withTempDirectory(async (directory) => {
+      const shelfRoot = path.join(directory, "資料", "引用棚");
+      await createCanonicalShelf(shelfRoot);
+      const annotationPath = path.join(shelfRoot, "annotations", "annotation.json");
+      const before = await readFile(annotationPath);
+      await writeFile(path.join(shelfRoot, "shelf.magi"), serializeFolderMarker({
+        version: 1, type: "shelf", id: "11111111-1111-4111-8111-111111111111",
+      }), "utf8");
+      await writeFile(path.join(shelfRoot, "本棚.magi"), serializeFolderMarker({
+        version: 1, type: "shelf", id: "22222222-2222-4222-8222-222222222222",
+      }), "utf8");
+
+      const result = await new LibraryService().openPrivateShelfForOwner({}, shelfRoot);
+
+      expect(result).toMatchObject({
+        kind: "opened",
+        recordCount: 1,
+        folderIdentityRecovery: { code: "marker-conflict" },
+      });
+      expect(await readFile(annotationPath)).toEqual(before);
     });
   });
 

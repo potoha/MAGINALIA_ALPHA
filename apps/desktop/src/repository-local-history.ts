@@ -3,8 +3,8 @@ import type { CommitObject, FsClient, TreeObject } from "isomorphic-git";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs, type Dirent, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, parse, relative, sep } from "node:path";
-import type { RepositoryIdentity } from "@maginalia/repository-core" with { "resolution-mode": "import" };
+import { basename, join, parse, relative, sep } from "node:path";
+import type { FolderMarker, RepositoryIdentity } from "@maginalia/repository-core" with { "resolution-mode": "import" };
 import {
   assertSafeRoot as assertFilesystemRoot,
   captureWorkingTree,
@@ -20,12 +20,26 @@ import {
 import { RepositoryFilesystemError } from "./repository-filesystem.js";
 
 type ParseIdentity = typeof import("@maginalia/repository-core", { with: { "resolution-mode": "import" } })["parseIdentity"];
+type ParseFolderMarker = typeof import("@maginalia/repository-core", { with: { "resolution-mode": "import" } })["parseFolderMarkerText"];
+type CreateIdentity = typeof import("@maginalia/repository-core", { with: { "resolution-mode": "import" } })["createIdentity"];
 
 let parseIdentityPromise: Promise<ParseIdentity> | undefined;
+let parseFolderMarkerPromise: Promise<ParseFolderMarker> | undefined;
+let createIdentityPromise: Promise<CreateIdentity> | undefined;
 
 async function loadParseIdentity(): Promise<ParseIdentity> {
   parseIdentityPromise ??= import("@maginalia/repository-core").then((repositoryCore) => repositoryCore.parseIdentity);
   return parseIdentityPromise;
+}
+
+async function loadParseFolderMarker(): Promise<ParseFolderMarker> {
+  parseFolderMarkerPromise ??= import("@maginalia/repository-core").then((repositoryCore) => repositoryCore.parseFolderMarkerText);
+  return parseFolderMarkerPromise;
+}
+
+async function loadCreateIdentity(): Promise<CreateIdentity> {
+  createIdentityPromise ??= import("@maginalia/repository-core").then((repositoryCore) => repositoryCore.createIdentity);
+  return createIdentityPromise;
 }
 
 export const MAIN_REF = "refs/heads/main" as const;
@@ -596,6 +610,91 @@ interface TreeFile extends TrackedRepositoryFile {
   readonly oid: string;
 }
 
+async function identityFromTreeFiles(
+  rootReal: string,
+  files: readonly { readonly path: string; readonly bytes: Uint8Array }[],
+): Promise<RepositoryIdentity> {
+  const legacyFile = files.find((file) => file.path === IDENTITY_PATH);
+  let legacyIdentity: RepositoryIdentity | undefined;
+  if (legacyFile) {
+    try {
+      const parseIdentity = await loadParseIdentity();
+      legacyIdentity = parseIdentity(JSON.parse(Buffer.from(legacyFile.bytes).toString("utf8")));
+    } catch {
+      // A malformed legacy identity is not authoritative when a valid typed
+      // marker exists.
+    }
+  }
+
+  const markerFiles = files.filter((file) => !file.path.includes("/") && file.path.toLocaleLowerCase("en-US").endsWith(".magi"));
+  const markers: { readonly marker: FolderMarker }[] = [];
+  const parseFolderMarkerText = await loadParseFolderMarker();
+  for (const file of markerFiles) {
+    try {
+      markers.push({ marker: parseFolderMarkerText(Buffer.from(file.bytes).toString("utf8")) });
+    } catch {
+      // Invalid candidates are repair evidence, not folder identity.
+    }
+  }
+
+  if (markers.length > 0) {
+    const first = markers[0]!.marker;
+    const same = (left: typeof first, right: typeof first): boolean => {
+      if (left.type !== right.type || left.id.toLowerCase() !== right.id.toLowerCase()) return false;
+      if (left.type === "project" && right.type === "project") {
+        return (left.parent?.toLowerCase() ?? null) === (right.parent?.toLowerCase() ?? null);
+      }
+      return left.type !== "project" && right.type !== "project";
+    };
+    if (markers.some((candidate) => !same(first, candidate.marker))) fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
+    const kind = first.type === "workdesk" ? "workbench" : first.type;
+    const title = legacyIdentity?.id.toLowerCase() === first.id.toLowerCase() && legacyIdentity.kind === kind
+      ? legacyIdentity.title
+      : (treePresentationTitle(files, first.type)
+        ?? basename(rootReal)
+        ?? (kind === "project" ? "Project" : kind === "workbench" ? "Workdesk" : "Private Shelf"));
+    try {
+      const createIdentity = await loadCreateIdentity();
+      return createIdentity(kind, title, first.id);
+    } catch {
+      const createIdentity = await loadCreateIdentity();
+      return createIdentity(kind, kind === "project" ? "Project" : kind === "workbench" ? "Workdesk" : "Private Shelf", first.id);
+    }
+  }
+  if (legacyIdentity) return legacyIdentity;
+  fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
+}
+
+function treePresentationTitle(
+  files: readonly { readonly path: string; readonly bytes: Uint8Array }[],
+  type: FolderMarker["type"],
+): string | undefined {
+  const candidates = type === "project" ? ["project.json", "manuscript.md"]
+    : type === "workdesk" ? ["manuscript.md"]
+      : ["library.json"];
+  for (const filename of candidates) {
+    const file = files.find((candidate) => candidate.path === filename);
+    if (!file) continue;
+    try {
+      const text = Buffer.from(file.bytes).toString("utf8");
+      if (filename.endsWith(".json")) {
+        const value: unknown = JSON.parse(text);
+        if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+          const record = value as Record<string, unknown>;
+          const title = type === "shelf" ? record.name : record.title;
+          if (typeof title === "string" && title.trim().length > 0) return title;
+        }
+      } else {
+        const match = /^#\s+(.+?)\s*$/mu.exec(text);
+        if (match?.[1]) return match[1].replace(/\\([\\`*_{}\[\]()#+.!|>~-])/gu, "$1");
+      }
+    } catch {
+      // Presentation text is optional and cannot invalidate typed identity.
+    }
+  }
+  return undefined;
+}
+
 interface TreeReadResult {
   readonly identity: RepositoryIdentity;
   readonly files: readonly TreeFile[];
@@ -697,23 +796,19 @@ async function readHeadTree(
   }
 
   await visit(commit.commit.tree, "");
-  const identityFile = files.find((file) => file.path === IDENTITY_PATH);
-  if (!identityFile) fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
-  let identity: RepositoryIdentity;
-  try {
-    const parseIdentity = await loadParseIdentity();
-    identity = parseIdentity(JSON.parse(Buffer.from(identityFile.bytes).toString("utf8")));
-  } catch {
-    fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
-  }
+  const identity = await identityFromTreeFiles(rootReal, files);
   files.sort((left, right) => left.path.localeCompare(right.path, "en", { sensitivity: "variant" }));
   return { identity, files: Object.freeze(files) };
+}
+
+function isRootFolderMarkerPath(pathValue: string): boolean {
+  return !pathValue.includes("/") && pathValue.toLocaleLowerCase("en-US").endsWith(".magi");
 }
 
 function makeIgnorePredicate(rootReal: string): (pathValue: string) => Promise<boolean> {
   return async (pathValue: string): Promise<boolean> => {
     validateRepositoryPath(pathValue);
-    if (pathValue === IDENTITY_PATH) return false;
+    if (pathValue === IDENTITY_PATH || isRootFolderMarkerPath(pathValue)) return false;
     try {
       return await git.isIgnored({ fs: GIT_FS, dir: rootReal, filepath: pathValue });
     } catch {
@@ -745,7 +840,6 @@ async function inspectInternal(
   if (
     tree.identity.id !== identity.id
     || tree.identity.kind !== identity.kind
-    || tree.identity.title !== identity.title
     || tree.identity.schemaVersion !== identity.schemaVersion
     || tree.identity.templateVersion !== identity.templateVersion
   ) {
@@ -1160,15 +1254,8 @@ async function readMaterializationObject(
   return object;
 }
 
-async function parseMaterializationIdentity(files: readonly TreeFile[]): Promise<RepositoryIdentity> {
-  const identityFile = files.find((file) => file.path === IDENTITY_PATH);
-  if (!identityFile) fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
-  try {
-    const parseIdentity = await loadParseIdentity();
-    return parseIdentity(JSON.parse(Buffer.from(identityFile.bytes).toString("utf8")));
-  } catch {
-    fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
-  }
+async function parseMaterializationIdentity(rootReal: string, files: readonly TreeFile[]): Promise<RepositoryIdentity> {
+  return identityFromTreeFiles(rootReal, files);
 }
 
 async function readMaterializationTree(
@@ -1285,7 +1372,7 @@ async function readMaterializationTree(
     return { identity: undefined as unknown as RepositoryIdentity, files };
   }
   files.sort((left, right) => left.path.localeCompare(right.path, "en", { sensitivity: "variant" }));
-  return { identity: await parseMaterializationIdentity(files), files: Object.freeze(files) };
+  return { identity: await parseMaterializationIdentity(rootReal, files), files: Object.freeze(files) };
 }
 
 async function readMaterializationCommit(
@@ -1804,9 +1891,7 @@ async function initializeInternal(
     limits: options?.limits,
     allowIncompleteMarker: true,
   });
-  if (!captured.files.some((file) => file.path === IDENTITY_PATH)) {
-    fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
-  }
+  await identityFromTreeFiles(rootReal, captured.files);
   await git.init({ fs: GIT_FS, dir: rootReal, defaultBranch: "main" });
   const prepared = await prepareFiles(rootReal, captured.files);
   const tree = await writeTree(rootReal, prepared);
@@ -2577,7 +2662,6 @@ export async function createHistorySnapshot(
         if (
           tree.identity.id !== identity.id
           || tree.identity.kind !== identity.kind
-          || tree.identity.title !== identity.title
           || tree.identity.schemaVersion !== identity.schemaVersion
           || tree.identity.templateVersion !== identity.templateVersion
         ) {

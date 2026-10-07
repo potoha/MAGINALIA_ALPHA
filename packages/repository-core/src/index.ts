@@ -11,4 +11,12 @@ export {
   type RepositoryIdentity,
   type RepositoryKind
 } from "./domain.js";
-export { templateFiles } from "./templates.js";
+export { templateFiles, type TemplateOptions } from "./templates.js";
+export {
+  canonicalFolderMarkerFilename,
+  isFolderMarkerUuid,
+  parseFolderMarkerText,
+  serializeFolderMarker,
+  type FolderMarker,
+  type FolderMarkerType
+} from "./folder-marker.js";

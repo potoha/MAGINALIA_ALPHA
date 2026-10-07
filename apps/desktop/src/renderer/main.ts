@@ -85,7 +85,7 @@ import {
 } from "./project-controller";
 import { PROJECT_DOCUMENT_TYPES, type ProjectDocumentType } from "../project-metadata";
 import { createProjectFileName } from "./project-ui";
-import type { WorkdeskCopyResult, WorkdeskOpenResult, WorkdeskOpened, WorkdeskProjectResult, WorkdeskRestoreResult } from "../workdesk-ipc";
+import type { WorkdeskCopyResult, WorkdeskOpenResult, WorkdeskOpened, WorkdeskProjectResult, WorkdeskRecovered, WorkdeskRestoreResult } from "../workdesk-ipc";
 import {
   WorkspaceNavigationController,
   type WorkspaceNavigationApi,
@@ -815,9 +815,8 @@ function propertiesFormIsDirty(): boolean {
 }
 
 function isLooseWorkdeskDocument(): boolean {
-  const desk = activeWorkdesk;
   const project = projectController?.getState().project;
-  return desk !== null && project?.projectId === desk.project.projectId;
+  return project?.projectId === activeWorkdeskRootDocumentId();
 }
 
 function propertiesFormIsValid(): boolean {
@@ -903,7 +902,11 @@ function reloadPropertiesPanel(): void {
 let projectController: ProjectNavigationController | undefined;
 type ActiveWorkdesk = Extract<WorkdeskOpenResult, { readonly kind: "opened" }>;
 let activeWorkdesk: ActiveWorkdesk | null = null;
+let activeWorkdeskRecovery: WorkdeskRecovered | null = null;
 let primaryWorkdeskAvailable = false;
+function activeWorkdeskRootDocumentId(): string | null {
+  return activeWorkdesk?.workdesk.documentId ?? activeWorkdeskRecovery?.workdesk.documentId ?? null;
+}
 const rendererPreferences = createLocalStorageRendererPreferenceStore();
 let currentExportPresentationSettings = rendererPreferences.load().exportPresentationSettings;
 function restoreExportSettingsControls(): void {
@@ -1270,7 +1273,7 @@ const updateCommandContext = (): void => {
     "project.active": projectController?.getState().project !== null,
     "workdesk.active": activeWorkdesk !== null,
     "workdesk.homeAvailable": primaryWorkdeskAvailable
-      && !(activeWorkdesk !== null && activeProjectId === activeWorkdesk.workdesk.documentId),
+      && activeProjectId !== activeWorkdeskRootDocumentId(),
     "workdesk.childProject": activeWorkdesk !== null
       && project !== null
       && project !== undefined
@@ -1613,13 +1616,13 @@ commandRegistry.register({
     projectView.setProjectError("Workdesk is unavailable. Reload MAGINALIA to try again.");
     return;
   }
-  const priorWorkdeskIdentityId = desk?.workdesk.workdeskIdentityId ?? null;
+  const priorWorkdeskActivationKey = desk?.workdesk.workdeskIdentityId ?? activeWorkdeskRecovery?.workdesk.documentId ?? null;
   await restoreWorkdeskForReturn({
     restore: api.returnToWorkdesk,
     activate: async (result) => {
       // Restore is asynchronous. Do not navigate away from a different child
       // Project or a Workdesk that the user selected in the meantime.
-      if ((activeWorkdesk?.workdesk.workdeskIdentityId ?? null) !== priorWorkdeskIdentityId
+      if ((activeWorkdesk?.workdesk.workdeskIdentityId ?? activeWorkdeskRecovery?.workdesk.documentId ?? null) !== priorWorkdeskActivationKey
         || projectController !== navigation
         || navigation.getState().project?.projectId !== childProjectId) return false;
       return activateWorkdesk(result);
@@ -2286,15 +2289,18 @@ function entriesContainId(
 function renderProjectState(state: ProjectNavigationState): void {
   const desk = activeWorkdesk;
   const workdeskRoot = desk !== null && state.project?.projectId === desk.workdesk.documentId ? desk : null;
+  const recovery = activeWorkdeskRecovery;
+  const recoveryRoot = recovery !== null && state.project?.projectId === recovery.workdesk.documentId ? recovery : null;
+  const isWorkdeskRoot = workdeskRoot !== null || recoveryRoot !== null;
   const workdeskChild = primaryWorkdeskAvailable && state.project !== null
-    && (!desk || state.project.projectId !== desk.workdesk.documentId);
-  workspaceLabel.textContent = workdeskRoot ? "Workdesk" : "Project";
-  workspaceDocumentName.textContent = workdeskRoot?.workdesk.title ?? state.project?.displayName ?? "No Project open";
-  explorerTree.setAttribute("aria-label", workdeskRoot ? "Workdesk Explorer" : "Project Explorer");
-  setWorkdeskDocumentTypes(workdeskRoot !== null);
+    && state.project.projectId !== activeWorkdeskRootDocumentId();
+  workspaceLabel.textContent = recoveryRoot ? "Workdesk recovery" : workdeskRoot ? "Workdesk" : "Project";
+  workspaceDocumentName.textContent = recoveryRoot?.workdesk.title ?? workdeskRoot?.workdesk.title ?? state.project?.displayName ?? "No Project open";
+  explorerTree.setAttribute("aria-label", isWorkdeskRoot ? "Workdesk Explorer" : "Project Explorer");
+  setWorkdeskDocumentTypes(isWorkdeskRoot);
   workdeskProjectActions.hidden = workdeskRoot === null;
-  workdeskHomeButton.disabled = workdeskRoot !== null || !primaryWorkdeskAvailable || state.project === null;
-  workdeskHomeButton.setAttribute("aria-pressed", String(workdeskRoot !== null));
+  workdeskHomeButton.disabled = isWorkdeskRoot || !primaryWorkdeskAvailable || state.project === null;
+  workdeskHomeButton.setAttribute("aria-pressed", String(isWorkdeskRoot));
   workdeskHomeButton.classList.toggle("workbench-home-action-primary", workdeskChild);
   explorerTree.replaceChildren();
   updateProjectActionAvailability(state.project !== null);
@@ -2305,7 +2311,7 @@ function renderProjectState(state: ProjectNavigationState): void {
     selectedExplorerFolderId = null;
     explorerDocumentId = null;
     explorerEntries = [];
-    emptyDocumentMessage.textContent = desk
+    emptyDocumentMessage.textContent = desk || recovery
       ? "Open or create a Workdesk to see its loose Markdown documents."
       : "Open or create a Project folder to see its Markdown files.";
     emptyDocumentMessage.hidden = false;
@@ -2897,8 +2903,9 @@ function renderShelfState(state: ShelfViewState): void {
       : "Search the selected Private Shelf.";
   libraryStatus.dataset.state = state.status;
   libraryStatus.textContent = statusMessage;
-  libraryError.textContent = filterError ?? state.error ?? "";
-  libraryError.hidden = filterError === null && state.error === null;
+  const shelfIdentityRecovery = state.folderIdentityRecovery?.message ?? null;
+  libraryError.textContent = filterError ?? state.error ?? shelfIdentityRecovery ?? "";
+  libraryError.hidden = filterError === null && state.error === null && shelfIdentityRecovery === null;
 
   libraryResults.replaceChildren();
   for (const reference of filteredResults) {
@@ -3142,7 +3149,7 @@ async function refreshExplorer(projectId: string): Promise<void> {
     return;
   }
   explorerDocumentId = projectId;
-  explorerEntries = activeWorkdesk?.workdesk.documentId === projectId
+  explorerEntries = activeWorkdeskRootDocumentId() === projectId
     ? result.entries.filter((entry) => entry.relativeName !== "projects" && !entry.relativeName.startsWith("projects/"))
     : result.entries;
   projectView.setProjectState(projectController?.getState() ?? { project: null, files: [], activeFileId: null });
@@ -3220,6 +3227,20 @@ async function openWorkdeskProjectResult(result: WorkdeskProjectResult): Promise
 
 async function activateWorkdesk(result: WorkdeskOpenResult): Promise<boolean> {
   if (result.kind === "cancelled") return false;
+  if (result.kind === "recovery") {
+    const navigation = projectController;
+    if (!navigation) return false;
+    const activated = await navigation.activateOpenedProject({ kind: "opened", project: result.project, files: result.files });
+    if (!activated) return false;
+    activeWorkdesk = null;
+    activeWorkdeskRecovery = result;
+    primaryWorkdeskAvailable = true;
+    projectView.setProjectError(null);
+    updateCommandContext();
+    projectView.setProjectState(navigation.getState());
+    projectView.setProjectError(result.recovery.message);
+    return true;
+  }
   if (result.kind !== "opened") {
     projectView.setProjectError(result.message);
     return false;
@@ -3229,7 +3250,9 @@ async function activateWorkdesk(result: WorkdeskOpenResult): Promise<boolean> {
   const activated = await navigation.activateOpenedProject({ kind: "opened", project: result.project, files: result.files });
   if (!activated) return false;
   activeWorkdesk = result;
+  activeWorkdeskRecovery = null;
   primaryWorkdeskAvailable = true;
+  projectView.setProjectError(null);
   updateCommandContext();
   // ProjectNavigationController deliberately owns DocumentSession handoff;
   // re-render after its successful generic Project state update to apply the
@@ -3255,7 +3278,7 @@ async function rememberActiveWorkdeskContext(context: WorkdeskOpened["lastActive
 
 async function openWorkdesk(api: WorkdeskApi, createTitle?: string): Promise<void> {
   const result = createTitle === undefined ? await api.openWorkdesk() : await api.createWorkdesk({ title: createTitle });
-  if (await activateWorkdesk(result)) await rememberActiveWorkdeskContext({ kind: "home" });
+  if (await activateWorkdesk(result) && result.kind === "opened") await rememberActiveWorkdeskContext({ kind: "home" });
 }
 
 function getLibraryApi(): LibraryControllerApi | null {
@@ -3609,6 +3632,10 @@ if (legacyWorkspaceMode) {
             }));
             return;
           }
+          if (result.kind === "recovery") {
+            await activateWorkdesk(result);
+            return;
+          }
           let restoreError: string | null = result.kind === "error" ? result.message : null;
           // A missing primary Workdesk is a normal first-run state. Ask for
           // one explicit local folder and let the existing IPC open path bind
@@ -3621,9 +3648,9 @@ if (legacyWorkspaceMode) {
           }));
           if (shouldInvokeFirstRunSelection) {
             const selected = await workdeskApi.openWorkdesk();
-            if (selected.kind === "opened") {
+            if (selected.kind === "opened" || selected.kind === "recovery") {
               if (await activateWorkdesk(selected)) {
-                await rememberActiveWorkdeskContext({ kind: "home" });
+                if (selected.kind === "opened") await rememberActiveWorkdeskContext({ kind: "home" });
                 return;
               }
             }
@@ -3916,6 +3943,8 @@ if (writingSmokeMode) {
     const project = projectController?.getState().project;
     if (!project || project.projectId === previousProjectId) return;
     activeWorkdesk = null;
+    activeWorkdeskRecovery = null;
+    projectView.setProjectError(null);
     projectView.setProjectState(projectController.getState());
     updateCommandContext();
   };
@@ -3973,6 +4002,8 @@ projectCreateForm.addEventListener("submit", (event) => {
     const project = projectController?.getState().project;
     if (project && project.projectId !== previousProjectId) {
       activeWorkdesk = null;
+      activeWorkdeskRecovery = null;
+      projectView.setProjectError(null);
       projectView.setProjectState(projectController.getState());
       updateCommandContext();
       cancelProjectCreation(false);

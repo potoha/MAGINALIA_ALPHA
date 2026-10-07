@@ -492,7 +492,6 @@ const workdeskHandlers = createWorkdeskHandlers({
     return response.response === 0;
   },
   service: workdeskService,
-  repositories: repositoryService,
   projects: projectService,
   isPermittedWorkdeskFolder: isPermittedExplorerFolder
 });

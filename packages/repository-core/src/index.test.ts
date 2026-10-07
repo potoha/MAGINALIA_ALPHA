@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseAndValidate } from "@maginalia/format";
 import {
-  IDENTITY_PATH,
   REPOSITORY_KIND_LABELS,
   createIdentity,
   isKnownRepositoryKind,
@@ -10,6 +9,9 @@ import {
   repositoryKindLabel,
   storageName,
   templateFiles,
+  parseFolderMarkerText,
+  serializeFolderMarker,
+  canonicalFolderMarkerFilename,
   type RepositoryKind
 } from "./index";
 
@@ -140,13 +142,15 @@ describe("Repository Core templates", () => {
     const files = templateFiles(value);
     expect(Object.keys(files).sort()).toEqual([
       ".gitignore",
-      ".maginalia/repository.json",
       "README.md",
       "manuscript.md",
       "notes/README.md",
-      "project.json"
+      "project.json",
+      "project.magi"
     ]);
-    expect(JSON.parse(files[IDENTITY_PATH])).toEqual(value);
+    expect(parseFolderMarkerText(files["project.magi"])).toEqual({
+      version: 1, type: "project", id: value.id, parent: null
+    });
     const project = parseAndValidate("project", files["project.json"]);
     expect(project).toMatchObject({ valid: true });
     if (project.valid) {
@@ -159,7 +163,7 @@ describe("Repository Core templates", () => {
     expect(files["README.md"]).toContain("\\[安全\\]");
     expect(files["README.md"]).toContain("\\*");
     expect(files["manuscript.md"]).toContain("\\#題名");
-    expect(files["README.md"]).toContain("template version");
+    expect(files["README.md"]).not.toContain("repository.json");
     expect(files["notes/README.md"]).toContain("ordinary portable text");
 
     const sameUuidDifferentTitle = templateFiles(identity("project", "別の題名", PROJECT_UUID));
@@ -170,14 +174,16 @@ describe("Repository Core templates", () => {
     const files = templateFiles(identity("workbench", "Draft Workbench", WORKBENCH_UUID));
     expect(Object.keys(files).sort()).toEqual([
       ".gitignore",
-      ".maginalia/repository.json",
       "README.md",
       "manuscript.md",
-      "notes/README.md"
+      "notes/README.md",
+      "workdesk.magi"
     ]);
     expect(files["project.json"]).toBeUndefined();
     expect(files["library.json"]).toBeUndefined();
-    expect(JSON.parse(files[IDENTITY_PATH]).kind).toBe("workbench");
+    expect(parseFolderMarkerText(files["workdesk.magi"])).toEqual({
+      version: 1, type: "workdesk", id: WORKBENCH_UUID
+    });
   });
 
   it("generates an empty Shelf compatible with Format v0.1", () => {
@@ -185,12 +191,12 @@ describe("Repository Core templates", () => {
     const files = templateFiles(value);
     expect(Object.keys(files).sort()).toEqual([
       ".gitignore",
-      ".maginalia/repository.json",
       "README.md",
       "annotations/README.md",
       "books/README.md",
       "covers/README.md",
-      "library.json"
+      "library.json",
+      "shelf.magi"
     ]);
     const library = parseAndValidate("library", files["library.json"]);
     expect(library).toMatchObject({ valid: true });
@@ -209,6 +215,21 @@ describe("Repository Core templates", () => {
     expect(files["books/README.md"]).toContain("Format v0.1");
     expect(files["annotations/README.md"]).toContain("Format v0.1");
     expect(files["covers/README.md"]).toContain("cover images");
+  });
+
+  it("writes an explicit Project parent Workdesk UUID and rejects invalid parents", () => {
+    const files = templateFiles(identity("project", "Child", PROJECT_UUID), {
+      parentWorkdeskId: WORKBENCH_UUID
+    });
+    expect(parseFolderMarkerText(files["project.magi"])).toEqual({
+      version: 1, type: "project", id: PROJECT_UUID, parent: WORKBENCH_UUID
+    });
+    expect(() => templateFiles(identity("project", "Child", PROJECT_UUID), {
+      parentWorkdeskId: "not-a-uuid"
+    })).toThrow();
+    expect(() => templateFiles(identity("shelf", "Shelf", SHELF_UUID), {
+      parentWorkdeskId: WORKBENCH_UUID
+    })).toThrow();
   });
 
   it("keeps templates deterministic, credential-safe, and host-independent", () => {
@@ -231,9 +252,44 @@ describe("Repository Core templates", () => {
 
     const domainSource = readFileSync(new URL("./domain.ts", import.meta.url), "utf8");
     const templateSource = readFileSync(new URL("./templates.ts", import.meta.url), "utf8");
-    const implementationSource = domainSource + templateSource;
+    const markerSource = readFileSync(new URL("./folder-marker.ts", import.meta.url), "utf8");
+    const implementationSource = domainSource + templateSource + markerSource;
     expect(implementationSource).not.toMatch(/node:(?:crypto|fs|path)/u);
     expect(implementationSource).not.toContain("electron");
     expect(implementationSource).not.toContain("randomUUID");
+  });
+});
+
+describe("typed .magi marker codec", () => {
+  it("round-trips all folder types and exposes canonical creation names", () => {
+    const markers = [
+      { version: 1, type: "project", id: PROJECT_UUID, parent: null },
+      { version: 1, type: "workdesk", id: WORKBENCH_UUID },
+      { version: 1, type: "shelf", id: SHELF_UUID }
+    ] as const;
+    for (const marker of markers) {
+      const text = serializeFolderMarker(marker);
+      expect(text).toContain("フォルダ識別子");
+      expect(parseFolderMarkerText(text)).toEqual(marker);
+    }
+    expect(canonicalFolderMarkerFilename("project")).toBe("project.magi");
+    expect(canonicalFolderMarkerFilename("workdesk")).toBe("workdesk.magi");
+    expect(canonicalFolderMarkerFilename("shelf")).toBe("shelf.magi");
+  });
+
+  it("accepts whitespace and Unicode comments while validating structure strictly", () => {
+    expect(parseFolderMarkerText("# 日本語コメント\n version  =  1 \n type = project\n id = " + PROJECT_UUID + "\n parent = null\n"))
+      .toEqual({ version: 1, type: "project", id: PROJECT_UUID, parent: null });
+    for (const text of [
+      "version=1\ntype=project\nid=" + PROJECT_UUID,
+      "version=1\ntype=project\nid=" + PROJECT_UUID + "\nparent=null\nparent=null",
+      "version=2\ntype=project\nid=" + PROJECT_UUID + "\nparent=null",
+      "version=1\ntype=unknown\nid=" + PROJECT_UUID,
+      "version=1\ntype=project\nid=bad\nparent=null",
+      "version=1\ntype=workdesk\nid=" + PROJECT_UUID + "\nparent=null",
+      "version=1\ntype=shelf\nid=" + PROJECT_UUID + "\nextra=abc",
+      "version=1\ntype=project\nid=" + PROJECT_UUID + "\nparent=null\nnot a field"
+    ]) expect(() => parseFolderMarkerText(text)).toThrow();
+    expect(() => serializeFolderMarker({ version: 1, type: "shelf", id: SHELF_UUID, parent: null } as never)).toThrow();
   });
 });

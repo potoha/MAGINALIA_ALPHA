@@ -110,6 +110,7 @@ async function prepareTwoVersions(
   if (kind === "shelf") await fs.mkdir(join(repository.root, "books"), { recursive: true });
   await fs.writeFile(contentPath, "古い版\r\n二行目\r\n", "utf8");
   const old = await service.createHistoryForOwner(owner, repository.repositoryId);
+  if (old.kind === "error") throw new Error(`${kind} History snapshot failed: ${old.code} ${old.message}`);
   expect(old.kind).toBe("snapshot");
 
   await fs.writeFile(contentPath, "最新の版\n", "utf8");

@@ -91,6 +91,21 @@ describe("ShelfController", () => {
     expect(view.state.error).toBeNull();
   });
 
+  it("surfaces Shelf folder identity recovery alongside readable search results", async () => {
+    const recovery = { code: "marker-conflict", message: "Resolve the conflicting Shelf .magi markers." };
+    const { controller, view } = makeHarness({
+      kind: "results",
+      results: [quotation],
+      total: 1,
+      folderIdentityRecovery: recovery,
+    });
+
+    await controller.search("日本語");
+
+    expect(view.state.results).toEqual([quotation]);
+    expect(view.state.folderIdentityRecovery).toEqual(recovery);
+  });
+
   it("surfaces a missing selected Private Shelf", async () => {
     const { controller, view } = makeHarness({
       kind: "error",

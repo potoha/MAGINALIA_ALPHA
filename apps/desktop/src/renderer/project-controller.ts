@@ -95,6 +95,7 @@ export class ProjectNavigationController {
   private readonly flushAllDocuments: ProjectNavigationControllerOptions["flushAllDocuments"];
   private state: ProjectNavigationState = EMPTY_STATE;
   private busy = false;
+  private folderIdentityRecoveryMessage: string | null = null;
   private readonly openedFileIds = new Set<string>();
   private readonly fileSessionIds = new Map<string, string>();
 
@@ -357,6 +358,7 @@ export class ProjectNavigationController {
   }
 
   private async applyProject(result: ProjectOpened): Promise<boolean> {
+    this.folderIdentityRecoveryMessage = result.folderIdentityRecovery?.message ?? null;
     const first = result.files[0];
     if (!first) {
       this.openedFileIds.clear();
@@ -487,6 +489,6 @@ export class ProjectNavigationController {
   }
 
   private showError(message: string | null): void {
-    this.view.setProjectError(message);
+    this.view.setProjectError(message ?? this.folderIdentityRecoveryMessage);
   }
 }

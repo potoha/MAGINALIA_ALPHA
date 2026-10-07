@@ -236,4 +236,19 @@ describe("ProjectNavigationController", () => {
     expect(test.view.state.activeFileId).toBe(files[0].fileId);
     expect(test.view.error).toBe("Linked document unavailable");
   });
+
+  it("keeps a folder identity recovery alert visible after the Project opens", async () => {
+    const recovery = { code: "marker-conflict", message: "Resolve the conflicting .magi markers." };
+    const test = harness("cancel", (file) => opened(file), false, undefined, () => ({
+      kind: "opened",
+      project,
+      files,
+      folderIdentityRecovery: recovery,
+    }));
+
+    await test.navigation.openProject();
+    expect(test.view.error).toBe(recovery.message);
+    await test.navigation.openFile(files[1]!.fileId);
+    expect(test.view.error).toBe(recovery.message);
+  });
 });

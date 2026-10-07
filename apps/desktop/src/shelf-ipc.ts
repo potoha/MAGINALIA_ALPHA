@@ -24,6 +24,7 @@ export interface SearchShelfSuccess {
   readonly kind: "results";
   readonly results: readonly CanonicalShelfSearchReference[];
   readonly total: number;
+  readonly folderIdentityRecovery?: { readonly code: string; readonly message: string };
 }
 
 export type ShelfSearchFailureCode = "invalid-request" | "shelf-not-selected" | "shelf-search-failed";
@@ -210,7 +211,12 @@ export function createShelfHandlers(dependencies: ShelfHandlerDependencies): She
           const record = recordsById.get(reference.annotationId);
           return record === undefined ? [] : [copyReference(record)];
         }));
-        return Object.freeze({ kind: "results", results, total: results.length });
+        return Object.freeze({
+          kind: "results",
+          results,
+          total: results.length,
+          ...(active.folderIdentityRecovery ? { folderIdentityRecovery: active.folderIdentityRecovery } : {}),
+        });
       } catch (_error: unknown) {
         return SHELF_SEARCH_FAILED;
       }

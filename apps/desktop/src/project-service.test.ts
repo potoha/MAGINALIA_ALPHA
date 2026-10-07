@@ -1,7 +1,8 @@
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
+import { parseFolderMarkerText, serializeFolderMarker } from "@maginalia/repository-core";
 import { DocumentWorkspaceService } from "./document-workspace";
 import { MarkdownFileService } from "./markdown-file-service";
 import { parseProjectMetadata } from "./project-metadata";
@@ -172,7 +173,7 @@ describe("Project service", () => {
     });
   });
 
-  it("creates a plain local Project folder without repository state", async () => {
+  it("creates a plain local Project with a typed marker and no Git state", async () => {
     await withTempDirectory(async (directory) => {
       const parent = path.join(directory, "projects");
       await mkdir(parent);
@@ -183,8 +184,96 @@ describe("Project service", () => {
       );
       const result = await service.createForOwner({}, parent, "Coffee Sapling");
       expect(result).toMatchObject({ kind: "opened", project: { displayName: "Coffee Sapling" }, files: [] });
-      const stats = await lstat(path.join(parent, "Coffee Sapling"));
+      const projectRoot = path.join(parent, "Coffee Sapling");
+      const stats = await lstat(projectRoot);
       expect(stats.isDirectory()).toBe(true);
+      expect(parseFolderMarkerText(await readFile(path.join(projectRoot, "project.magi"), "utf8"))).toMatchObject({
+        version: 1,
+        type: "project",
+        parent: null,
+      });
+      await expect(lstat(path.join(projectRoot, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("creates a Workdesk child Project with the parent UUID without initializing Git", async () => {
+    await withTempDirectory(async (directory) => {
+      const parent = path.join(directory, "projects");
+      await mkdir(parent);
+      const workdeskId = "22222222-2222-4222-8222-222222222222";
+      const service = new ProjectService(new DocumentWorkspaceService(), new MarkdownFileService(), new MemoryProjectPathStore());
+
+      const result = await service.createForWorkdesk(parent, "子Project", workdeskId);
+
+      expect(result).toMatchObject({ kind: "created" });
+      if (result.kind !== "created") throw new Error("Expected a Workdesk Project folder.");
+      expect(parseFolderMarkerText(await readFile(path.join(result.canonicalRoot, "project.magi"), "utf8"))).toMatchObject({
+        type: "project",
+        parent: workdeskId,
+      });
+      await expect(lstat(path.join(result.canonicalRoot, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("opens Workdesk loose files without creating a competing Project marker", async () => {
+    await withTempDirectory(async (directory) => {
+      const root = path.join(directory, "作業机");
+      await mkdir(root);
+      await writeFile(path.join(root, "workdesk.magi"), serializeFolderMarker({
+        version: 1, type: "workdesk", id: "22222222-2222-4222-8222-222222222222",
+      }), "utf8");
+      await writeFile(path.join(root, "メモ.md"), "# 今日のメモ\n", "utf8");
+      const service = new ProjectService(new DocumentWorkspaceService(), new MarkdownFileService(), new MemoryProjectPathStore());
+
+      const result = await service.openWorkdeskLooseFilesForOwner({}, root);
+
+      expect(result).toMatchObject({ kind: "opened", files: [{ displayName: "メモ.md" }] });
+      if (result.kind !== "opened") throw new Error("Expected loose Workdesk files to open.");
+      expect(result.folderIdentityRecovery).toBeUndefined();
+      expect(new Set(await readdir(root))).toEqual(new Set(["メモ.md", "workdesk.magi"]));
+    });
+  });
+
+  it("opens Workdesk recovery documents without remembering the root as a Project", async () => {
+    await withTempDirectory(async (directory) => {
+      const root = path.join(directory, "作業机");
+      await mkdir(root);
+      await writeFile(path.join(root, "メモ.md"), "# 保存済みメモ\n", "utf8");
+      const store = new MemoryProjectPathStore();
+      const service = new ProjectService(new DocumentWorkspaceService(), new MarkdownFileService(), store);
+
+      const result = await service.openWorkdeskLooseFilesForOwner({}, root, { rememberAsProject: false });
+
+      expect(result).toMatchObject({ kind: "opened", files: [{ displayName: "メモ.md" }] });
+      expect(await store.load()).toBeNull();
+      expect(await readdir(root)).toEqual(["メモ.md"]);
+    });
+  });
+
+  it("opens authored files while surfacing conflicting Project markers for recovery", async () => {
+    await withTempDirectory(async (directory) => {
+      const root = path.join(directory, "卒論資料");
+      await mkdir(root);
+      const authoredPath = path.join(root, "序論.md");
+      const authored = "# 日本語の原稿\n保存した本文です。\n";
+      await writeFile(authoredPath, authored, "utf8");
+      await writeFile(path.join(root, "project.magi"), serializeFolderMarker({
+        version: 1, type: "project", id: "11111111-1111-4111-8111-111111111111", parent: null,
+      }), "utf8");
+      await writeFile(path.join(root, "卒論.magi"), serializeFolderMarker({
+        version: 1, type: "project", id: "22222222-2222-4222-8222-222222222222", parent: null,
+      }), "utf8");
+
+      const service = new ProjectService(new DocumentWorkspaceService(), new MarkdownFileService(), new MemoryProjectPathStore());
+      const opened = await service.openForOwner({}, root);
+
+      expect(opened).toMatchObject({
+        kind: "opened",
+        files: [{ displayName: "序論.md" }],
+        folderIdentityRecovery: { code: "marker-conflict" },
+      });
+      expect(await readFile(authoredPath, "utf8")).toBe(authored);
+      expect(await readdir(root)).toEqual(expect.arrayContaining(["project.magi", "卒論.magi"]));
     });
   });
 

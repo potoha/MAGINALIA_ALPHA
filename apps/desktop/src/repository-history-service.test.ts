@@ -87,7 +87,9 @@ describe("owner-bound History service", () => {
     const projectsRoot = join(desk.canonicalRoot, "projects");
     await fs.mkdir(projectsRoot);
     const childOwner = {};
-    const child = opened(await service.createForOwner(childOwner, projectsRoot, "project", "Child"));
+    const child = opened(await service.createForOwner(childOwner, projectsRoot, "project", "Child", {
+      parentWorkdeskId: desk.identity.id,
+    }));
     const resolvedChild = await service.resolveForOwner(childOwner, child.repository.repositoryId);
     expect(resolvedChild.kind).toBe("resolved");
     if (resolvedChild.kind !== "resolved") throw new Error("Expected child Project root");
@@ -272,9 +274,13 @@ describe("owner-bound History service", () => {
     });
     const { root, repositoryId } = await makeRepository(service, owner, "project", "Revalidate", IDS.project);
     const listed = listing(await service.listHistoryForOwner(owner, repositoryId));
-    const identityPath = join(root, ".maginalia", "repository.json");
+    const identityPath = join(root, "project.magi");
     const original = await fs.readFile(identityPath);
-    await fs.writeFile(identityPath, Buffer.from(original).toString("utf8").replace("Revalidate", "Changed"), "utf8");
+    await fs.writeFile(
+      identityPath,
+      Buffer.from(original).toString("utf8").replace(IDS.project, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+      "utf8",
+    );
     expect(await service.resolveHistoryForOwner(owner, repositoryId, listed.entries[0]!.historyId))
       .toMatchObject({ kind: "error", code: "invalid-identity" });
   });
