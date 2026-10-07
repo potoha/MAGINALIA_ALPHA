@@ -225,6 +225,34 @@ describe("Workdesk IPC boundary", () => {
     expect(values.service.setLastActiveContext).not.toHaveBeenCalled();
   });
 
+  it("restores a markerless remembered Workdesk as readable recovery without adopting it", async () => {
+    const values = dependencies();
+    const recovery = {
+      kind: "identity-recovery" as const,
+      canonicalRoot: "remembered-markerless-root",
+      title: "作業机",
+      code: "missing-marker" as const,
+      message: "Readable documents remain available in recovery mode.",
+    };
+    values.service.restorePrimaryForActivation.mockResolvedValue(recovery);
+    values.projects.openWorkdeskLooseFilesForOwner.mockResolvedValue({
+      kind: "opened", project: { projectId: "opaque-document-handle", displayName: "作業机" },
+      files: [{ fileId: "opaque-file-handle", displayName: "研究メモ.md", title: "研究メモ", documentType: "other" }],
+    });
+    const handlers = createWorkdeskHandlers(values as never);
+
+    await expect(handlers.restoreWorkdesk({ sender: owner })).resolves.toMatchObject({
+      kind: "recovery",
+      files: [{ displayName: "研究メモ.md" }],
+      recovery: { code: "missing-marker" },
+    });
+    expect(values.projects.openWorkdeskLooseFilesForOwner).toHaveBeenCalledWith(owner, recovery.canonicalRoot, { rememberAsProject: false });
+    expect(values.confirmAdoptWorkdesk).not.toHaveBeenCalled();
+    expect(values.pickWorkdeskFolder).not.toHaveBeenCalled();
+    expect(values.service.setPrimary).not.toHaveBeenCalled();
+    expect(values.service.setLastActiveContext).not.toHaveBeenCalled();
+  });
+
   it("saves context only through the active Workdesk capability after renderer activation", async () => {
     const values = dependencies();
     const workdeskId = "11111111-1111-4111-8111-111111111111";

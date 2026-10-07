@@ -356,7 +356,7 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
         } catch {
           // The adoption boundary below will report unsafe or unreadable roots.
         }
-        if (identityRecovery?.code === "marker-conflict") {
+        if (identityRecovery && identityRecovery.code !== "missing-marker") {
           activeDesks.delete(event.sender);
           return recovered(dependencies, event.sender, identityRecovery);
         }

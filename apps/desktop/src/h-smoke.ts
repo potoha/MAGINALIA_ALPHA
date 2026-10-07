@@ -46,6 +46,7 @@ export async function runHSmoke(options: {
   if (options.restore) {
     const restored = await options.workdesks.restorePrimary();
     if (!restored) throw new Error("The primary Workdesk did not restore.");
+    if ("kind" in restored) throw new Error(`The primary Workdesk needs identity recovery: ${restored.message}`);
     const projects = await options.workdesks.listRegisteredProjects(restored);
     const projectB = projects.find((project) => project.title === "H Smoke Project B");
     if (projects.length !== 2 || !projectB) {
@@ -75,7 +76,9 @@ export async function runHSmoke(options: {
   const projectParent = await options.workdesks.prepareChildProjectDirectory(workdesk);
   const createChildProject = async (title: string) => {
     const childOwner = Object.freeze({});
-    const childCreated = await options.repositories.createForOwner(childOwner, projectParent, "project", title);
+    const childCreated = await options.repositories.createForOwner(childOwner, projectParent, "project", title, {
+      parentWorkdeskId: workdesk.identity.id,
+    });
     if (childCreated.kind !== "opened") throw new Error(`Child Project creation failed: ${childCreated.message}`);
     const childResolved = await options.repositories.resolveForOwner(childOwner, childCreated.repository.repositoryId);
     if (childResolved.kind !== "resolved") throw new Error(`Child Project resolution failed: ${childResolved.message}`);
@@ -224,17 +227,26 @@ export async function runHSmoke(options: {
     `document.querySelector("#workspace-label")?.textContent === "Project" && document.querySelector("#workspace-document-name")?.textContent === ${JSON.stringify(projectBDisplayName)} && document.querySelector("#workdesk-home")?.disabled === false && [...document.querySelectorAll("#explorer-tree button[data-explorer-file-id]")].some((button) => button.dataset.explorerFileName === "memo.md")`,
     "Project B Home action before root invalidation");
   const pickerCountBeforeRestoreFailure = options.workdeskPickerInvocationCount();
-  const identityPath = path.join(workdesk.canonicalRoot, ".maginalia", "repository.json");
+  const identityPath = path.join(workdesk.canonicalRoot, "workdesk.magi");
   const identityBytes = await readFile(identityPath);
   await unlink(identityPath);
   await runRendererAction(options.window,
     `(() => { const button = document.querySelector("#workdesk-home"); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`,
-    "returning after the remembered Workdesk becomes unavailable");
+    "returning after the remembered Workdesk loses its marker");
   await waitForRenderer(options.window,
     `document.querySelector("#workspace-error")?.hidden === false && Boolean(document.querySelector("#workspace-error")?.textContent?.trim())`,
-    "the visible unavailable-Workdesk error");
+    "the visible Workdesk identity recovery message");
+  await waitForRenderer(options.window,
+    `[...document.querySelectorAll("#explorer-tree button[data-explorer-file-name]")].some((button) => button.dataset.explorerFileName === "memo.md")`,
+    "the readable loose Workdesk memo in identity recovery");
   if (options.workdeskPickerInvocationCount() !== pickerCountBeforeRestoreFailure) {
-    throw new Error("Returning to an unavailable Workdesk opened a folder picker.");
+    throw new Error("Returning to a Workdesk missing its marker opened a folder picker.");
+  }
+  try {
+    await readFile(identityPath);
+    throw new Error("Ordinary return recreated the missing Workdesk marker.");
+  } catch (error) {
+    if (!(error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
   }
   await writeFile(identityPath, identityBytes);
 }

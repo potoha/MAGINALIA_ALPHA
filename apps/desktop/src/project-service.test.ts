@@ -2,7 +2,7 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseFolderMarkerText, serializeFolderMarker } from "@maginalia/repository-core";
+import { createIdentity, parseFolderMarkerText, serializeFolderMarker } from "@maginalia/repository-core";
 import { DocumentWorkspaceService } from "./document-workspace";
 import { MarkdownFileService } from "./markdown-file-service";
 import { parseProjectMetadata } from "./project-metadata";
@@ -99,6 +99,89 @@ describe("FileProjectPathStore local settings", () => {
 });
 
 describe("Project service", () => {
+  it("opens markerless authored data in identity recovery without creating a Project identity", async () => {
+    await withTempDirectory(async (directory) => {
+      const root = path.join(directory, "日本語", "卒論");
+      await mkdir(root, { recursive: true });
+      const authoredPath = path.join(root, "序論.md");
+      const authoredText = "# 序論\n研究内容は保持します。\n";
+      await writeFile(authoredPath, authoredText, "utf8");
+      const owner = {};
+      const service = new ProjectService(new DocumentWorkspaceService(), new MarkdownFileService(), new MemoryProjectPathStore());
+
+      const result = opened(await service.openForOwner(owner, root));
+      expect(result.files).toMatchObject([{ displayName: "序論.md" }]);
+      expect(result.folderIdentityRecovery).toMatchObject({ code: "missing-marker" });
+      expect(await readFile(authoredPath, "utf8")).toBe(authoredText);
+      expect(await readdir(root)).toEqual(["序論.md"]);
+
+      const restored = await service.restoreForOwner(owner);
+      expect(restored).toMatchObject({ kind: "opened", folderIdentityRecovery: { code: "missing-marker" } });
+      expect(await readdir(root)).toEqual(["序論.md"]);
+    });
+  });
+
+  it("opens a pre-D068 Project through ProjectService and migrates its valid legacy UUID", async () => {
+    await withTempDirectory(async (directory) => {
+      const root = path.join(directory, "日本語", "既存プロジェクト");
+      await mkdir(root, { recursive: true });
+      const authoredPath = path.join(root, "原稿.md");
+      const authoredText = "# 既存原稿\nこの内容は移行後も同じです。\n";
+      await writeFile(authoredPath, authoredText, "utf8");
+      const assetPath = path.join(root, "assets", "図.png");
+      const assetBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      await mkdir(path.dirname(assetPath));
+      await writeFile(assetPath, assetBytes);
+      const legacyPath = path.join(root, ".maginalia", "repository.json");
+      await mkdir(path.dirname(legacyPath));
+      const legacy = createIdentity("project", "既存プロジェクト", "33333333-3333-4333-8333-333333333333");
+      const legacyText = `${JSON.stringify(legacy, null, 2)}\n`;
+      await writeFile(legacyPath, legacyText, "utf8");
+      const workspace = new DocumentWorkspaceService();
+      const service = new ProjectService(workspace, new MarkdownFileService(), new MemoryProjectPathStore());
+
+      const owner = {};
+      const result = opened(await service.openForOwner(owner, root));
+      const explorer = await workspace.listExplorerForOwner(owner, result.project.projectId, []);
+
+      expect(result.files).toMatchObject([{ displayName: "原稿.md" }]);
+      expect(result.folderIdentityRecovery).toBeUndefined();
+      expect(explorer).toMatchObject({ kind: "listed", entries: expect.arrayContaining([expect.objectContaining({ relativeName: "assets/図.png", kind: "file" })]) });
+      expect(await readFile(authoredPath, "utf8")).toBe(authoredText);
+      expect(await readFile(assetPath)).toEqual(assetBytes);
+      expect(parseFolderMarkerText(await readFile(path.join(root, "project.magi"), "utf8"))).toEqual({
+        version: 1,
+        type: "project",
+        id: legacy.id,
+        parent: null,
+      });
+      expect(await readFile(legacyPath, "utf8")).toBe(legacyText);
+    });
+  });
+
+  it("opens a Project with malformed legacy identity in recovery and leaves both files unchanged", async () => {
+    await withTempDirectory(async (directory) => {
+      const root = path.join(directory, "資料", "旧プロジェクト");
+      await mkdir(root, { recursive: true });
+      const authoredPath = path.join(root, "メモ.md");
+      const authoredText = "# 読めるメモ\n保存された本文です。\n";
+      await writeFile(authoredPath, authoredText, "utf8");
+      const legacyPath = path.join(root, ".maginalia", "repository.json");
+      await mkdir(path.dirname(legacyPath));
+      const malformedLegacy = "{broken legacy identity\n";
+      await writeFile(legacyPath, malformedLegacy, "utf8");
+      const service = new ProjectService(new DocumentWorkspaceService(), new MarkdownFileService(), new MemoryProjectPathStore());
+
+      const result = opened(await service.openForOwner({}, root));
+
+      expect(result.files).toMatchObject([{ displayName: "メモ.md" }]);
+      expect(result.folderIdentityRecovery).toMatchObject({ code: "missing-marker" });
+      expect(await readFile(authoredPath, "utf8")).toBe(authoredText);
+      expect(await readFile(legacyPath, "utf8")).toBe(malformedLegacy);
+      expect(new Set(await readdir(root))).toEqual(new Set([".maginalia", "メモ.md"]));
+    });
+  });
+
   it("resolves a Synced Block source through owned Project containment without exposing a path", async () => {
     await withTempDirectory(async (directory) => {
       const root = path.join(directory, "project");

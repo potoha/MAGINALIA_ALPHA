@@ -19,7 +19,7 @@ import {
   type ProjectDocumentType,
 } from "./project-metadata";
 import { validateInternalLinkTarget } from "./project-links";
-import { ensureFolderMarker, FolderMarkerError } from "./folder-identity.js";
+import { createFolderMarker, FolderMarkerError, resolveFolderMarker } from "./folder-identity.js";
 
 export interface ProjectSummary {
   readonly projectId: string;
@@ -405,6 +405,15 @@ export class ProjectService {
   public async createForOwner(owner: object, parentPath: string, title: string): Promise<ProjectCreateResult> {
     const projectRoot = await this.createProjectRoot(parentPath, title);
     if (typeof projectRoot !== "string") return projectRoot;
+    try {
+      await createFolderMarker(projectRoot, "project");
+    } catch (error: unknown) {
+      return {
+        kind: "error",
+        code: "project-create-failed",
+        message: error instanceof Error ? error.message : "The Project marker could not be created safely.",
+      };
+    }
     return this.openForOwner(owner, projectRoot);
   }
 
@@ -417,7 +426,7 @@ export class ProjectService {
     const projectRoot = await this.createProjectRoot(parentPath, title);
     if (typeof projectRoot !== "string") return projectRoot;
     try {
-      await ensureFolderMarker(projectRoot, "project", { parentWorkdeskId });
+      await createFolderMarker(projectRoot, "project", { parentWorkdeskId });
       return Object.freeze({ kind: "created", canonicalRoot: projectRoot });
     } catch (error: unknown) {
       return {
@@ -686,7 +695,7 @@ export class ProjectService {
     parentWorkdeskId?: string | null,
   ): Promise<{ readonly code: string; readonly message: string } | undefined> {
     try {
-      await ensureFolderMarker(rootPath, "project", parentWorkdeskId === undefined ? {} : { parentWorkdeskId });
+      await resolveFolderMarker(rootPath, "project", parentWorkdeskId === undefined ? {} : { parentWorkdeskId });
       return undefined;
     } catch (error: unknown) {
       if (error instanceof FolderMarkerError) {

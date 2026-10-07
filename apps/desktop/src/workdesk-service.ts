@@ -2,8 +2,8 @@ import { promises as fs } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import * as path from "node:path";
 import type { FolderMarker, RepositoryIdentity } from "@maginalia/repository-core" with { "resolution-mode": "import" };
-import { assertSafeRoot } from "./repository-filesystem.js";
-import { ensureFolderMarker, FolderMarkerError, inspectFolderMarkers, repositoryIdentityFromMarker } from "./folder-identity.js";
+import { assertSafeRoot, readIdentity } from "./repository-filesystem.js";
+import { createFolderMarker, FolderMarkerError, inspectFolderMarkers, repositoryIdentityFromMarker, resolveFolderMarker } from "./folder-identity.js";
 
 type RepositoryCore = typeof import("@maginalia/repository-core", { with: { "resolution-mode": "import" } });
 let repositoryCorePromise: Promise<RepositoryCore> | undefined;
@@ -447,18 +447,18 @@ export class WorkdeskService {
 
   public constructor(private readonly localStore: FileWorkdeskPathStore) {}
 
-  public async open(root: string, options: { readonly repairMissingIdentity?: boolean } = {}): Promise<ValidatedWorkdesk> {
+  public async open(root: string): Promise<ValidatedWorkdesk> {
     const canonicalRoot = await assertSafeRoot(root);
-    let ensured: Awaited<ReturnType<typeof ensureFolderMarker>>;
+    let resolved: Awaited<ReturnType<typeof resolveFolderMarker>>;
     try {
-      ensured = await ensureFolderMarker(canonicalRoot, "workdesk", { createIfMissing: options.repairMissingIdentity === true });
+      resolved = await resolveFolderMarker(canonicalRoot, "workdesk");
     } catch (error: unknown) {
       if (error instanceof FolderMarkerError) throw asFolderMarkerBoundaryError(error, "invalid-workdesk");
       throw error;
     }
-    const identity = await repositoryIdentityFromMarker(canonicalRoot, ensured.marker, ensured.legacyIdentity);
+    const identity = await repositoryIdentityFromMarker(canonicalRoot, resolved.marker, resolved.legacyIdentity);
     if (identity.kind !== "workbench") throw new WorkdeskBoundaryError("wrong-kind", "Choose a Workdesk folder.");
-    return Object.freeze({ canonicalRoot, identity, folderMarker: ensured.marker });
+    return Object.freeze({ canonicalRoot, identity, folderMarker: resolved.marker });
   }
 
   /**
@@ -468,10 +468,9 @@ export class WorkdeskService {
    */
   public async openForActivation(
     root: string,
-    options: { readonly repairMissingIdentity?: boolean } = {},
   ): Promise<WorkdeskOpenBoundary> {
     try {
-      return await this.open(root, options);
+      return await this.open(root);
     } catch (error) {
       if (!(error instanceof WorkdeskBoundaryError) || error.code !== "marker-conflict") throw error;
       const recovery = await this.inspectIdentityRecoveryForActivation(root, error);
@@ -523,6 +522,16 @@ export class WorkdeskService {
         ? "This folder already has a Workdesk identity. Open it again to continue."
         : `This folder is already marked as ${markers.marker.type}.`);
     }
+    try {
+      const legacyIdentity = await readIdentity(canonicalRoot, { allowIncompleteMarker: true });
+      if (legacyIdentity.kind !== "workbench") {
+        throw new WorkdeskBoundaryError("legacy-kind-conflict", "The existing legacy identity belongs to a different folder role.");
+      }
+    } catch (error) {
+      if (error instanceof WorkdeskBoundaryError) throw error;
+      // Missing or malformed legacy metadata is not a reason to block loose
+      // Workdesk files; explicit adoption may assign a new identity later.
+    }
     const contentFingerprint = await fingerprintAdoptionContents(canonicalRoot);
     const candidate: WorkdeskAdoptionCandidate = Object.freeze({ kind: "workdesk-adoption-candidate" });
     this.adoptionCandidates.set(candidate, Object.freeze({ canonicalRoot, contentFingerprint }));
@@ -572,12 +581,12 @@ export class WorkdeskService {
       if (await fingerprintAdoptionContents(currentRoot) !== prepared.contentFingerprint) {
         throw new WorkdeskBoundaryError("adoption-changed", "Folder contents changed after the Workdesk adoption was confirmed.");
       }
-      const ensured = await ensureFolderMarker(currentRoot, "workdesk");
-      if (ensured.source === "marker") {
+      const created = await createFolderMarker(currentRoot, "workdesk");
+      if (created.source === "marker") {
         throw new WorkdeskBoundaryError("adoption-changed", "A Workdesk marker appeared after the folder was confirmed.");
       }
       const workdesk = await this.open(currentRoot);
-      const expectedIdentity = await repositoryIdentityFromMarker(currentRoot, ensured.marker, ensured.legacyIdentity);
+      const expectedIdentity = await repositoryIdentityFromMarker(currentRoot, created.marker, created.legacyIdentity);
       if (!sameIdentity(workdesk.identity, expectedIdentity)) {
         throw new WorkdeskBoundaryError("adoption-failed", "The adopted Workdesk identity changed before it could be opened.");
       }
@@ -644,8 +653,8 @@ export class WorkdeskService {
         }
         await fs.writeFile(path.join(current, segments.at(-1)!), contents, { encoding: "utf8", flag: "wx", mode: 0o644 });
       }
-      const ensured = await ensureFolderMarker(destination, "workdesk", { uuidFactory: () => identity.id });
-      if (ensured.marker.id.toLowerCase() !== identity.id.toLowerCase()) {
+      const created = await createFolderMarker(destination, "workdesk", { uuidFactory: () => identity.id });
+      if (created.marker.id.toLowerCase() !== identity.id.toLowerCase()) {
         throw new WorkdeskBoundaryError("create-failed", "The new Workdesk marker did not retain its generated identity.");
       }
       const workdesk = await this.open(destination);
@@ -714,25 +723,11 @@ export class WorkdeskService {
     }
   }
 
-  public async restorePrimary(): Promise<ValidatedWorkdesk | undefined> {
+  public async restorePrimary(): Promise<WorkdeskOpenBoundary | undefined> {
     const stored = await this.localStore.loadForRestore();
     if (!stored || !stored.primaryWorkdesk) return undefined;
     try {
-      return await this.open(stored.primaryWorkdesk, { repairMissingIdentity: true });
-    } catch {
-      throw new WorkdeskBoundaryError(
-        "remembered-workdesk-unavailable",
-        "The remembered Workdesk is no longer available or valid. Use Open Workdesk to choose another folder."
-      );
-    }
-  }
-
-  /** Restore the remembered root while keeping a marker conflict recoverable. */
-  public async restorePrimaryForActivation(): Promise<WorkdeskOpenBoundary | undefined> {
-    const stored = await this.localStore.loadForRestore();
-    if (!stored || !stored.primaryWorkdesk) return undefined;
-    try {
-      return await this.openForActivation(stored.primaryWorkdesk, { repairMissingIdentity: true });
+      return await this.openForActivation(stored.primaryWorkdesk);
     } catch (error) {
       const recovery = await this.inspectIdentityRecoveryForActivation(stored.primaryWorkdesk, error).catch(() => undefined);
       if (recovery) return recovery;
@@ -741,6 +736,11 @@ export class WorkdeskService {
         "The remembered Workdesk is no longer available or valid. Use Open Workdesk to choose another folder."
       );
     }
+  }
+
+  /** Restore the remembered root without creating a replacement identity. */
+  public async restorePrimaryForActivation(): Promise<WorkdeskOpenBoundary | undefined> {
+    return this.restorePrimary();
   }
 
   public async setPrimary(workdesk: ValidatedWorkdesk): Promise<void> {
@@ -870,14 +870,14 @@ export class WorkdeskService {
   /** Validate a registered external Project without persisting a renderer-supplied path. */
   public async validateExternalProject(root: string): Promise<ValidatedChildProjectBoundary> {
     const canonicalRoot = await assertSafeRoot(root);
-    let ensured: Awaited<ReturnType<typeof ensureFolderMarker>>;
+    let resolved: Awaited<ReturnType<typeof resolveFolderMarker>>;
     try {
-      ensured = await ensureFolderMarker(canonicalRoot, "project");
+      resolved = await resolveFolderMarker(canonicalRoot, "project");
     } catch (error: unknown) {
       if (error instanceof FolderMarkerError) throw asFolderMarkerBoundaryError(error, "invalid-project");
       throw error;
     }
-    const identity = await repositoryIdentityFromMarker(canonicalRoot, ensured.marker, ensured.legacyIdentity);
+    const identity = await repositoryIdentityFromMarker(canonicalRoot, resolved.marker, resolved.legacyIdentity);
     if (identity.kind !== "project") {
       throw new WorkdeskBoundaryError("wrong-kind", "Only a MAGINALIA Project can be registered.");
     }
@@ -912,22 +912,21 @@ export class WorkdeskService {
       || path.dirname(canonicalRoot) !== canonicalProjectsRoot || !isWithin(canonicalProjectsRoot, canonicalRoot)) {
       throw new WorkdeskBoundaryError("not-child-project", "A Workdesk child Project must be directly inside projects.");
     }
-    let ensured: Awaited<ReturnType<typeof ensureFolderMarker>>;
+    let resolved: Awaited<ReturnType<typeof resolveFolderMarker>>;
     try {
-      ensured = await ensureFolderMarker(canonicalRoot, "project", {
+      resolved = await resolveFolderMarker(canonicalRoot, "project", {
         parentWorkdeskId: workdesk.identity.id,
-        createIfMissing: false,
       });
     } catch (error: unknown) {
       if (error instanceof FolderMarkerError) throw asFolderMarkerBoundaryError(error, "invalid-project");
       throw error;
     }
-    const identity = await repositoryIdentityFromMarker(canonicalRoot, ensured.marker, ensured.legacyIdentity);
+    const identity = await repositoryIdentityFromMarker(canonicalRoot, resolved.marker, resolved.legacyIdentity);
     if (identity.kind !== "project") {
       throw new WorkdeskBoundaryError("wrong-kind", "A Workdesk child must be a MAGINALIA Project.");
     }
-    if (ensured.marker.type !== "project"
-      || ensured.marker.parent?.toLowerCase() !== workdesk.identity.id.toLowerCase()) {
+    if (resolved.marker.type !== "project"
+      || resolved.marker.parent?.toLowerCase() !== workdesk.identity.id.toLowerCase()) {
       throw new WorkdeskBoundaryError("mapping-conflict", "A direct Workdesk Project marker must reference this Workdesk identity.");
     }
     if (expectedProjectIdentityId && identity.id.toLowerCase() !== expectedProjectIdentityId.toLowerCase()) {

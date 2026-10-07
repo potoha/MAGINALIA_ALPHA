@@ -480,7 +480,7 @@ const workdeskHandlers = createWorkdeskHandlers({
       type: "warning",
       title: "Use this folder as Workdesk?",
       message: "This folder is not set up as a Workdesk yet.",
-      detail: "MAGINALIA will add its Workdesk setup files. Your existing files will stay in this folder and will not be moved or replaced.",
+      detail: "MAGINALIA will add only the Workdesk identity marker. If no reusable legacy identity exists, it will assign a new identity that will not reconnect the former Workdesk's Project links, registrations, or saved context. To recover that identity, cancel and restore its original marker. Existing files and Git state will remain unchanged.",
       buttons: ["Use this folder", "Cancel"],
       defaultId: 1,
       cancelId: 1,

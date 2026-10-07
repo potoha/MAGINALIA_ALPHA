@@ -12,7 +12,7 @@ import type {
   ShelfAnnotationV04,
   ShelfBookV04
 } from "@maginalia/format" with { "resolution-mode": "import" };
-import { ensureFolderMarker, FolderMarkerError } from "./folder-identity.js";
+import { FolderMarkerError, resolveFolderMarker } from "./folder-identity.js";
 
 type FormatCore = typeof import("@maginalia/format", { with: { "resolution-mode": "import" } });
 
@@ -874,13 +874,13 @@ export class LibraryService {
     let folderIdentityRecovery: { readonly code: string; readonly message: string } | undefined;
     if (privateShelf) {
       try {
-        const ensured = await ensureFolderMarker(canonicalRoot, "shelf");
-        folderIdentityId = ensured.marker.id;
+        const resolved = await resolveFolderMarker(canonicalRoot, "shelf");
+        folderIdentityId = resolved.marker.id;
       } catch (error: unknown) {
         if (error instanceof FolderMarkerError) {
           folderIdentityRecovery = Object.freeze({ code: error.code, message: error.message });
         } else {
-          folderIdentityRecovery = Object.freeze({ code: "marker-unavailable", message: "Shelf records opened, but its folder identity could not be read or repaired." });
+          folderIdentityRecovery = Object.freeze({ code: "marker-unavailable", message: "Shelf records opened, but its folder identity could not be read." });
         }
       }
     }

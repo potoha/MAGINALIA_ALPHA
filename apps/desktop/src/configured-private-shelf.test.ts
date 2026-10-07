@@ -179,7 +179,7 @@ describe("shelf_location.yml", () => {
     });
   });
 
-  it("persists a user-selected canonical Shelf without changing Public Shelf or URL metadata", async () => {
+  it("persists a selected canonical Shelf while preserving records and exposing missing identity recovery", async () => {
     await withTempDirectory(async (directory) => {
       const configPath = path.join(directory, SHELF_LOCATION_FILE_NAME);
       const shelfRoot = path.join(directory, "資料", "選択した引用棚");
@@ -216,8 +216,9 @@ describe("shelf_location.yml", () => {
       });
       expect(active.kind).toBe("private-shelf");
       if (active.kind !== "private-shelf") throw new Error("Expected configured Private Shelf");
-      expect(active.folderIdentityId).toMatch(/^[0-9a-f-]{36}$/iu);
-      expect(await readFile(path.join(shelfRoot, "shelf.magi"), "utf8")).toContain(`id = ${active.folderIdentityId}`);
+      expect(active.folderIdentityRecovery).toMatchObject({ code: "missing-marker" });
+      expect(active.folderIdentityId).toBeUndefined();
+      await expect(readFile(path.join(shelfRoot, "shelf.magi"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
       expect(await Promise.all(shelfDataPaths.map((filePath) => readFile(filePath)))).toEqual(shelfDataBefore);
       await expect(new ShelfLocationRegistry(configPath).load()).resolves.toEqual({
         kind: "loaded",

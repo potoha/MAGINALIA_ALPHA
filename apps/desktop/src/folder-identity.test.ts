@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createIdentity, parseFolderMarkerText, serializeFolderMarker } from "@maginalia/repository-core";
-import { ensureFolderMarker, inspectFolderMarkers } from "./folder-identity.js";
+import { createFolderMarker, inspectFolderMarkers, resolveFolderMarker } from "./folder-identity.js";
 
 const roots: string[] = [];
 const PROJECT_ID = "11111111-1111-4111-8111-111111111111";
@@ -32,13 +32,13 @@ describe("typed folder identity", () => {
     const marker = { version: 1, type: "project", id: PROJECT_ID, parent: WORKDESK_ID } as const;
     await writeMarker(root, "卒論.magi", serializeFolderMarker(marker));
 
-    const first = await ensureFolderMarker(root, "project");
+    const first = await resolveFolderMarker(root, "project");
     expect(first.marker).toEqual(marker);
     expect(first.filenames).toEqual(["卒論.magi"]);
     expect(await readdir(root)).toEqual(["卒論.magi"]);
 
     await writeMarker(root, "draft-name.magi", serializeFolderMarker(marker));
-    const duplicate = await ensureFolderMarker(root, "project");
+    const duplicate = await resolveFolderMarker(root, "project");
     expect(duplicate.marker).toEqual(marker);
     expect(new Set(duplicate.filenames)).toEqual(new Set(["draft-name.magi", "卒論.magi"]));
     expect(await readdir(root)).toHaveLength(2);
@@ -50,12 +50,12 @@ describe("typed folder identity", () => {
     await writeMarker(workdeskRoot, "作業机.magi", serializeFolderMarker({ version: 1, type: "workdesk", id: WORKDESK_ID }));
     await writeMarker(shelfRoot, "本棚.magi", serializeFolderMarker({ version: 1, type: "shelf", id: SHELF_ID }));
 
-    expect(await ensureFolderMarker(workdeskRoot, "workdesk")).toMatchObject({
+    expect(await resolveFolderMarker(workdeskRoot, "workdesk")).toMatchObject({
       marker: { type: "workdesk", id: WORKDESK_ID },
       filenames: ["作業机.magi"],
       source: "marker",
     });
-    expect(await ensureFolderMarker(shelfRoot, "shelf")).toMatchObject({
+    expect(await resolveFolderMarker(shelfRoot, "shelf")).toMatchObject({
       marker: { type: "shelf", id: SHELF_ID },
       filenames: ["本棚.magi"],
       source: "marker",
@@ -66,12 +66,12 @@ describe("typed folder identity", () => {
     const projectRoot = await tempRoot();
     const workdeskRoot = await tempRoot();
     const shelfRoot = await tempRoot();
-    const workdesk = await ensureFolderMarker(workdeskRoot, "workdesk", { uuidFactory: () => WORKDESK_ID });
-    const project = await ensureFolderMarker(projectRoot, "project", {
+    const workdesk = await createFolderMarker(workdeskRoot, "workdesk", { uuidFactory: () => WORKDESK_ID });
+    const project = await createFolderMarker(projectRoot, "project", {
       parentWorkdeskId: workdesk.marker.id,
       uuidFactory: () => PROJECT_ID,
     });
-    const shelf = await ensureFolderMarker(shelfRoot, "shelf", { uuidFactory: () => SHELF_ID });
+    const shelf = await createFolderMarker(shelfRoot, "shelf", { uuidFactory: () => SHELF_ID });
 
     expect(workdesk.filenames).toEqual(["workdesk.magi"]);
     expect(project.filenames).toEqual(["project.magi"]);
@@ -89,7 +89,7 @@ describe("typed folder identity", () => {
     const legacyText = `${JSON.stringify(legacy, null, 2)}\n`;
     await writeFile(legacyPath, legacyText, "utf8");
 
-    const result = await ensureFolderMarker(root, "shelf", { uuidFactory: () => PROJECT_ID });
+    const result = await resolveFolderMarker(root, "shelf");
 
     expect(result.source).toBe("legacy");
     expect(result.marker).toEqual({ version: 1, type: "shelf", id: SHELF_ID });
@@ -104,13 +104,13 @@ describe("typed folder identity", () => {
     const legacyText = `${JSON.stringify(legacy, null, 2)}\n`;
     await writeFile(legacyPath, legacyText, "utf8");
 
-    const result = await ensureFolderMarker(root, "project", { parentWorkdeskId: WORKDESK_ID });
+    const result = await resolveFolderMarker(root, "project", { parentWorkdeskId: WORKDESK_ID });
 
     expect(result.marker).toEqual({ version: 1, type: "project", id: PROJECT_ID, parent: WORKDESK_ID });
     expect(await readFile(legacyPath, "utf8")).toBe(legacyText);
   });
 
-  it("repairs malformed legacy identity without changing readable authored files", async () => {
+  it("keeps malformed legacy identity recoverable until an explicit repair creates a new marker", async () => {
     const root = await tempRoot();
     const authoredPath = path.join(root, "序論.md");
     const authoredText = "# 研究ノート\n本文はそのままです。\n";
@@ -119,12 +119,44 @@ describe("typed folder identity", () => {
     await mkdir(path.dirname(legacyPath));
     await writeFile(legacyPath, "{broken\n", "utf8");
 
-    const result = await ensureFolderMarker(root, "project", { uuidFactory: () => PROJECT_ID });
+    await expect(resolveFolderMarker(root, "project")).rejects.toMatchObject({ code: "missing-marker" });
+    expect(new Set(await readdir(root))).toEqual(new Set([".maginalia", "序論.md"]));
+    expect(await readFile(authoredPath, "utf8")).toBe(authoredText);
+    expect(await readFile(legacyPath, "utf8")).toBe("{broken\n");
+
+    const result = await createFolderMarker(root, "project", { uuidFactory: () => PROJECT_ID });
 
     expect(result.source).toBe("generated");
     expect(result.marker.id).toBe(PROJECT_ID);
+    expect(new Set(await readdir(root))).toEqual(new Set([".maginalia", "project.magi", "序論.md"]));
     expect(await readFile(authoredPath, "utf8")).toBe(authoredText);
     expect(await readFile(legacyPath, "utf8")).toBe("{broken\n");
+  });
+
+  it("does not generate identity for ordinary resolution of any role", async () => {
+    const projectRoot = await tempRoot();
+    const workdeskRoot = await tempRoot();
+    const shelfRoot = await tempRoot();
+
+    await expect(resolveFolderMarker(projectRoot, "project")).rejects.toMatchObject({ code: "missing-marker" });
+    await expect(resolveFolderMarker(workdeskRoot, "workdesk")).rejects.toMatchObject({ code: "missing-marker" });
+    await expect(resolveFolderMarker(shelfRoot, "shelf")).rejects.toMatchObject({ code: "missing-marker" });
+    expect(await readdir(projectRoot)).toEqual([]);
+    expect(await readdir(workdeskRoot)).toEqual([]);
+    expect(await readdir(shelfRoot)).toEqual([]);
+  });
+
+  it("keeps a wrong-role legacy identity in recovery without generating a replacement", async () => {
+    const root = await tempRoot();
+    const legacy = createIdentity("project", "Legacy Project", PROJECT_ID);
+    const legacyPath = path.join(root, ".maginalia", "repository.json");
+    await mkdir(path.dirname(legacyPath));
+    const legacyText = `${JSON.stringify(legacy, null, 2)}\n`;
+    await writeFile(legacyPath, legacyText, "utf8");
+
+    await expect(resolveFolderMarker(root, "shelf")).rejects.toMatchObject({ code: "legacy-kind-conflict" });
+    expect(await readdir(root)).toEqual([".maginalia"]);
+    expect(await readFile(legacyPath, "utf8")).toBe(legacyText);
   });
 
   it("surfaces conflicting valid markers without choosing a basename or writing another identity", async () => {
@@ -132,7 +164,7 @@ describe("typed folder identity", () => {
     await writeMarker(root, "project.magi", serializeFolderMarker({ version: 1, type: "project", id: PROJECT_ID, parent: null }));
     await writeMarker(root, "卒論.magi", serializeFolderMarker({ version: 1, type: "project", id: SHELF_ID, parent: null }));
 
-    await expect(ensureFolderMarker(root, "project")).rejects.toMatchObject({ code: "marker-conflict" });
+    await expect(resolveFolderMarker(root, "project")).rejects.toMatchObject({ code: "marker-conflict" });
     const inspection = await inspectFolderMarkers(root);
     expect(inspection.kind).toBe("conflict");
     expect(new Set(await readdir(root))).toEqual(new Set(["project.magi", "卒論.magi"]));

@@ -19,7 +19,7 @@ export type FolderMarkerInspection =
 
 export type FolderMarkerSource = "marker" | "legacy" | "generated";
 
-export interface EnsuredFolderMarker {
+export interface ResolvedFolderMarker {
   readonly marker: FolderMarker;
   readonly filenames: readonly string[];
   readonly source: FolderMarkerSource;
@@ -177,20 +177,40 @@ async function writeMarkerExclusively(root: string, filename: string, text: stri
   }
 }
 
+/** Resolve an existing identity, migrating only a valid applicable legacy UUID. */
+export async function resolveFolderMarker(
+  root: string,
+  type: FolderMarkerType,
+  options: { readonly parentWorkdeskId?: string | null } = {},
+): Promise<ResolvedFolderMarker> {
+  return resolveOrCreateFolderMarker(root, type, options, false);
+}
+
 /**
- * Resolve or add one typed marker. A valid marker always wins over legacy
- * metadata. With no valid marker, a usable matching legacy UUID is migrated;
- * malformed legacy metadata is ignored and replaced by a new marker UUID.
+ * Create/adopt a typed identity after an explicit creation or repair decision.
+ * Existing valid identity always wins; otherwise a matching legacy UUID is
+ * reused and a fresh UUID is generated only when this explicit writer is used.
  */
-export async function ensureFolderMarker(
+export async function createFolderMarker(
   root: string,
   type: FolderMarkerType,
   options: {
     readonly parentWorkdeskId?: string | null;
     readonly uuidFactory?: () => string;
-    readonly createIfMissing?: boolean;
   } = {},
-): Promise<EnsuredFolderMarker> {
+): Promise<ResolvedFolderMarker> {
+  return resolveOrCreateFolderMarker(root, type, options, true);
+}
+
+async function resolveOrCreateFolderMarker(
+  root: string,
+  type: FolderMarkerType,
+  options: {
+    readonly parentWorkdeskId?: string | null;
+    readonly uuidFactory?: () => string;
+  },
+  allowGeneration: boolean,
+): Promise<ResolvedFolderMarker> {
   const canonicalRoot = await canonicalFolderRoot(root);
   const initial = await inspectFolderMarkers(canonicalRoot);
   if (initial.kind === "conflict") {
@@ -217,8 +237,11 @@ export async function ensureFolderMarker(
   if (legacyIdentity && !legacyApplies(legacyIdentity, type)) {
     throw new FolderMarkerError("legacy-kind-conflict", "The existing legacy identity belongs to a different folder role.");
   }
-  if (!legacyIdentity && options.createIfMissing === false) {
-    throw new FolderMarkerError("missing-marker", "This folder has no usable identity marker yet.");
+  if (!legacyIdentity && !allowGeneration) {
+    throw new FolderMarkerError(
+      "missing-marker",
+      `This folder has no reusable ${type} identity. Readable data can still be opened; use an explicit creation or repair action to assign one.`,
+    );
   }
 
   const uuid = legacyIdentity?.id ?? (options.uuidFactory ?? randomUUID)();

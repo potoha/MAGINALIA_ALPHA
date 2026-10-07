@@ -126,6 +126,30 @@ describe("Workdesk portable and local state", () => {
     expect(new Set(await fs.readdir(root))).toEqual(new Set([".maginalia", "研究メモ.md"]));
   });
 
+  it("surfaces a wrong-role legacy identity as recovery without preparing a replacement", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-wrong-legacy-role-"));
+    roots.push(root);
+    const notePath = path.join(root, "作業メモ.md");
+    const note = "# 作業メモ\nこの本文は読めます。\n";
+    const legacyPath = path.join(root, ".maginalia", "repository.json");
+    const legacy = createIdentity("project", "Not a Workdesk", "11111111-1111-4111-8111-111111111111");
+    const legacyText = `${JSON.stringify(legacy, null, 2)}\n`;
+    await writeFile(notePath, note, "utf8");
+    await mkdir(path.dirname(legacyPath));
+    await writeFile(legacyPath, legacyText, "utf8");
+    const service = new WorkdeskService(new FileWorkdeskPathStore(path.join(root, "profile", "workdesk-paths.json")));
+
+    const cause = await service.openForActivation(root).catch((error: unknown) => error);
+    const recovery = await service.inspectIdentityRecoveryForActivation(root, cause);
+
+    expect(cause).toMatchObject({ code: "legacy-kind-conflict" });
+    expect(recovery).toMatchObject({ kind: "identity-recovery", code: "legacy-kind-conflict" });
+    await expect(service.prepareAdoption(root)).rejects.toMatchObject({ code: "legacy-kind-conflict" });
+    expect(await readFile(notePath, "utf8")).toBe(note);
+    expect(await readFile(legacyPath, "utf8")).toBe(legacyText);
+    await expect(readFile(path.join(root, "workdesk.magi"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("restores a remembered valid Workdesk and distinguishes an unavailable folder from first run", async () => {
     const desk = await fixture("workbench", "Primary Desk");
     const localRoot = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-primary-"));
@@ -134,13 +158,15 @@ describe("Workdesk portable and local state", () => {
     const opened = await service.open(desk.root);
 
     await service.setPrimary(opened);
-    expect((await service.restorePrimary())?.canonicalRoot).toBe(opened.canonicalRoot);
+    const restored = await service.restorePrimary();
+    expect(restored).toMatchObject({ canonicalRoot: opened.canonicalRoot });
+    if (!restored || "kind" in restored) throw new Error("Expected the remembered Workdesk identity to restore.");
 
     await import("node:fs/promises").then(({ rm }) => rm(desk.root, { recursive: true, force: true }));
     await expect(service.restorePrimary()).rejects.toMatchObject({ code: "remembered-workdesk-unavailable" });
   });
 
-  it("repairs missing identity during restore without changing readable Workdesk files", async () => {
+  it("returns identity recovery on restore without minting or persisting a replacement Workdesk identity", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-repair-"));
     roots.push(root);
     const localRoot = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-repair-profile-"));
@@ -150,18 +176,36 @@ describe("Workdesk portable and local state", () => {
     await writeFile(notePath, note, "utf8");
     const legacyPath = path.join(root, ".maginalia", "repository.json");
     await mkdir(path.dirname(legacyPath));
-    await writeFile(legacyPath, "{broken\n", "utf8");
-    const store = new FileWorkdeskPathStore(path.join(localRoot, "workdesk-paths.json"));
-    await store.save({ schemaVersion: 1, primaryWorkdesk: root, workdesks: {} });
+    const brokenLegacy = "{broken\n";
+    await writeFile(legacyPath, brokenLegacy, "utf8");
+    const statePath = path.join(localRoot, "workdesk-paths.json");
+    const preservedIdentity = "22222222-2222-4222-8222-222222222222";
+    const preservedProject = "11111111-1111-4111-8111-111111111111";
+    const stateText = `${JSON.stringify({
+      schemaVersion: 1,
+      primaryWorkdesk: root,
+      workdesks: {
+        [preservedIdentity]: {
+          projects: { [preservedProject]: { rootPath: path.join(root, "projects", "registered") } },
+          lastActiveContext: { kind: "project", projectIdentityId: preservedProject },
+        },
+      },
+    }, null, 2)}\n`;
+    await writeFile(statePath, stateText, "utf8");
+    const store = new FileWorkdeskPathStore(statePath);
     const service = new WorkdeskService(store);
 
     const restored = await service.restorePrimary();
+    const activationRestore = await service.restorePrimaryForActivation();
 
-    expect(restored?.identity.kind).toBe("workbench");
-    expect(restored?.folderMarker.type).toBe("workdesk");
+    const canonicalRoot = await realpath(root);
+    expect(restored).toMatchObject({ kind: "identity-recovery", code: "missing-marker", canonicalRoot });
+    expect(activationRestore).toMatchObject({ kind: "identity-recovery", code: "missing-marker", canonicalRoot });
     expect(await readFile(notePath, "utf8")).toBe(note);
-    expect(await readFile(legacyPath, "utf8")).toBe("{broken\n");
-    expect(await readFile(path.join(root, "workdesk.magi"), "utf8")).toContain(`id = ${restored?.identity.id}`);
+    expect(await readFile(legacyPath, "utf8")).toBe(brokenLegacy);
+    expect(await readFile(statePath, "utf8")).toBe(stateText);
+    expect(new Set(await fs.readdir(root))).toEqual(new Set([".maginalia", "ノート.md"]));
+    await expect(readFile(path.join(root, "workdesk.magi"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(root, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -247,6 +291,26 @@ describe("Workdesk portable and local state", () => {
     expect(portable).not.toContain(project.root);
     const local = JSON.parse(await readFile(localPath, "utf8")) as { workdesks: Record<string, { projects: Record<string, { rootPath: string }> }> };
     expect(local.workdesks[desk.identity.id]?.projects[project.identity.id]?.rootPath).toBe(await realpath(project.root));
+  });
+
+  it("does not mint a missing Project identity while validating Workdesk registration", async () => {
+    const desk = await fixture("workbench", "Desk");
+    const projectRoot = path.join(desk.root, "external", "未登録Project");
+    await mkdir(projectRoot, { recursive: true });
+    const authoredPath = path.join(projectRoot, "原稿.md");
+    const authoredText = "# 未登録の原稿\n既存データです。\n";
+    await writeFile(authoredPath, authoredText, "utf8");
+    const localPath = path.join(desk.root, "profile", "workdesk-paths.json");
+    const service = new WorkdeskService(new FileWorkdeskPathStore(localPath));
+    const opened = await service.open(desk.root);
+    await service.setPrimary(opened);
+    const stateBefore = await readFile(localPath, "utf8");
+
+    await expect(service.validateExternalProject(projectRoot)).rejects.toMatchObject({ code: "missing-marker" });
+
+    await expect(readFile(path.join(projectRoot, "project.magi"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(authoredPath, "utf8")).toBe(authoredText);
+    expect(await readFile(localPath, "utf8")).toBe(stateBefore);
   });
 
   it("removes Workdesk membership without deleting the Project directory", async () => {
