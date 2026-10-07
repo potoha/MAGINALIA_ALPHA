@@ -287,6 +287,27 @@ Missing evidence is NOT VERIFIED, never PASS.
 
 Do not fabricate real-world smoke evidence.
 
+## Canonical plan write-back
+
+Completed implementation must be written back to the canonical planning source.
+
+After finishing a substantial task:
+
+1. Re-open the relevant current documents under `MAGINALIA_IDE/plan`.
+2. Update the smallest relevant plan entry to reflect the work actually completed.
+3. Mark a planned slice or acceptance item **DONE** only when its required acceptance evidence is genuinely satisfied.
+4. Record the implementation/result commit and concise evidence when the plan tracks implementation progress that way.
+5. If acceptance remains FAIL or NOT VERIFIED, do not mark the work DONE. Record the real status, remaining acceptance requirement, or blocker where the active plan needs that information.
+6. If implementation changed user-visible behavior, workflow semantics, state ownership, persistence rules, product terminology, or another planned contract, update the canonical plan text so the specification matches the implemented decision.
+7. If the change is an architectural/product decision that belongs in an ADR or Decision Log, update the relevant accepted decision source as well rather than hiding the decision only in implementation notes.
+8. Do not rewrite unrelated roadmap items or opportunistically clean up planning documents outside the completed scope.
+
+A code change that intentionally changes planned product behavior is incomplete until the canonical specification records that change.
+
+A completed planned slice is incomplete until the canonical plan records its actual completion state.
+
+If the agent cannot write to `MAGINALIA_IDE`, it must not pretend the write-back occurred. Report the missing access as a blocker and provide the exact plan update required in the handoff.
+
 ## Definition of Done
 
 A substantial slice is complete only when:
@@ -297,12 +318,15 @@ A substantial slice is complete only when:
 - security/data/identity invariants remain intact;
 - unrelated regressions are not introduced;
 - a coherent result commit exists;
+- the relevant `MAGINALIA_IDE/plan` status/specification has been written back accurately;
 - final worktree state is reported;
 - an Implementation Handoff Report is produced.
 
 Source code merely existing is not completion.
 
 Mock tests merely passing is not completion.
+
+A local implementation commit without the required canonical-plan write-back is not completion.
 
 ## Commit discipline
 
@@ -331,6 +355,7 @@ At the end of a substantial task, return an English Implementation Handoff Repor
 - acceptance items as PASS / FAIL / NOT VERIFIED;
 - remaining debt;
 - deferred scope;
+- canonical plan files updated, with resulting DONE / pending status and any specification changes recorded;
 - next recommended action.
 
 The Handoff is not a substitute for repository evidence.
