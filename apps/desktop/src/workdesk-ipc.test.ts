@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createWorkdeskHandlers, type WorkdeskFolderSelection } from "./workdesk-ipc";
+import type { WorkdeskLastActiveContext } from "./workdesk-service";
 
 const owner = {};
 
@@ -8,12 +9,17 @@ function dependencies() {
     pickWorkdeskFolder: vi.fn<() => Promise<WorkdeskFolderSelection>>(async () => ({ canceled: true, filePaths: [] })),
     pickWorkdeskParent: vi.fn<() => Promise<WorkdeskFolderSelection>>(async () => ({ canceled: true, filePaths: [] })),
     pickExistingProjectFolder: vi.fn<() => Promise<WorkdeskFolderSelection>>(async () => ({ canceled: true, filePaths: [] })),
+    confirmAdoptWorkdesk: vi.fn(async () => false),
     service: {
       open: vi.fn(),
       restorePrimary: vi.fn(async (): Promise<unknown> => undefined),
+      prepareAdoption: vi.fn(),
+      adoptPreparedFolder: vi.fn(),
       loadPortableIndex: vi.fn(async () => ({ schemaVersion: 1 as const, projects: [] })),
       listRegisteredProjects: vi.fn(async () => []),
       setPrimary: vi.fn(async () => undefined),
+      setLastActiveContext: vi.fn(async () => undefined),
+      lastActiveContext: vi.fn(async (): Promise<WorkdeskLastActiveContext> => ({ kind: "home" })),
       resolveRegisteredProject: vi.fn(),
       validateExternalProject: vi.fn(),
       validateDirectChildProject: vi.fn(),
@@ -68,6 +74,98 @@ describe("Workdesk IPC boundary", () => {
     });
     expect(values.service.open).toHaveBeenCalledWith("C:\\資料\\Workdesk");
     expect(values.service.setPrimary).toHaveBeenCalledWith(desk);
+    expect(values.service.setLastActiveContext).not.toHaveBeenCalled();
+  });
+
+  it("uses a separate Home command to reopen the known primary without a folder picker", async () => {
+    const values = dependencies();
+    const workdeskId = "11111111-1111-4111-8111-111111111111";
+    const desk = { canonicalRoot: "main-process-only", identity: { id: workdeskId, title: "Desk", kind: "workbench" } };
+    values.service.restorePrimary.mockResolvedValue(desk);
+    values.projects.openForOwner.mockResolvedValue({
+      kind: "opened",
+      project: { projectId: workdeskId, displayName: "Desk" },
+      files: [],
+    });
+    const handlers = createWorkdeskHandlers(values as never);
+
+    await expect(handlers.returnToWorkdesk({ sender: owner })).resolves.toMatchObject({ kind: "opened" });
+    expect(values.service.restorePrimary).toHaveBeenCalledOnce();
+    expect(values.pickWorkdeskFolder).not.toHaveBeenCalled();
+    expect(values.service.setLastActiveContext).not.toHaveBeenCalled();
+  });
+
+  it("saves context only through the active Workdesk capability after renderer activation", async () => {
+    const values = dependencies();
+    const workdeskId = "11111111-1111-4111-8111-111111111111";
+    const projectId = "22222222-2222-4222-8222-222222222222";
+    const desk = { canonicalRoot: "main-process-only", identity: { id: workdeskId, title: "Desk", kind: "workbench" } };
+    values.service.restorePrimary.mockResolvedValue(desk);
+    values.projects.openForOwner.mockResolvedValue({ kind: "opened", project: { projectId: workdeskId, displayName: "Desk" }, files: [] });
+    const handlers = createWorkdeskHandlers(values as never);
+
+    await handlers.restoreWorkdesk({ sender: owner });
+    await expect(handlers.saveWorkdeskContext({ sender: owner }, {
+      workdeskIdentityId: workdeskId,
+      context: { kind: "project", projectIdentityId: projectId },
+    })).resolves.toEqual({ kind: "saved" });
+    expect(values.service.setLastActiveContext).toHaveBeenCalledWith(desk, {
+      kind: "project",
+      projectIdentityId: projectId,
+    });
+    expect(values.pickWorkdeskFolder).not.toHaveBeenCalled();
+  });
+
+  it("does not save context through an inactive or mismatched Workdesk capability", async () => {
+    const values = dependencies();
+    const handlers = createWorkdeskHandlers(values as never);
+    const result = await handlers.saveWorkdeskContext({ sender: owner }, {
+      workdeskIdentityId: "11111111-1111-4111-8111-111111111111",
+      context: { kind: "home" },
+    });
+
+    expect(result).toMatchObject({ kind: "error", code: "workdesk-not-active" });
+    expect(values.service.setLastActiveContext).not.toHaveBeenCalled();
+  });
+
+  it("confirms adoption before adopting a selected populated folder", async () => {
+    const values = dependencies();
+    const workdeskId = "11111111-1111-4111-8111-111111111111";
+    const desk = { canonicalRoot: "main-process-only", identity: { id: workdeskId, title: "Desk", kind: "workbench" } };
+    const candidate = { kind: "workdesk-adoption-candidate" as const };
+    values.pickWorkdeskFolder.mockResolvedValue({ canceled: false, filePaths: ["main-process-only"] });
+    values.service.open.mockRejectedValue(new Error("folder has no Workdesk identity"));
+    values.service.prepareAdoption.mockResolvedValue(candidate);
+    values.service.adoptPreparedFolder.mockResolvedValue({ workdesk: desk, preserveIncompleteOnFailure: vi.fn(async () => undefined) });
+    values.confirmAdoptWorkdesk.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    values.projects.openForOwner.mockResolvedValue({
+      kind: "opened",
+      project: { projectId: workdeskId, displayName: "Desk" },
+      files: [],
+    });
+    const handlers = createWorkdeskHandlers(values as never);
+
+    await expect(handlers.openWorkdesk({ sender: owner })).resolves.toEqual({ kind: "cancelled" });
+    expect(values.service.adoptPreparedFolder).not.toHaveBeenCalled();
+    await expect(handlers.openWorkdesk({ sender: owner })).resolves.toMatchObject({ kind: "opened" });
+    expect(values.service.adoptPreparedFolder).toHaveBeenCalledWith(candidate, owner, values.repositories);
+    expect(values.service.setPrimary).toHaveBeenCalledWith(desk);
+  });
+
+  it("restores Home first without overwriting a remembered registered Project", async () => {
+    const values = dependencies();
+    const workdeskId = "11111111-1111-4111-8111-111111111111";
+    const projectId = "22222222-2222-4222-8222-222222222222";
+    const desk = { canonicalRoot: "main-process-only", identity: { id: workdeskId, title: "Desk", kind: "workbench" } };
+    values.service.restorePrimary.mockResolvedValue(desk);
+    values.service.lastActiveContext.mockResolvedValue({ kind: "project", projectIdentityId: projectId });
+    values.projects.openForOwner.mockResolvedValue({ kind: "opened", project: { projectId: workdeskId, displayName: "Desk" }, files: [] });
+    const handlers = createWorkdeskHandlers(values as never);
+
+    const result = await handlers.restoreWorkdesk({ sender: owner });
+    expect(result).toMatchObject({ kind: "opened", lastActiveContext: { kind: "project", projectIdentityId: projectId } });
+    expect(values.service.setLastActiveContext).not.toHaveBeenCalled();
+    expect(values.pickWorkdeskFolder).not.toHaveBeenCalled();
   });
 
   it("does not return child Project Markdown as loose Workdesk files", async () => {

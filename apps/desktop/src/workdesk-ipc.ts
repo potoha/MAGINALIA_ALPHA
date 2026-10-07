@@ -2,11 +2,19 @@ import type { ProjectFileCreateResult, ProjectOpened, ProjectResult, ProjectServ
 import type { CreateProjectFileRequest } from "./project-ipc.js";
 import type { ProjectDocumentType } from "./project-metadata.js";
 import type { LocalRepositoryResult, LocalRepositoryService } from "./repository-service.js";
-import type { WorkdeskService, ValidatedWorkdesk } from "./workdesk-service.js";
+import type {
+  AdoptedWorkdesk,
+  WorkdeskAdoptionCandidate,
+  WorkdeskLastActiveContext,
+  WorkdeskService,
+  ValidatedWorkdesk,
+} from "./workdesk-service.js";
 
 export const OPEN_WORKDESK_CHANNEL = "maginalia:open-workdesk";
 export const CREATE_WORKDESK_CHANNEL = "maginalia:create-workdesk";
 export const RESTORE_WORKDESK_CHANNEL = "maginalia:restore-workdesk";
+export const RETURN_TO_WORKDESK_CHANNEL = "maginalia:return-to-workdesk";
+export const SAVE_WORKDESK_CONTEXT_CHANNEL = "maginalia:save-workdesk-context";
 export const CREATE_WORKDESK_FILE_CHANNEL = "maginalia:create-workdesk-file";
 export const CREATE_WORKDESK_PROJECT_CHANNEL = "maginalia:create-workdesk-project";
 export const REGISTER_WORKDESK_PROJECT_CHANNEL = "maginalia:register-workdesk-project";
@@ -93,6 +101,7 @@ export interface WorkdeskOpened {
   readonly project: ProjectOpened["project"];
   readonly files: ProjectOpened["files"];
   readonly projects: readonly WorkdeskProjectNode[];
+  readonly lastActiveContext: WorkdeskLastActiveContext;
 }
 
 export interface WorkdeskCancelled { readonly kind: "cancelled"; }
@@ -101,6 +110,11 @@ export interface WorkdeskFailure { readonly kind: "error"; readonly code: string
 
 export type WorkdeskOpenResult = WorkdeskOpened | WorkdeskCancelled | WorkdeskFailure;
 export type WorkdeskRestoreResult = WorkdeskOpened | WorkdeskNone | WorkdeskFailure;
+export interface SaveWorkdeskContextRequest {
+  readonly workdeskIdentityId: string;
+  readonly context: WorkdeskLastActiveContext;
+}
+export type SaveWorkdeskContextResult = { readonly kind: "saved" } | WorkdeskFailure;
 export type WorkdeskFileCreateResult = ProjectFileCreateResult | WorkdeskFailure;
 export type WorkdeskProjectResult = WorkdeskProjectOpened | WorkdeskProjectRegistered | WorkdeskProjectRemoved | WorkdeskCancelled | WorkdeskFailure;
 export type WorkdeskCopyResult = ProjectFileCreateResult | WorkdeskFailure;
@@ -109,6 +123,7 @@ export interface WorkdeskHandlerDependencies {
   readonly pickWorkdeskFolder: () => Promise<WorkdeskFolderSelection>;
   readonly pickWorkdeskParent: () => Promise<WorkdeskFolderSelection>;
   readonly pickExistingProjectFolder: () => Promise<WorkdeskFolderSelection>;
+  readonly confirmAdoptWorkdesk: () => Promise<boolean>;
   readonly service: WorkdeskService;
   readonly repositories: LocalRepositoryService;
   readonly projects: ProjectService;
@@ -124,6 +139,8 @@ export interface WorkdeskHandlers {
   readonly openWorkdesk: (event: WorkdeskInvokeEvent, ...args: readonly unknown[]) => Promise<WorkdeskOpenResult>;
   readonly createWorkdesk: (event: WorkdeskInvokeEvent, request: unknown, ...args: readonly unknown[]) => Promise<WorkdeskOpenResult>;
   readonly restoreWorkdesk: (event: WorkdeskInvokeEvent, ...args: readonly unknown[]) => Promise<WorkdeskRestoreResult>;
+  readonly returnToWorkdesk: (event: WorkdeskInvokeEvent, ...args: readonly unknown[]) => Promise<WorkdeskRestoreResult>;
+  readonly saveWorkdeskContext: (event: WorkdeskInvokeEvent, request: unknown, ...args: readonly unknown[]) => Promise<SaveWorkdeskContextResult>;
   readonly createWorkdeskFile: (event: WorkdeskInvokeEvent, request: unknown, ...args: readonly unknown[]) => Promise<WorkdeskFileCreateResult>;
   readonly createWorkdeskProject: (event: WorkdeskInvokeEvent, request: unknown, ...args: readonly unknown[]) => Promise<WorkdeskProjectResult>;
   readonly registerWorkdeskProject: (event: WorkdeskInvokeEvent, request: unknown, ...args: readonly unknown[]) => Promise<WorkdeskProjectResult>;
@@ -176,6 +193,15 @@ function isOpenProjectRequest(value: unknown): value is OpenWorkdeskProjectReque
     && isOpaqueId(value.workdeskIdentityId) && isOpaqueId(value.projectIdentityId);
 }
 
+function isSaveWorkdeskContextRequest(value: unknown): value is SaveWorkdeskContextRequest {
+  if (!isRecord(value) || Reflect.ownKeys(value).length !== 2
+    || !isOpaqueId(value.workdeskIdentityId) || !isRecord(value.context)) return false;
+  return value.context.kind === "home"
+    ? Reflect.ownKeys(value.context).length === 1
+    : value.context.kind === "project" && Reflect.ownKeys(value.context).length === 2
+      && isOpaqueId(value.context.projectIdentityId);
+}
+
 function isRemoveProjectRequest(value: unknown): value is RemoveWorkdeskProjectRequest {
   return isRecord(value) && Reflect.ownKeys(value).length === 2
     && isOpaqueId(value.workdeskIdentityId) && isOpaqueId(value.projectIdentityId);
@@ -219,6 +245,7 @@ async function opened(
   // `projects/`. They are never loose Workdesk documents, even briefly while
   // the renderer's Explorer request is in flight.
   const looseFiles = loose.files.filter((file) => file.displayName !== "projects" && !file.displayName.startsWith("projects/"));
+  const workdeskProjects = await nodes(dependencies.service, desk);
   await dependencies.service.setPrimary(desk);
   // IPC results are deliberately reconstructed as a data-only DTO. The
   // Project service owns Maps internally; no host object/prototype is allowed
@@ -237,7 +264,8 @@ async function opened(
       documentType: file.documentType,
       title: file.title,
     })),
-    projects: [...await nodes(dependencies.service, desk)]
+    projects: [...workdeskProjects],
+    lastActiveContext: await dependencies.service.lastActiveContext(desk)
   };
 }
 
@@ -252,7 +280,10 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
       ? active.desk
       : failure("workdesk-not-active", "Open this Workdesk before changing its Projects.");
   };
-  const rememberOpened = async (owner: object, desk: ValidatedWorkdesk): Promise<WorkdeskOpened | WorkdeskFailure> => {
+  const rememberOpened = async (
+    owner: object,
+    desk: ValidatedWorkdesk,
+  ): Promise<WorkdeskOpened | WorkdeskFailure> => {
     const result = await opened(dependencies, owner, desk);
     if (result.kind === "opened") activeDesks.set(owner, Object.freeze({ desk, documentId: result.workdesk.documentId }));
     return result;
@@ -273,8 +304,37 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
       if (!isFolderSelection(selected)) return failure("folder-dialog-failed", "The Workdesk folder could not be selected.");
       if (selected.canceled || selected.filePaths.length === 0) return { kind: "cancelled" };
       if (selected.filePaths.length !== 1) return failure("invalid-request", "Choose one Workdesk folder.");
-      try { return await rememberOpened(event.sender, await dependencies.service.open(selected.filePaths[0]!)); }
-      catch (error) { return asFailure(error, "The Workdesk could not be opened."); }
+      const selectedRoot = selected.filePaths[0]!;
+      let desk: ValidatedWorkdesk;
+      try {
+        desk = await dependencies.service.open(selectedRoot);
+      } catch {
+        let candidate: WorkdeskAdoptionCandidate;
+        try {
+          candidate = await dependencies.service.prepareAdoption(selectedRoot);
+        } catch (error) {
+          return asFailure(error, "This folder is not a valid Workdesk and cannot be adopted safely.");
+        }
+        let confirmed = false;
+        try { confirmed = await dependencies.confirmAdoptWorkdesk(); }
+        catch { return failure("adoption-confirmation-failed", "The Workdesk adoption confirmation could not be shown."); }
+        if (!confirmed) return { kind: "cancelled" };
+        let adopted: AdoptedWorkdesk;
+        try {
+          adopted = await dependencies.service.adoptPreparedFolder(candidate, event.sender, dependencies.repositories);
+        } catch (error) {
+          return asFailure(error, "The selected folder could not be adopted as a Workdesk.");
+        }
+        try {
+          const result = await rememberOpened(event.sender, adopted.workdesk);
+          if (result.kind !== "opened") await adopted.preserveIncompleteOnFailure();
+          return result;
+        } catch (error) {
+          await adopted.preserveIncompleteOnFailure();
+          return asFailure(error, "The adopted Workdesk could not be opened.");
+        }
+      }
+      return rememberOpened(event.sender, desk);
     },
     createWorkdesk: async (event, request, ...args) => {
       if (args.length !== 0 || !isCreateRequest(request)) return failure("invalid-request", "The Workdesk request was invalid.");
@@ -296,6 +356,26 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
         const desk = await dependencies.service.restorePrimary();
         return desk === undefined ? { kind: "none" } : await rememberOpened(event.sender, desk);
       } catch (error) { return asFailure(error, "The previous Workdesk could not be restored."); }
+    },
+    returnToWorkdesk: async (event, ...args) => {
+      if (args.length !== 0) return failure("invalid-request", "The Workdesk request was invalid.");
+      try {
+        const desk = await dependencies.service.restorePrimary();
+        return desk === undefined
+          ? { kind: "none" }
+          : await rememberOpened(event.sender, desk);
+      } catch (error) { return asFailure(error, "The primary Workdesk could not be restored."); }
+    },
+    saveWorkdeskContext: async (event, request, ...args) => {
+      if (args.length !== 0 || !isSaveWorkdeskContextRequest(request)) {
+        return failure("invalid-request", "The Workdesk context request was invalid.");
+      }
+      const desk = currentDesk(event.sender, request.workdeskIdentityId);
+      if ("kind" in desk) return desk;
+      try {
+        await dependencies.service.setLastActiveContext(desk, request.context);
+        return Object.freeze({ kind: "saved" });
+      } catch (error) { return asFailure(error, "The active Workdesk context could not be saved."); }
     },
     createWorkdeskFile: async (event, request, ...args) => {
       if (args.length !== 0 || !isCreateFileRequest(request)) {

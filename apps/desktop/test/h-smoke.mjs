@@ -25,7 +25,15 @@ try {
   if (!memo.includes("H Smoke Memo")) throw new Error("Workdesk loose memo was not created.");
   const childRoot = path.join(deskRoot, "projects");
   const children = await readdir(childRoot, { withFileTypes: true });
-  const childEntry = children.find((entry) => entry.isDirectory());
+  let childEntry;
+  for (const entry of children) {
+    if (!entry.isDirectory()) continue;
+    try {
+      await readFile(path.join(childRoot, entry.name, "memo.md"), "utf8");
+      childEntry = entry;
+      break;
+    } catch { /* Only Project B receives the Workdesk memo copy. */ }
+  }
   if (!childEntry) throw new Error("Workdesk child Project was not created.");
   const copy = await readFile(path.join(childRoot, childEntry.name, "memo.md"), "utf8");
   if (!memo.includes("H Smoke unsaved update")) throw new Error("Returning to Workdesk did not preserve the edited memo text.");

@@ -143,6 +143,12 @@ async function readState(window) {
       menuPanelVisible: visual(menuPanel).visible,
       menuContainsDocumentActions: Boolean(menuPanel?.querySelector('#open-markdown, #save-markdown, #export-pdf')),
       toolbarContainsDocumentActions: Boolean(toolbar.querySelector('#open-markdown, #save-markdown, #export-pdf')),
+      homeAction: (() => {
+        const button = document.querySelector('#workdesk-home');
+        return button instanceof HTMLButtonElement
+          ? { inToolbar: toolbar.contains(button), disabled: button.disabled, label: button.textContent?.trim() ?? '' }
+          : null;
+      })(),
       repositoryActivityButton: Boolean(document.querySelector('[data-workbench-view="repository"]')),
       repositoryPanelVisible: visual(repositoryPanel).visible,
       activePrimaryPanel: primary.querySelector('.view-panel-active')?.dataset.workbenchViewPanel ?? null,
@@ -296,6 +302,9 @@ async function runChild(userDataPath) {
     assertEqual(state.selectedSecondaryTab, "library", "Initial Shelf tab selection");
     assertEqual(state.menuContainsDocumentActions, true, "Document operations must be mounted in Menu");
     assertEqual(state.toolbarContainsDocumentActions, false, "The top toolbar must not duplicate document operations");
+    assertEqual(state.homeAction?.inToolbar, true, "The Workdesk Home action must live in the global toolbar");
+    assertEqual(state.homeAction?.disabled, true, "Workdesk Home stays disabled without a remembered primary Workdesk");
+    assertEqual(state.homeAction?.label, "← Workdesk", "The global Home action must be explicitly labeled");
     assertEqual(state.repositoryActivityButton, false, "Repository must not have a normal Activity Bar button");
     assertEqual(state.repositoryPanelVisible, false, "Repository panel must be hidden from normal UI");
 

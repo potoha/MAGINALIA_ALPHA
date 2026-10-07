@@ -6,7 +6,8 @@ export const WORKDESK_RETURN_RESTORE_ERROR =
 /** Restores the remembered Workdesk only; this action never invokes a picker. */
 export async function restoreWorkdeskForReturn(options: {
   readonly restore: () => Promise<WorkdeskRestoreResult>;
-  readonly activate: (result: WorkdeskOpened) => Promise<void>;
+  readonly activate: (result: WorkdeskOpened) => Promise<boolean>;
+  readonly rememberHome: () => Promise<void>;
   readonly showError: (message: string) => void;
 }): Promise<void> {
   let result: WorkdeskRestoreResult;
@@ -18,7 +19,7 @@ export async function restoreWorkdeskForReturn(options: {
   }
 
   if (result.kind === "opened") {
-    await options.activate(result);
+    if (await options.activate(result)) await options.rememberHome();
     return;
   }
   options.showError(result.kind === "error" ? result.message : WORKDESK_RETURN_RESTORE_ERROR);

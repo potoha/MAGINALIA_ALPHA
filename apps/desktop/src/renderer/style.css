@@ -1151,6 +1151,33 @@ button:focus-visible {
   min-width: 0;
 }
 
+.workbench-home-action {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0.55rem 1rem;
+  border-color: #9b4b36;
+  color: #fffdf8;
+  background: #9b4b36;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.workbench-home-action:hover:not(:disabled),
+.workbench-home-action-primary {
+  border-color: #713423;
+  background: #713423;
+}
+
+.workbench-home-action[aria-pressed="true"] {
+  border-color: #b5a89a;
+  color: #554b41;
+  background: #e9e3da;
+}
+
+.workbench-home-action:disabled {
+  opacity: 0.72;
+}
+
 .workbench .toolbar[hidden],
 .workbench .activity-bar[hidden],
 .workbench .workbench-sidebar[hidden] {
