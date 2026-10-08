@@ -2432,7 +2432,7 @@ function renderProjectState(state: ProjectNavigationState): void {
         selectedExplorerFolderId = entry.entryId;
         selectedProjectFileId = null;
         selectedExplorerEntryId = null;
-        renderProjectState(projectController?.getState() ?? state);
+        projectView.setProjectState(projectController?.getState() ?? state);
       });
       row.append(button);
       const children = document.createElement("ul");
@@ -2464,7 +2464,7 @@ function renderProjectState(state: ProjectNavigationState): void {
         selectedExplorerEntryId = entry.entryId;
         selectedProjectFileId = null;
         selectedExplorerFolderId = null;
-        renderProjectState(projectController?.getState() ?? state);
+        projectView.setProjectState(projectController?.getState() ?? state);
       });
       const remove = document.createElement("button");
       remove.type = "button";

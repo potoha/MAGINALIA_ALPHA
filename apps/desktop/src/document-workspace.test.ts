@@ -56,6 +56,36 @@ describe("Document workspace service", () => {
     });
   });
 
+  it("hides .magi marker files in Explorer without changing them or hiding matching directories", async () => {
+    await withTempDirectory(async (root) => {
+      const canonicalMarker = "version = 1\ntype = project\nid = 11111111-1111-4111-8111-111111111111\nparent = null\n";
+      const renamedMarker = "version = 1\ntype = project\nid = 22222222-2222-4222-8222-222222222222\nparent = null\n";
+      const malformedMarker = "not a valid marker\n";
+      await writeFile(path.join(root, "project.magi"), canonicalMarker, "utf8");
+      await writeFile(path.join(root, "卒論.MAGI"), renamedMarker, "utf8");
+      await writeFile(path.join(root, "broken.magi"), malformedMarker, "utf8");
+      await mkdir(path.join(root, "資料.magi"));
+      await writeFile(path.join(root, "資料.magi", "chapter.md"), "chapter", "utf8");
+      await writeFile(path.join(root, "notes.md"), "notes", "utf8");
+
+      const owner = {};
+      const service = new DocumentWorkspaceService();
+      const documentId = opened(await service.openForOwner(owner, root)).document.documentId;
+      const listed = await service.listExplorerForOwner(owner, documentId);
+      expect(listed.kind).toBe("listed");
+      if (listed.kind !== "listed") throw new Error("Explorer unavailable");
+
+      expect(listed.entries.some((entry) => /\.magi$/iu.test(entry.displayName) && entry.kind !== "folder")).toBe(false);
+      expect(listed.entries.find((entry) => entry.relativeName === "資料.magi")).toMatchObject({ kind: "folder" });
+      expect(listed.entries.some((entry) => entry.relativeName === "資料.magi/chapter.md" && entry.kind === "markdown")).toBe(true);
+      expect(listed.entries.some((entry) => entry.relativeName === "notes.md" && entry.kind === "markdown")).toBe(true);
+
+      expect(await readFile(path.join(root, "project.magi"), "utf8")).toBe(canonicalMarker);
+      expect(await readFile(path.join(root, "卒論.MAGI"), "utf8")).toBe(renamedMarker);
+      expect(await readFile(path.join(root, "broken.magi"), "utf8")).toBe(malformedMarker);
+    });
+  });
+
   it("creates Unicode root and nested folders and Markdown without overwriting collisions", async () => {
     await withTempDirectory(async (root) => {
       const owner = {};

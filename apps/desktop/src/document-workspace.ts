@@ -360,6 +360,9 @@ async function listExplorerEntries(canonicalRoot: string, excludedRelativeRoots:
       const candidate = path.join(directory, entry.name);
       const stats = await lstat(candidate);
       if (stats.isSymbolicLink() || (!stats.isFile() && !stats.isDirectory())) continue;
+      // Typed folder markers are identity metadata, not normal Explorer files.
+      // Keep directories with the same suffix visible as ordinary folders.
+      if (stats.isFile() && path.extname(entry.name).toLowerCase() === ".magi") continue;
       if (stats.isDirectory() && entry.name.startsWith("'")) continue;
       const canonicalPath = await realpath(candidate);
       const relativeName = projectRelativeName(canonicalRoot, canonicalPath);
