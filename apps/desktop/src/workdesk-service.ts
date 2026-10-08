@@ -1,17 +1,9 @@
 import { promises as fs } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as path from "node:path";
-import type { RepositoryIdentity } from "@maginalia/repository-core" with { "resolution-mode": "import" };
-import {
-  assertSafeRoot,
-  captureWorkingTree,
-  fingerprint,
-  readIdentity,
-  validateRepositoryPath,
-  type CapturedRepositoryFile,
-} from "./repository-filesystem.js";
-import { initializeRepository, inspectIncompleteRepository } from "./repository-local-history.js";
-import type { LocalRepositoryResult, LocalRepositoryResolveResult } from "./repository-service.js";
+import type { FolderMarker, RepositoryIdentity } from "@maginalia/repository-core" with { "resolution-mode": "import" };
+import { assertSafeRoot, readIdentity } from "./repository-filesystem.js";
+import { createFolderMarker, FolderMarkerError, inspectFolderMarkers, repositoryIdentityFromMarker, resolveFolderMarker } from "./folder-identity.js";
 
 type RepositoryCore = typeof import("@maginalia/repository-core", { with: { "resolution-mode": "import" } });
 let repositoryCorePromise: Promise<RepositoryCore> | undefined;
@@ -22,9 +14,8 @@ function loadRepositoryCore(): Promise<RepositoryCore> {
 }
 
 /**
- * Slice H's portable Workdesk extension.  The repository identity remains the
- * pre-existing `kind: "workbench"` contract; this file deliberately does not
- * participate in Repository Core identity parsing or template versioning.
+ * Workdesk identity is a typed `.magi` marker. Existing Workdesk registration
+ * and History adapters retain their internal `kind: "workbench"` shape.
  */
 export const WORKDESK_PROJECT_INDEX_PATH = ".maginalia/workdesk-projects.json" as const;
 export const WORKDESK_PROJECT_INDEX_SCHEMA_VERSION = 1 as const;
@@ -61,12 +52,14 @@ export interface WorkdeskAdoptionCandidate { readonly kind: "workdesk-adoption-c
 
 export interface AdoptedWorkdesk {
   readonly workdesk: ValidatedWorkdesk;
-  /** Restores the owned incomplete marker if the following Workdesk open fails. */
-  readonly preserveIncompleteOnFailure: () => Promise<void>;
 }
 
 export type WorkdeskBoundaryFailureCode =
   | "invalid-workdesk"
+  | "marker-conflict"
+  | "missing-marker"
+  | "legacy-kind-conflict"
+  | "marker-write-failed"
   | "local-state-corrupt"
   | "local-state-unreadable"
   | "remembered-workdesk-unavailable"
@@ -75,9 +68,12 @@ export type WorkdeskBoundaryFailureCode =
   | "unsafe-path"
   | "not-child-project"
   | "mapping-conflict"
+  | "registration-failed"
+  | "registration-rollback-failed"
   | "adoption-not-allowed"
   | "adoption-changed"
-  | "adoption-failed";
+  | "adoption-failed"
+  | "create-failed";
 
 export class WorkdeskBoundaryError extends Error {
   public constructor(
@@ -92,7 +88,21 @@ export class WorkdeskBoundaryError extends Error {
 export interface ValidatedWorkdesk {
   readonly canonicalRoot: string;
   readonly identity: RepositoryIdentity;
+  readonly folderMarker: FolderMarker;
 }
+
+export type WorkdeskIdentityRecoveryCode = "marker-conflict" | "missing-marker" | "legacy-kind-conflict";
+
+/** Main-process-only recovery boundary for a Workdesk identity failure. */
+export interface WorkdeskIdentityRecoveryRoot {
+  readonly kind: "identity-recovery";
+  readonly canonicalRoot: string;
+  readonly title: string;
+  readonly code: WorkdeskIdentityRecoveryCode;
+  readonly message: string;
+}
+
+export type WorkdeskOpenBoundary = ValidatedWorkdesk | WorkdeskIdentityRecoveryRoot;
 
 /** Main-process-only, validated boundary for a child Project scanner exclusion. */
 export interface ValidatedChildProjectBoundary {
@@ -116,8 +126,17 @@ function sameIdentity(left: RepositoryIdentity, right: RepositoryIdentity): bool
   return left.schemaVersion === right.schemaVersion
     && left.id.toLowerCase() === right.id.toLowerCase()
     && left.kind === right.kind
-    && left.title === right.title
     && left.templateVersion === right.templateVersion;
+}
+
+function asFolderMarkerBoundaryError(error: FolderMarkerError, defaultCode: "invalid-workdesk" | "invalid-project"): WorkdeskBoundaryError {
+  const code: WorkdeskBoundaryFailureCode = error.code === "marker-conflict" ? "marker-conflict"
+    : error.code === "wrong-type" ? "wrong-kind"
+      : error.code === "legacy-kind-conflict" ? "legacy-kind-conflict"
+        : error.code === "missing-marker" ? "missing-marker"
+          : error.code === "marker-write-failed" ? "marker-write-failed"
+            : defaultCode;
+  return new WorkdeskBoundaryError(code, error.message);
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -152,132 +171,87 @@ function isTitle(value: unknown): value is string {
 
 interface PreparedWorkdeskAdoption {
   readonly canonicalRoot: string;
-  readonly originalFiles: readonly CapturedRepositoryFile[];
-  readonly originalDirectories: readonly string[];
-  readonly originalFingerprint: string;
+  readonly contentFingerprint: string;
 }
 
-interface CapturedAdoptionTree {
-  readonly files: readonly CapturedRepositoryFile[];
-  readonly directories: readonly string[];
-}
-
-interface AdoptionFileIdentity { readonly device: string; readonly inode: string; }
-
-const ADOPTION_MARKER_TEXT = "This MAGINALIA Workdesk adoption is incomplete. Keep the folder unchanged and choose it again only after reviewing the failure.\n";
-const ADOPTION_FAILURE_ENV = "MAGINALIA_TEST_WORKDESK_ADOPTION_FAILURE";
-const ADOPTION_ADMIN_FILES = new Set([".gitignore", ".maginalia/repository.json"]);
-
-function normalizeEntryName(value: string): string {
-  return value.normalize("NFKC").toLocaleLowerCase("en-US");
-}
-
-function sameCapturedTree(left: readonly CapturedRepositoryFile[], right: readonly CapturedRepositoryFile[]): boolean {
-  return fingerprint(left) === fingerprint(right);
-}
-
-function sameDirectoryPaths(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((relativePath, index) => relativePath === right[index]);
-}
-
-function retainsDirectoryPaths(expected: readonly string[], actual: readonly string[]): boolean {
-  const actualPaths = new Set(actual);
-  return expected.every((relativePath) => actualPaths.has(relativePath));
-}
-
-async function captureAdoptionTree(root: string, options: { readonly allowPublishedFiles?: boolean } = {}): Promise<CapturedAdoptionTree> {
-  const files: CapturedRepositoryFile[] = [];
-  const directories: string[] = [];
-  const names = new Map<string, string>();
+/** Read-only adoption preflight. Git administrative directories are excluded. */
+async function fingerprintAdoptionContents(root: string): Promise<string> {
+  const hash = createHash("sha256");
+  const normalizedNames = new Map<string, string>();
+  let fileCount = 0;
   let totalBytes = 0;
-  let count = 0;
 
-  const visit = async (directory: string, relativeParts: readonly string[]): Promise<void> => {
-    const entries = await fs.readdir(directory, { withFileTypes: true });
+  const visit = async (directory: string, segments: readonly string[]): Promise<void> => {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      throw new WorkdeskBoundaryError("adoption-not-allowed", "This folder cannot be inspected safely for Workdesk adoption.");
+    }
     entries.sort((left, right) => left.name.localeCompare(right.name, "en", { sensitivity: "variant" }));
     for (const entry of entries) {
-      const parts = [...relativeParts, entry.name];
-      const relativeName = parts.join("/");
-      if (relativeParts.length === 0 && entry.name.toLocaleLowerCase("en-US") === ".git") {
-        const stat = await fs.lstat(path.join(directory, entry.name));
-        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new WorkdeskBoundaryError("adoption-not-allowed", "A Git repository already exists in this folder.");
-        continue;
+      if (entry.name.toLocaleLowerCase("en-US") === ".git") continue;
+      const relativePath = [...segments, entry.name].join("/");
+      if (entry.name.length === 0 || entry.name === "." || entry.name === ".."
+        || entry.name.includes("/") || entry.name.includes("\\") || entry.name.includes("\0")
+        || Buffer.byteLength(relativePath, "utf8") > 240) {
+        throw new WorkdeskBoundaryError("unsafe-path", "This folder contains a path that cannot be adopted safely.");
       }
-      if (parts.some((part) => part.toLocaleLowerCase("en-US") === ".git")) {
-        throw new WorkdeskBoundaryError("adoption-not-allowed", "A nested Git repository cannot be adopted as a Workdesk.");
+      const normalized = relativePath.normalize("NFKC").toLocaleLowerCase("en-US");
+      const previous = normalizedNames.get(normalized);
+      if (previous && previous !== relativePath) {
+        throw new WorkdeskBoundaryError("unsafe-path", "This folder contains paths that collide on supported filesystems.");
       }
-      validateRepositoryPath(relativeName);
-      const normalized = normalizeEntryName(relativeName);
-      const prior = names.get(normalized);
-      if (prior !== undefined && prior !== relativeName) {
-        throw new WorkdeskBoundaryError("adoption-not-allowed", "This folder contains names that collide on a supported filesystem.");
+      normalizedNames.set(normalized, relativePath);
+      const absolutePath = path.join(directory, entry.name);
+      let stat: Awaited<ReturnType<typeof fs.lstat>>;
+      try {
+        stat = await fs.lstat(absolutePath);
+      } catch {
+        throw new WorkdeskBoundaryError("adoption-changed", "Folder contents changed while adoption was being prepared.");
       }
-      names.set(normalized, relativeName);
-      const absolute = path.join(directory, entry.name);
-      const stat = await fs.lstat(absolute);
-      if (stat.isSymbolicLink()) throw new WorkdeskBoundaryError("unsafe-path", "A symbolic link cannot be adopted into a Workdesk.");
+      if (stat.isSymbolicLink()) {
+        throw new WorkdeskBoundaryError("unsafe-path", "This folder contains a symbolic link and cannot be adopted safely.");
+      }
+      hash.update(`${stat.isDirectory() ? "directory" : "file"}\0${relativePath}\0`);
       if (stat.isDirectory()) {
-        directories.push(relativeName);
-        await visit(absolute, parts);
+        await visit(absolutePath, [...segments, entry.name]);
         continue;
       }
-      if (!stat.isFile() || stat.nlink > 1) {
+      if (!stat.isFile() || stat.size > 16 * 1024 * 1024 || stat.nlink > 1) {
         throw new WorkdeskBoundaryError("unsafe-path", "This folder contains a file that cannot be adopted safely.");
       }
-      if (relativeName === "MAGINALIA-INCOMPLETE.txt" && options.allowPublishedFiles) continue;
-      const bytes = new Uint8Array(await fs.readFile(absolute));
-      if (bytes.byteLength !== stat.size) throw new WorkdeskBoundaryError("adoption-changed", "Folder contents changed while adoption was being prepared.");
-      count += 1;
-      totalBytes += bytes.byteLength;
-      if (count > 10_000 || stat.size > 16 * 1024 * 1024 || totalBytes > 128 * 1024 * 1024 || Buffer.byteLength(relativeName, "utf8") > 240) {
+      fileCount += 1;
+      totalBytes += stat.size;
+      if (fileCount > 10_000 || totalBytes > 128 * 1024 * 1024) {
         throw new WorkdeskBoundaryError("unsafe-path", "This folder exceeds the supported Workdesk adoption limits.");
       }
-      if (options.allowPublishedFiles && ADOPTION_ADMIN_FILES.has(relativeName)) continue;
-      files.push(Object.freeze({
-        path: relativeName,
-        bytes,
-        mode: (stat.mode & 0o111) !== 0 ? "100755" : "100644",
-      }));
+      let bytes: Buffer;
+      try {
+        bytes = await fs.readFile(absolutePath);
+      } catch {
+        throw new WorkdeskBoundaryError("adoption-changed", "Folder contents changed while adoption was being prepared.");
+      }
+      let after: Awaited<ReturnType<typeof fs.lstat>>;
+      try {
+        after = await fs.lstat(absolutePath);
+      } catch {
+        throw new WorkdeskBoundaryError("adoption-changed", "Folder contents changed while adoption was being prepared.");
+      }
+      if (!after.isFile() || after.isSymbolicLink() || after.size !== stat.size
+        || after.dev !== stat.dev || after.ino !== stat.ino || bytes.byteLength !== stat.size) {
+        throw new WorkdeskBoundaryError("adoption-changed", "Folder contents changed while adoption was being prepared.");
+      }
+      hash.update(String(bytes.byteLength));
+      hash.update("\0");
+      hash.update(bytes);
     }
   };
 
   await visit(root, []);
-  files.sort((left, right) => left.path.localeCompare(right.path, "en", { sensitivity: "variant" }));
-  directories.sort((left, right) => left.localeCompare(right, "en", { sensitivity: "variant" }));
-  return Object.freeze({ files: Object.freeze(files), directories: Object.freeze(directories) });
+  return hash.digest("hex");
 }
 
-async function writeAdoptionMarker(root: string): Promise<AdoptionFileIdentity> {
-  const markerPath = path.join(root, "MAGINALIA-INCOMPLETE.txt");
-  const handle = await fs.open(markerPath, "wx", 0o600);
-  try {
-    await handle.writeFile(Buffer.from(ADOPTION_MARKER_TEXT, "utf8"));
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  const stat = await fs.lstat(markerPath);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1) {
-    throw new WorkdeskBoundaryError("adoption-failed", "The Workdesk adoption marker could not be verified safely.");
-  }
-  return Object.freeze({ device: String(stat.dev), inode: String(stat.ino) });
-}
-
-async function removeOwnedAdoptionMarker(root: string, identity: AdoptionFileIdentity): Promise<void> {
-  const markerPath = path.join(root, "MAGINALIA-INCOMPLETE.txt");
-  const stat = await fs.lstat(markerPath);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1
-    || String(stat.dev) !== identity.device || String(stat.ino) !== identity.inode) {
-    throw new WorkdeskBoundaryError("adoption-changed", "The Workdesk adoption marker changed before completion.");
-  }
-  await fs.unlink(markerPath);
-}
-
-function maybeInjectAdoptionFailure(point: "after-admin-files" | "after-initialize" | "after-marker-removal"): void {
-  if (process.env[ADOPTION_FAILURE_ENV] !== point) return;
-  delete process.env[ADOPTION_FAILURE_ENV];
-  throw new Error("Injected Workdesk adoption failure.");
-}
 
 function projectIndexEntry(value: unknown): WorkdeskProjectIndexEntry | undefined {
   if (!isPlainObject(value) || Reflect.ownKeys(value).length !== 2) return undefined;
@@ -285,6 +259,26 @@ function projectIndexEntry(value: unknown): WorkdeskProjectIndexEntry | undefine
   const title = value.title;
   if (!isUuid(projectIdentityId) || !isTitle(title)) return undefined;
   return Object.freeze({ projectIdentityId, title });
+}
+
+function strictWorkdeskProjectIndex(value: unknown): WorkdeskProjectIndex | undefined {
+  if (!isPlainObject(value) || Reflect.ownKeys(value).length !== 2
+    || value.schemaVersion !== WORKDESK_PROJECT_INDEX_SCHEMA_VERSION || !Array.isArray(value.projects)) return undefined;
+  const entries: WorkdeskProjectIndexEntry[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value.projects) {
+    const entry = projectIndexEntry(candidate);
+    if (!entry || seen.has(entry.projectIdentityId.toLowerCase())) return undefined;
+    seen.add(entry.projectIdentityId.toLowerCase());
+    entries.push(entry);
+  }
+  return Object.freeze({ schemaVersion: 1, projects: Object.freeze(entries) });
+}
+
+interface PortableIndexSnapshot {
+  readonly index: WorkdeskProjectIndex;
+  readonly bytes?: Buffer;
+  readonly directoryExisted: boolean;
 }
 
 /** Missing/corrupt optional index is a safe empty list, never an open failure. */
@@ -472,16 +466,65 @@ export class FileWorkdeskPathStore {
 export class WorkdeskService {
   private readonly adoptionCandidates = new WeakMap<object, PreparedWorkdeskAdoption>();
   private readonly adoptionLocks = new Map<string, Promise<void>>();
+  private readonly registrationQueues = new Map<string, Promise<void>>();
 
   public constructor(private readonly localStore: FileWorkdeskPathStore) {}
 
   public async open(root: string): Promise<ValidatedWorkdesk> {
     const canonicalRoot = await assertSafeRoot(root);
-    const identity = await readIdentity(canonicalRoot);
-    if (identity.kind !== "workbench") {
-      throw new WorkdeskBoundaryError("wrong-kind", "Choose a Workdesk repository.");
+    let resolved: Awaited<ReturnType<typeof resolveFolderMarker>>;
+    try {
+      resolved = await resolveFolderMarker(canonicalRoot, "workdesk");
+    } catch (error: unknown) {
+      if (error instanceof FolderMarkerError) throw asFolderMarkerBoundaryError(error, "invalid-workdesk");
+      throw error;
     }
-    return Object.freeze({ canonicalRoot, identity });
+    const identity = await repositoryIdentityFromMarker(canonicalRoot, resolved.marker, resolved.legacyIdentity);
+    if (identity.kind !== "workbench") throw new WorkdeskBoundaryError("wrong-kind", "Choose a Workdesk folder.");
+    return Object.freeze({ canonicalRoot, identity, folderMarker: resolved.marker });
+  }
+
+  /**
+   * Open a Workdesk identity when it is unambiguous, or return a read-only
+   * recovery boundary for conflicting valid markers. No marker is selected
+   * and no folder or Git state is changed by this inspection path.
+   */
+  public async openForActivation(
+    root: string,
+  ): Promise<WorkdeskOpenBoundary> {
+    try {
+      return await this.open(root);
+    } catch (error) {
+      if (!(error instanceof WorkdeskBoundaryError) || error.code !== "marker-conflict") throw error;
+      const recovery = await this.inspectIdentityRecoveryForActivation(root, error);
+      if (recovery) return recovery;
+      throw error;
+    }
+  }
+
+  /** Inspect known identity failures without inferring or creating an identity. */
+  public async inspectIdentityRecoveryForActivation(
+    root: string,
+    cause: unknown,
+  ): Promise<WorkdeskIdentityRecoveryRoot | undefined> {
+    if (!(cause instanceof WorkdeskBoundaryError)
+      || (cause.code !== "marker-conflict" && cause.code !== "missing-marker" && cause.code !== "legacy-kind-conflict")) return undefined;
+    const canonicalRoot = await assertSafeRoot(root);
+    const markers = await inspectFolderMarkers(canonicalRoot);
+    if (cause.code === "marker-conflict" && markers.kind !== "conflict") return undefined;
+    if (cause.code !== "marker-conflict" && markers.kind !== "missing") return undefined;
+    const message = cause.code === "marker-conflict"
+      ? "This folder contains conflicting valid .magi markers. The readable Workdesk documents are open in recovery mode; resolve the marker conflict before using Projects."
+      : cause.code === "legacy-kind-conflict"
+        ? "The legacy identity describes a different folder role. Readable documents are open in recovery mode; resolve the legacy identity conflict before adopting this folder as a Workdesk."
+        : "This folder has no valid Workdesk identity. Readable documents are open in recovery mode; reopen this folder and choose Adopt to add a Workdesk marker.";
+    return Object.freeze({
+      kind: "identity-recovery",
+      canonicalRoot,
+      title: path.basename(canonicalRoot) || "Workdesk",
+      code: cause.code,
+      message,
+    });
   }
 
   /**
@@ -493,45 +536,38 @@ export class WorkdeskService {
       throw new WorkdeskBoundaryError("adoption-not-allowed", "Choose an absolute folder to adopt as a Workdesk.");
     }
     const canonicalRoot = await assertSafeRoot(root);
-    const rootEntries = await fs.readdir(canonicalRoot, { withFileTypes: true });
-    const reserved = new Set([".git", ".maginalia", ".gitignore", "maginalia-incomplete.txt"]);
-    for (const entry of rootEntries) {
-      if (reserved.has(normalizeEntryName(entry.name))) {
-        throw new WorkdeskBoundaryError("adoption-not-allowed", "This folder already contains repository metadata or a reserved Workdesk file.");
-      }
+    const markers = await inspectFolderMarkers(canonicalRoot);
+    if (markers.kind === "conflict") {
+      throw new WorkdeskBoundaryError("marker-conflict", "This folder contains conflicting valid .magi markers. Resolve the marker conflict before continuing.");
+    }
+    if (markers.kind === "valid") {
+      throw new WorkdeskBoundaryError("wrong-kind", markers.marker.type === "workdesk"
+        ? "This folder already has a Workdesk identity. Open it again to continue."
+        : `This folder is already marked as ${markers.marker.type}.`);
     }
     try {
-      // Repository capture applies the normal unsafe-tree, secret, symlink,
-      // hardlink, collision, and size checks before any publication occurs.
-      await captureWorkingTree(canonicalRoot);
+      const legacyIdentity = await readIdentity(canonicalRoot, { allowIncompleteMarker: true });
+      if (legacyIdentity.kind !== "workbench") {
+        throw new WorkdeskBoundaryError("legacy-kind-conflict", "The existing legacy identity belongs to a different folder role.");
+      }
     } catch (error) {
       if (error instanceof WorkdeskBoundaryError) throw error;
-      throw new WorkdeskBoundaryError("adoption-not-allowed", error instanceof Error ? error.message : "This folder cannot be adopted safely.");
+      // Missing or malformed legacy metadata is not a reason to block loose
+      // Workdesk files; explicit adoption may assign a new identity later.
     }
-    const originalTree = await captureAdoptionTree(canonicalRoot);
+    const contentFingerprint = await fingerprintAdoptionContents(canonicalRoot);
     const candidate: WorkdeskAdoptionCandidate = Object.freeze({ kind: "workdesk-adoption-candidate" });
-    this.adoptionCandidates.set(candidate, Object.freeze({
-      canonicalRoot,
-      originalFiles: originalTree.files,
-      originalDirectories: originalTree.directories,
-      originalFingerprint: fingerprint(originalTree.files),
-    }));
+    this.adoptionCandidates.set(candidate, Object.freeze({ canonicalRoot, contentFingerprint }));
     return candidate;
   }
 
   /**
-   * Adopt only a plain folder which passed main-process preflight and an
-   * explicit user confirmation. Existing files are captured/rechecked and
-   * never rewritten; only identity, shared ignore rules, and Git metadata are
-   * published.
+   * Adopt only a folder which passed main-process preflight and an explicit
+   * user confirmation. Existing files and Git state are left untouched; only
+   * the canonical Workdesk folder marker is added.
    */
   public async adoptPreparedFolder(
     candidate: WorkdeskAdoptionCandidate,
-    owner: object,
-    repositories: {
-      openForOwner(owner: unknown, root: unknown): Promise<LocalRepositoryResult>;
-      resolveForOwner(owner: unknown, repositoryId: unknown): Promise<LocalRepositoryResolveResult>;
-    },
   ): Promise<AdoptedWorkdesk> {
     const prepared = this.adoptionCandidates.get(candidate);
     if (!prepared) throw new WorkdeskBoundaryError("adoption-not-allowed", "The Workdesk adoption choice is no longer valid.");
@@ -545,7 +581,7 @@ export class WorkdeskService {
       const current = this.adoptionCandidates.get(candidate);
       if (!current) throw new WorkdeskBoundaryError("adoption-not-allowed", "This Workdesk folder is already being adopted.");
       this.adoptionCandidates.delete(candidate);
-      return await this.publishAdoption(current, owner, repositories);
+      return await this.publishAdoption(current);
     } finally {
       release();
       if (this.adoptionLocks.get(key) === lock) this.adoptionLocks.delete(key);
@@ -554,137 +590,103 @@ export class WorkdeskService {
 
   private async publishAdoption(
     prepared: PreparedWorkdeskAdoption,
-    owner: object,
-    repositories: {
-      openForOwner(owner: unknown, root: unknown): Promise<LocalRepositoryResult>;
-      resolveForOwner(owner: unknown, repositoryId: unknown): Promise<LocalRepositoryResolveResult>;
-    },
   ): Promise<AdoptedWorkdesk> {
-    let markerIdentity: AdoptionFileIdentity | undefined;
-    let publicationStarted = false;
-    const preserveIncompleteOnFailure = async (): Promise<void> => {
-      if (markerIdentity) {
-        try {
-          const stat = await fs.lstat(path.join(prepared.canonicalRoot, "MAGINALIA-INCOMPLETE.txt"));
-          if (stat.isFile() && !stat.isSymbolicLink()
-            && String(stat.dev) === markerIdentity.device && String(stat.ino) === markerIdentity.inode) return;
-        } catch (error) {
-          const code = error instanceof Error && "code" in error ? (error as { code?: unknown }).code : undefined;
-          if (code !== "ENOENT") return;
-        }
-      }
-      try {
-        markerIdentity = await writeAdoptionMarker(prepared.canonicalRoot);
-      } catch {
-        // Never replace a path which appeared after our own marker was removed.
-      }
-    };
-
     try {
       const currentRoot = await assertSafeRoot(prepared.canonicalRoot);
       if (!samePath(currentRoot, prepared.canonicalRoot)) {
         throw new WorkdeskBoundaryError("adoption-changed", "The selected Workdesk folder changed after confirmation.");
       }
-      const entries = await fs.readdir(currentRoot, { withFileTypes: true });
-      const reserved = new Set([".git", ".maginalia", ".gitignore", "maginalia-incomplete.txt"]);
-      if (entries.some((entry) => reserved.has(normalizeEntryName(entry.name)))) {
-        throw new WorkdeskBoundaryError("adoption-changed", "Repository metadata appeared after the Workdesk folder was confirmed.");
+      const currentMarkers = await inspectFolderMarkers(currentRoot);
+      if (currentMarkers.kind !== "missing") {
+        throw new WorkdeskBoundaryError(currentMarkers.kind === "conflict" ? "marker-conflict" : "adoption-changed",
+          "Folder identity metadata changed after the Workdesk folder was confirmed.");
       }
-      await captureWorkingTree(currentRoot);
-      const beforePublish = await captureAdoptionTree(currentRoot);
-      if (!sameCapturedTree(prepared.originalFiles, beforePublish.files)
-        || fingerprint(beforePublish.files) !== prepared.originalFingerprint
-        || !sameDirectoryPaths(prepared.originalDirectories, beforePublish.directories)) {
+      if (await fingerprintAdoptionContents(currentRoot) !== prepared.contentFingerprint) {
         throw new WorkdeskBoundaryError("adoption-changed", "Folder contents changed after the Workdesk adoption was confirmed.");
       }
-
-      const repositoryCore = await loadRepositoryCore();
-      const candidateTitle = path.basename(currentRoot);
-      let identity: RepositoryIdentity;
-      try {
-        identity = repositoryCore.createIdentity("workbench", candidateTitle, randomUUID());
-      } catch {
-        identity = repositoryCore.createIdentity("workbench", "Workdesk", randomUUID());
+      const created = await createFolderMarker(currentRoot, "workdesk");
+      if (created.source === "marker") {
+        throw new WorkdeskBoundaryError("adoption-changed", "A Workdesk marker appeared after the folder was confirmed.");
       }
-      const template = repositoryCore.templateFiles(identity);
-      const identityContents = template[".maginalia/repository.json"];
-      const ignoreContents = template[".gitignore"];
-      if (identityContents === undefined || ignoreContents === undefined) {
-        throw new WorkdeskBoundaryError("adoption-failed", "MAGINALIA could not prepare Workdesk metadata.");
-      }
-
-      markerIdentity = await writeAdoptionMarker(currentRoot);
-      publicationStarted = true;
-      const metadataDirectory = path.join(currentRoot, ".maginalia");
-      await fs.mkdir(metadataDirectory);
-      await fs.writeFile(path.join(metadataDirectory, "repository.json"), identityContents, { encoding: "utf8", flag: "wx", mode: 0o644 });
-      await fs.writeFile(path.join(currentRoot, ".gitignore"), ignoreContents, { encoding: "utf8", flag: "wx", mode: 0o644 });
-      maybeInjectAdoptionFailure("after-admin-files");
-
-      const initialized = await initializeRepository(currentRoot);
-      if (!sameIdentity(initialized.identity, identity)) {
-        throw new WorkdeskBoundaryError("adoption-failed", "The adopted Workdesk identity did not validate.");
-      }
-      maybeInjectAdoptionFailure("after-initialize");
-      const afterInitialize = await captureAdoptionTree(currentRoot, { allowPublishedFiles: true });
-      if (!sameCapturedTree(prepared.originalFiles, afterInitialize.files)
-        || !retainsDirectoryPaths(prepared.originalDirectories, afterInitialize.directories)) {
-        throw new WorkdeskBoundaryError("adoption-changed", "An original Workdesk file changed during adoption.");
-      }
-      const storedIdentity = await readIdentity(currentRoot, { allowIncompleteMarker: true });
-      const inspected = await inspectIncompleteRepository(currentRoot);
-      if (!sameIdentity(storedIdentity, identity) || !sameIdentity(inspected.identity, identity)) {
-        throw new WorkdeskBoundaryError("adoption-failed", "The adopted Workdesk did not pass repository inspection.");
-      }
-
-      await removeOwnedAdoptionMarker(currentRoot, markerIdentity);
-      markerIdentity = undefined;
-      maybeInjectAdoptionFailure("after-marker-removal");
-      const opened = await repositories.openForOwner(owner, currentRoot);
-      if (opened.kind !== "opened" || opened.repository.kind !== "workbench") {
-        throw new WorkdeskBoundaryError("adoption-failed", opened.kind === "error" ? opened.message : "The adopted Workdesk could not be opened.");
-      }
-      const resolved = await repositories.resolveForOwner(owner, opened.repository.repositoryId);
-      if (resolved.kind !== "resolved" || !sameIdentity(resolved.identity, identity)) {
-        throw new WorkdeskBoundaryError("adoption-failed", resolved.kind === "error" ? resolved.message : "The adopted Workdesk identity changed.");
-      }
-      const workdesk = await this.open(resolved.canonicalRoot);
-      if (!sameIdentity(workdesk.identity, identity)) {
+      const workdesk = await this.open(currentRoot);
+      const expectedIdentity = await repositoryIdentityFromMarker(currentRoot, created.marker, created.legacyIdentity);
+      if (!sameIdentity(workdesk.identity, expectedIdentity)) {
         throw new WorkdeskBoundaryError("adoption-failed", "The adopted Workdesk identity changed before it could be opened.");
       }
-      return Object.freeze({ workdesk, preserveIncompleteOnFailure });
+      return Object.freeze({ workdesk });
     } catch (error) {
-      if (publicationStarted) await preserveIncompleteOnFailure();
       if (error instanceof WorkdeskBoundaryError) throw error;
+      if (error instanceof FolderMarkerError) {
+        const code: WorkdeskBoundaryFailureCode = error.code === "marker-conflict" ? "marker-conflict"
+          : error.code === "wrong-type" ? "wrong-kind"
+            : error.code === "legacy-kind-conflict" ? "legacy-kind-conflict"
+              : "adoption-failed";
+        throw new WorkdeskBoundaryError(code, error.message);
+      }
       throw new WorkdeskBoundaryError("adoption-failed", error instanceof Error ? error.message : "The Workdesk folder could not be adopted safely.");
     }
   }
 
-  /**
-   * Reuse Repository Core creation exactly as it exists today.  The caller
-   * owns the renderer-independent owner token and may surface its bounded
-   * result through IPC later; this coordinator never invents a repository
-   * kind or writes identity/template files itself.
-   */
-  public async create(
-    owner: object,
-    parentRoot: string,
-    title: string,
-    repositories: {
-      createForOwner(owner: unknown, parent: unknown, kind: unknown, title: unknown): Promise<LocalRepositoryResult>;
-      resolveForOwner(owner: unknown, repositoryId: unknown): Promise<LocalRepositoryResolveResult>;
-    },
-  ): Promise<ValidatedWorkdesk | LocalRepositoryResult | LocalRepositoryResolveResult> {
-    const created = await repositories.createForOwner(owner, parentRoot, "workbench", title);
-    if (created.kind === "error") return created;
-    const resolved = await repositories.resolveForOwner(owner, created.repository.repositoryId);
-    if (resolved.kind === "error") return resolved;
-    if (resolved.identity.kind !== "workbench") {
-      throw new WorkdeskBoundaryError("invalid-workdesk", "The newly created Workdesk identity is invalid.");
+  /** Create the ordinary Workdesk files and typed marker without initializing Git. */
+  public async create(parentRoot: string, title: string): Promise<ValidatedWorkdesk> {
+    let canonicalParent: string;
+    let repositoryCore: RepositoryCore;
+    let identity: RepositoryIdentity;
+    try {
+      canonicalParent = await assertSafeRoot(parentRoot);
+      repositoryCore = await loadRepositoryCore();
+      identity = repositoryCore.createIdentity("workbench", title, randomUUID());
+    } catch (error: unknown) {
+      throw new WorkdeskBoundaryError("invalid-workdesk", error instanceof Error ? error.message : "The Workdesk name or parent folder is invalid.");
     }
-    const workdesk = Object.freeze({ canonicalRoot: resolved.canonicalRoot, identity: resolved.identity });
-    await this.setPrimary(workdesk);
-    return workdesk;
+
+    const folderName = repositoryCore.storageName(identity);
+    if (path.basename(folderName) !== folderName || folderName.includes("/") || folderName.includes("\\")) {
+      throw new WorkdeskBoundaryError("invalid-workdesk", "The Workdesk folder name is invalid.");
+    }
+    const destination = path.join(canonicalParent, folderName);
+    try {
+      await fs.mkdir(destination);
+    } catch (error: unknown) {
+      throw new WorkdeskBoundaryError("create-failed", error instanceof Error ? error.message : "The Workdesk folder could not be created.");
+    }
+
+    try {
+      const markerFilename = repositoryCore.canonicalFolderMarkerFilename("workdesk");
+      const files = repositoryCore.templateFiles(identity);
+      for (const [relativePath, contents] of Object.entries(files).sort(([left], [right]) => left.localeCompare(right))) {
+        if (relativePath === markerFilename) continue;
+        const segments = relativePath.split("/");
+        if (segments.some((segment) => segment === "" || segment === "." || segment === ".." || segment.includes("\\"))) {
+          throw new Error("The Workdesk template contains an unsafe path.");
+        }
+        let current = destination;
+        for (const segment of segments.slice(0, -1)) {
+          current = path.join(current, segment);
+          try {
+            await fs.mkdir(current);
+          } catch (error: unknown) {
+            const code = error !== null && typeof error === "object" && "code" in error
+              ? (error as { readonly code?: unknown }).code
+              : undefined;
+            if (code !== "EEXIST") throw error;
+            const stats = await fs.lstat(current);
+            if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error("The Workdesk template path is unsafe.");
+          }
+        }
+        await fs.writeFile(path.join(current, segments.at(-1)!), contents, { encoding: "utf8", flag: "wx", mode: 0o644 });
+      }
+      const created = await createFolderMarker(destination, "workdesk", { uuidFactory: () => identity.id });
+      if (created.marker.id.toLowerCase() !== identity.id.toLowerCase()) {
+        throw new WorkdeskBoundaryError("create-failed", "The new Workdesk marker did not retain its generated identity.");
+      }
+      const workdesk = await this.open(destination);
+      await this.setPrimary(workdesk);
+      return workdesk;
+    } catch (error: unknown) {
+      if (error instanceof WorkdeskBoundaryError) throw error;
+      throw new WorkdeskBoundaryError("create-failed", error instanceof Error ? error.message : "The Workdesk files could not be created safely.");
+    }
   }
 
   public async loadPortableIndex(workdesk: ValidatedWorkdesk): Promise<WorkdeskProjectIndex> {
@@ -744,17 +746,24 @@ export class WorkdeskService {
     }
   }
 
-  public async restorePrimary(): Promise<ValidatedWorkdesk | undefined> {
+  public async restorePrimary(): Promise<WorkdeskOpenBoundary | undefined> {
     const stored = await this.localStore.loadForRestore();
     if (!stored || !stored.primaryWorkdesk) return undefined;
     try {
-      return await this.open(stored.primaryWorkdesk);
-    } catch {
+      return await this.openForActivation(stored.primaryWorkdesk);
+    } catch (error) {
+      const recovery = await this.inspectIdentityRecoveryForActivation(stored.primaryWorkdesk, error).catch(() => undefined);
+      if (recovery) return recovery;
       throw new WorkdeskBoundaryError(
         "remembered-workdesk-unavailable",
         "The remembered Workdesk is no longer available or valid. Use Open Workdesk to choose another folder."
       );
     }
+  }
+
+  /** Restore the remembered root without creating a replacement identity. */
+  public async restorePrimaryForActivation(): Promise<WorkdeskOpenBoundary | undefined> {
+    return this.restorePrimary();
   }
 
   public async setPrimary(workdesk: ValidatedWorkdesk): Promise<void> {
@@ -882,13 +891,56 @@ export class WorkdeskService {
   }
 
   /** Validate a registered external Project without persisting a renderer-supplied path. */
-  public async validateExternalProject(root: string): Promise<ValidatedChildProjectBoundary> {
+  public async validateExternalProject(
+    root: string,
+    options: { readonly expectedWorkdeskIdentityId?: string; readonly requireExistingMarker?: boolean } = {},
+  ): Promise<ValidatedChildProjectBoundary> {
     const canonicalRoot = await assertSafeRoot(root);
-    const identity = await readIdentity(canonicalRoot);
-    if (identity.kind !== "project") {
-      throw new WorkdeskBoundaryError("wrong-kind", "Only a complete MAGINALIA Project can be registered.");
+    if (options.requireExistingMarker) {
+      const markers = await inspectFolderMarkers(canonicalRoot);
+      if (markers.kind === "conflict") {
+        throw new WorkdeskBoundaryError("marker-conflict", "This Project contains conflicting valid identity markers. Resolve the marker conflict before adding it to Workdesk.");
+      }
+      if (markers.kind !== "valid") {
+        throw new WorkdeskBoundaryError("missing-marker", "This folder has no valid Project identity marker. Open or repair the Project before adding it to Workdesk.");
+      }
+      if (markers.marker.type !== "project") {
+        throw new WorkdeskBoundaryError("wrong-kind", "The selected folder is not marked as a MAGINALIA Project.");
+      }
+      const parent = markers.marker.parent;
+      if (options.expectedWorkdeskIdentityId
+        && parent?.toLowerCase() !== options.expectedWorkdeskIdentityId.toLowerCase()) {
+        const message = parent === null
+          ? "This Project is not linked to the current Workdesk. Its identity marker was left unchanged."
+          : "This Project is linked to a different Workdesk. Add it from that Workdesk; its identity marker was left unchanged.";
+        throw new WorkdeskBoundaryError("mapping-conflict", message);
+      }
     }
-    return Object.freeze({ workdeskIdentityId: "", projectIdentity: identity, canonicalRoot });
+    let resolved: Awaited<ReturnType<typeof resolveFolderMarker>>;
+    try {
+      resolved = await resolveFolderMarker(canonicalRoot, "project", options.expectedWorkdeskIdentityId
+        ? { parentWorkdeskId: options.expectedWorkdeskIdentityId }
+        : {});
+    } catch (error: unknown) {
+      if (error instanceof FolderMarkerError) throw asFolderMarkerBoundaryError(error, "invalid-project");
+      throw error;
+    }
+    const identity = await repositoryIdentityFromMarker(canonicalRoot, resolved.marker, resolved.legacyIdentity);
+    if (identity.kind !== "project") {
+      throw new WorkdeskBoundaryError("wrong-kind", "Only a MAGINALIA Project can be registered.");
+    }
+    if (options.expectedWorkdeskIdentityId && resolved.marker.type === "project"
+      && resolved.marker.parent?.toLowerCase() !== options.expectedWorkdeskIdentityId.toLowerCase()) {
+      const message = resolved.marker.parent === null
+        ? "This Project is not linked to the current Workdesk. Its identity marker was left unchanged."
+        : "This Project is linked to a different Workdesk. Add it from that Workdesk; its identity marker was left unchanged.";
+      throw new WorkdeskBoundaryError("mapping-conflict", message);
+    }
+    return Object.freeze({
+      workdeskIdentityId: options.expectedWorkdeskIdentityId ?? "",
+      projectIdentity: identity,
+      canonicalRoot,
+    });
   }
 
   /**
@@ -919,9 +971,22 @@ export class WorkdeskService {
       || path.dirname(canonicalRoot) !== canonicalProjectsRoot || !isWithin(canonicalProjectsRoot, canonicalRoot)) {
       throw new WorkdeskBoundaryError("not-child-project", "A Workdesk child Project must be directly inside projects.");
     }
-    const identity = await readIdentity(canonicalRoot);
+    let resolved: Awaited<ReturnType<typeof resolveFolderMarker>>;
+    try {
+      resolved = await resolveFolderMarker(canonicalRoot, "project", {
+        parentWorkdeskId: workdesk.identity.id,
+      });
+    } catch (error: unknown) {
+      if (error instanceof FolderMarkerError) throw asFolderMarkerBoundaryError(error, "invalid-project");
+      throw error;
+    }
+    const identity = await repositoryIdentityFromMarker(canonicalRoot, resolved.marker, resolved.legacyIdentity);
     if (identity.kind !== "project") {
       throw new WorkdeskBoundaryError("wrong-kind", "A Workdesk child must be a MAGINALIA Project.");
+    }
+    if (resolved.marker.type !== "project"
+      || resolved.marker.parent?.toLowerCase() !== workdesk.identity.id.toLowerCase()) {
+      throw new WorkdeskBoundaryError("mapping-conflict", "A direct Workdesk Project marker must reference this Workdesk identity.");
     }
     if (expectedProjectIdentityId && identity.id.toLowerCase() !== expectedProjectIdentityId.toLowerCase()) {
       throw new WorkdeskBoundaryError("mapping-conflict", "The Project identity does not match its Workdesk registration.");
@@ -971,6 +1036,109 @@ export class WorkdeskService {
       : Object.freeze({ schemaVersion: 1 as const, projects: Object.freeze([...existing.projects, Object.freeze({ projectIdentityId: projectIdentity.id, title: projectIdentity.title })]) });
     await this.savePortableIndex(workdesk, next);
     return next;
+  }
+
+  /**
+   * Commit a Workdesk Project membership and this PC's location together.
+   * The portable index is restored exactly if the local mapping write fails.
+   */
+  public async registerProjectLocation(
+    workdesk: ValidatedWorkdesk,
+    project: ValidatedChildProjectBoundary,
+  ): Promise<void> {
+    if (project.projectIdentity.kind !== "project"
+      || !isUuid(project.projectIdentity.id)
+      || !isTitle(project.projectIdentity.title)
+      || project.workdeskIdentityId.toLowerCase() !== workdesk.identity.id.toLowerCase()
+      || !path.isAbsolute(project.canonicalRoot)) {
+      throw new WorkdeskBoundaryError("mapping-conflict", "This Project does not belong to the active Workdesk.");
+    }
+
+    return this.serializeRegistration(workdesk.canonicalRoot, async () => {
+      const verifiedProject = await this.validateExternalProject(project.canonicalRoot, {
+        expectedWorkdeskIdentityId: workdesk.identity.id,
+      });
+      if (verifiedProject.projectIdentity.id.toLowerCase() !== project.projectIdentity.id.toLowerCase()
+        || !samePath(verifiedProject.canonicalRoot, project.canonicalRoot)) {
+        throw new WorkdeskBoundaryError("mapping-conflict", "The Project identity changed while registration was being prepared.");
+      }
+      project = verifiedProject;
+      const portableSnapshot = await this.readPortableIndexSnapshot(workdesk);
+      const localSnapshot = await this.localStore.loadForRestore() ?? EMPTY_WORKDESK_LOCAL_STATE;
+      const portableEntry = portableSnapshot.index.projects.find((entry) =>
+        entry.projectIdentityId.toLowerCase() === project.projectIdentity.id.toLowerCase());
+      if (portableEntry && portableEntry.title !== project.projectIdentity.title) {
+        throw new WorkdeskBoundaryError("mapping-conflict", "The registered Project title no longer matches its identity.");
+      }
+
+      const localDesk = Object.entries(localSnapshot.workdesks).find(([identityId]) =>
+        identityId.toLowerCase() === workdesk.identity.id.toLowerCase())?.[1];
+      const localMapping = Object.entries(localDesk?.projects ?? {}).find(([identityId]) =>
+        identityId.toLowerCase() === project.projectIdentity.id.toLowerCase());
+      if (localMapping && !samePath(localMapping[1].rootPath, project.canonicalRoot)) {
+        throw new WorkdeskBoundaryError("mapping-conflict", "This Project identity is already mapped to another folder.");
+      }
+      if (portableEntry && localMapping) return;
+
+      let committedBytes: Buffer | undefined;
+      if (!portableEntry) {
+        const next = Object.freeze({
+          schemaVersion: 1 as const,
+          projects: Object.freeze([
+            ...portableSnapshot.index.projects,
+            Object.freeze({ projectIdentityId: project.projectIdentity.id, title: project.projectIdentity.title }),
+          ]),
+        });
+        committedBytes = Buffer.from(`${JSON.stringify(next, null, 2)}\n`, "utf8");
+        await this.writePortableIndexBytes(workdesk, committedBytes, portableSnapshot);
+      }
+
+      try {
+        if (!localMapping) {
+          await this.localStore.update((stored) => {
+            const deskEntry = Object.entries(stored.workdesks).find(([identityId]) =>
+              identityId.toLowerCase() === workdesk.identity.id.toLowerCase());
+            const deskKey = deskEntry?.[0] ?? workdesk.identity.id;
+            const desk = deskEntry?.[1] ?? { projects: Object.freeze({}) };
+            const existing = Object.entries(desk.projects).find(([identityId]) =>
+              identityId.toLowerCase() === project.projectIdentity.id.toLowerCase());
+            if (existing && !samePath(existing[1].rootPath, project.canonicalRoot)) {
+              throw new WorkdeskBoundaryError("mapping-conflict", "This Project identity is already mapped to another folder.");
+            }
+            if (existing) return stored;
+            return Object.freeze({
+              ...stored,
+              workdesks: Object.freeze({
+                ...stored.workdesks,
+                [deskKey]: Object.freeze({
+                  ...desk,
+                  projects: Object.freeze({
+                    ...desk.projects,
+                    [project.projectIdentity.id]: Object.freeze({ rootPath: project.canonicalRoot }),
+                  }),
+                }),
+              }),
+            });
+          });
+        }
+      } catch (error) {
+        if (committedBytes) {
+          try {
+            await this.restorePortableIndexSnapshot(workdesk, portableSnapshot, committedBytes);
+          } catch (rollbackError) {
+            throw new WorkdeskBoundaryError(
+              "registration-rollback-failed",
+              `The Project could not be registered, and Workdesk safely retained the portable registration because rollback failed: ${rollbackError instanceof Error ? rollbackError.message : "unknown error"}`,
+            );
+          }
+        }
+        if (error instanceof WorkdeskBoundaryError) throw error;
+        throw new WorkdeskBoundaryError(
+          "registration-failed",
+          error instanceof Error ? `The Project could not be registered on this PC: ${error.message}` : "The Project could not be registered on this PC.",
+        );
+      }
+    });
   }
 
   /**
@@ -1086,7 +1254,9 @@ export class WorkdeskService {
       let available = false;
       if (mapping) {
         try {
-          const boundary = await this.validateExternalProject(mapping.rootPath);
+          const boundary = await this.validateExternalProject(mapping.rootPath, {
+            expectedWorkdeskIdentityId: workdesk.identity.id,
+          });
           available = boundary.projectIdentity.id.toLowerCase() === entry.projectIdentityId.toLowerCase();
         } catch {
           available = false;
@@ -1110,10 +1280,109 @@ export class WorkdeskService {
     const local = await this.localStore.load();
     const root = local.workdesks[workdesk.identity.id]?.projects[projectIdentityId]?.rootPath;
     if (!root) throw new WorkdeskBoundaryError("invalid-project", "This Project is unavailable on this PC.");
-    const project = await this.validateExternalProject(root);
+    const project = await this.validateExternalProject(root, {
+      expectedWorkdeskIdentityId: workdesk.identity.id,
+    });
     if (project.projectIdentity.id.toLowerCase() !== projectIdentityId.toLowerCase()) {
       throw new WorkdeskBoundaryError("mapping-conflict", "The local Project no longer matches its Workdesk registration.");
     }
     return project;
+  }
+
+  private async readPortableIndexSnapshot(workdesk: ValidatedWorkdesk): Promise<PortableIndexSnapshot> {
+    const directory = path.join(workdesk.canonicalRoot, ".maginalia");
+    const indexPath = path.join(directory, "workdesk-projects.json");
+    let directoryExisted = false;
+    try {
+      const directoryStat = await fs.lstat(directory);
+      if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+        throw new WorkdeskBoundaryError("invalid-workdesk", "The Workdesk Project index folder is not safe to update.");
+      }
+      directoryExisted = true;
+    } catch (error) {
+      if (error instanceof WorkdeskBoundaryError) throw error;
+      if (!(error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
+    }
+    try {
+      const stat = await fs.lstat(indexPath);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        throw new WorkdeskBoundaryError("invalid-workdesk", "The Workdesk Project index cannot be updated safely.");
+      }
+      const bytes = await fs.readFile(indexPath);
+      let parsed: unknown;
+      try { parsed = JSON.parse(bytes.toString("utf8")); }
+      catch { throw new WorkdeskBoundaryError("invalid-workdesk", "The Workdesk Project list is damaged and was left unchanged."); }
+      const index = strictWorkdeskProjectIndex(parsed);
+      if (!index) throw new WorkdeskBoundaryError("invalid-workdesk", "The Workdesk Project list is invalid and was left unchanged.");
+      return Object.freeze({ index, bytes, directoryExisted });
+    } catch (error) {
+      if (error instanceof WorkdeskBoundaryError) throw error;
+      if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+        return Object.freeze({ index: parseWorkdeskProjectIndex(undefined), directoryExisted });
+      }
+      throw error;
+    }
+  }
+
+  private async writePortableIndexBytes(
+    workdesk: ValidatedWorkdesk,
+    bytes: Buffer,
+    previous: PortableIndexSnapshot,
+  ): Promise<void> {
+    const current = await this.readPortableIndexSnapshot(workdesk);
+    if ((current.bytes === undefined) !== (previous.bytes === undefined)
+      || (current.bytes && previous.bytes && !current.bytes.equals(previous.bytes))) {
+      throw new WorkdeskBoundaryError("mapping-conflict", "The Workdesk Project list changed while registration was being prepared. Try again.");
+    }
+    const directory = path.join(workdesk.canonicalRoot, ".maginalia");
+    const indexPath = path.join(directory, "workdesk-projects.json");
+    await fs.mkdir(directory, { recursive: true });
+    const temporary = `${indexPath}.${process.pid}.${randomUUID()}.tmp`;
+    await fs.writeFile(temporary, bytes, { flag: "wx" });
+    try {
+      await fs.rename(temporary, indexPath);
+    } catch (error) {
+      await fs.unlink(temporary).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async restorePortableIndexSnapshot(
+    workdesk: ValidatedWorkdesk,
+    previous: PortableIndexSnapshot,
+    committedBytes: Buffer,
+  ): Promise<void> {
+    const directory = path.join(workdesk.canonicalRoot, ".maginalia");
+    const indexPath = path.join(directory, "workdesk-projects.json");
+    let current: Buffer;
+    try { current = await fs.readFile(indexPath); }
+    catch { throw new Error("the committed Workdesk Project list could not be read for rollback"); }
+    if (!current.equals(committedBytes)) {
+      throw new Error("the Workdesk Project list changed after registration; it was not overwritten");
+    }
+    if (previous.bytes) {
+      const temporary = `${indexPath}.${process.pid}.${randomUUID()}.rollback.tmp`;
+      await fs.writeFile(temporary, previous.bytes, { flag: "wx" });
+      try { await fs.rename(temporary, indexPath); }
+      catch (error) { await fs.unlink(temporary).catch(() => undefined); throw error; }
+    } else {
+      await fs.unlink(indexPath);
+      if (!previous.directoryExisted) await fs.rmdir(directory).catch(() => undefined);
+    }
+  }
+
+  private async serializeRegistration<T>(workdeskRoot: string, operation: () => Promise<T>): Promise<T> {
+    const key = process.platform === "win32" ? workdeskRoot.toLowerCase() : workdeskRoot;
+    const previous = this.registrationQueues.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const queued = previous.then(() => gate);
+    this.registrationQueues.set(key, queued);
+    await previous;
+    try { return await operation(); }
+    finally {
+      release();
+      if (this.registrationQueues.get(key) === queued) this.registrationQueues.delete(key);
+    }
   }
 }

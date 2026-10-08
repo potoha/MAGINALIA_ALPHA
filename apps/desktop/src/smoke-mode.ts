@@ -4,7 +4,6 @@ export const QUOTATION_SMOKE_FLAG = "--smoke-quotation";
 export const REPOSITORY_SMOKE_FLAG = "--smoke-repository";
 export const PROJECT_SMOKE_FLAG = "--smoke-project";
 export const PROJECT_RESTORE_SMOKE_FLAG = "--smoke-project-restore";
-export const PROJECT_CREATE_SMOKE_FLAG = "--smoke-project-create";
 export const SHELF_SMOKE_FLAG = "--smoke-shelf";
 export const D5_SMOKE_FLAG = "--smoke-d5";
 export const D5_RESTORE_SMOKE_FLAG = "--smoke-d5-restore";
@@ -13,6 +12,8 @@ export const G_SMOKE_FLAG = "--smoke-g";
 export const G_RESTORE_SMOKE_FLAG = "--smoke-g-restore";
 export const H_SMOKE_FLAG = "--smoke-h";
 export const H_RESTORE_SMOKE_FLAG = "--smoke-h-restore";
+export const H_ACCEPTANCE_SMOKE_FLAG = "--smoke-h-acceptance";
+export const H_ACCEPTANCE_RESTORE_SMOKE_FLAG = "--smoke-h-acceptance-restore";
 export const H5_SMOKE_FLAG = "--smoke-h5";
 export const WORKDESK_PERSISTENCE_SMOKE_FLAG = "--smoke-workdesk-persistence";
 export const WORKDESK_PERSISTENCE_RESTORE_SMOKE_FLAG = "--smoke-workdesk-persistence-restore";
@@ -42,7 +43,6 @@ export interface ProjectSmokeMode {
   readonly requested: boolean;
   readonly rootPath?: string;
   readonly restore?: boolean;
-  readonly create?: boolean;
 }
 
 export interface ShelfSmokeMode {
@@ -70,7 +70,9 @@ export interface GSmokeMode {
 export interface HSmokeMode {
   readonly requested: boolean;
   readonly rootPath?: string;
+  readonly projectRootPath?: string;
   readonly restore?: boolean;
+  readonly acceptance?: boolean;
 }
 
 export interface H5SmokeMode {
@@ -130,12 +132,6 @@ export function parseProjectSmokeMode(args: readonly string[]): ProjectSmokeMode
     if (!candidate || candidate.startsWith("--")) return { requested: true, restore: true };
     return { requested: true, restore: true, rootPath: candidate };
   }
-  const createIndex = args.indexOf(PROJECT_CREATE_SMOKE_FLAG);
-  if (createIndex >= 0) {
-    const candidate = args[createIndex + 1];
-    if (!candidate || candidate.startsWith("--")) return { requested: true, create: true };
-    return { requested: true, create: true, rootPath: candidate };
-  }
   const flagIndex = args.indexOf(PROJECT_SMOKE_FLAG);
   if (flagIndex < 0) return { requested: false };
   const candidate = args[flagIndex + 1];
@@ -190,6 +186,29 @@ export function parseGSmokeMode(args: readonly string[]): GSmokeMode {
 }
 
 export function parseHSmokeMode(args: readonly string[]): HSmokeMode {
+  const acceptanceRestoreIndex = args.indexOf(H_ACCEPTANCE_RESTORE_SMOKE_FLAG);
+  if (acceptanceRestoreIndex >= 0) {
+    return {
+      requested: true,
+      restore: true,
+      acceptance: true,
+      ...(args[acceptanceRestoreIndex + 1] && !args[acceptanceRestoreIndex + 1]!.startsWith("--")
+        ? { rootPath: args[acceptanceRestoreIndex + 1] } : {}),
+      ...(args[acceptanceRestoreIndex + 2] && !args[acceptanceRestoreIndex + 2]!.startsWith("--")
+        ? { projectRootPath: args[acceptanceRestoreIndex + 2] } : {}),
+    };
+  }
+  const acceptanceIndex = args.indexOf(H_ACCEPTANCE_SMOKE_FLAG);
+  if (acceptanceIndex >= 0) {
+    return {
+      requested: true,
+      acceptance: true,
+      ...(args[acceptanceIndex + 1] && !args[acceptanceIndex + 1]!.startsWith("--")
+        ? { rootPath: args[acceptanceIndex + 1] } : {}),
+      ...(args[acceptanceIndex + 2] && !args[acceptanceIndex + 2]!.startsWith("--")
+        ? { projectRootPath: args[acceptanceIndex + 2] } : {}),
+    };
+  }
   const restoreIndex = args.indexOf(H_RESTORE_SMOKE_FLAG);
   if (restoreIndex >= 0) {
     const candidate = args[restoreIndex + 1];

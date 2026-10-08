@@ -19,6 +19,7 @@ import {
   type ProjectDocumentType,
 } from "./project-metadata";
 import { validateInternalLinkTarget } from "./project-links";
+import { createFolderMarker, FolderMarkerError, resolveFolderMarker } from "./folder-identity.js";
 
 export interface ProjectSummary {
   readonly projectId: string;
@@ -36,6 +37,8 @@ export interface ProjectOpened {
   readonly kind: "opened";
   readonly project: ProjectSummary;
   readonly files: readonly ProjectFileSummary[];
+  /** Present when identity needs explicit recovery; authored files remain open. */
+  readonly folderIdentityRecovery?: { readonly code: string; readonly message: string };
 }
 
 export interface ProjectFileCreated {
@@ -68,6 +71,14 @@ export interface ProjectFailure {
 export type ProjectResult = ProjectOpened | DocumentWorkspaceFailure | ProjectFailure;
 export type ProjectCreateResult = ProjectOpened | DocumentWorkspaceFailure | ProjectFailure;
 export type ProjectFileCreateResult = ProjectFileCreated | DocumentWorkspaceFailure | ProjectFailure;
+
+/** Main-process-only result for creating a child under a Workdesk. */
+export interface ProjectCreatedForWorkdesk {
+  readonly kind: "created";
+  readonly canonicalRoot: string;
+}
+
+export type ProjectWorkdeskCreateResult = ProjectCreatedForWorkdesk | DocumentWorkspaceFailure | ProjectFailure;
 
 export type ProjectInternalLinkResult =
   | { readonly kind: "resolved"; readonly fileId: string; readonly displayName: string }
@@ -342,11 +353,37 @@ export class ProjectService {
     private readonly pathStore: ProjectPathStore,
   ) {}
 
-  public async openForOwner(owner: object, rootPath: string): Promise<ProjectResult> {
+  public async openForOwner(
+    owner: object,
+    rootPath: string,
+    options: { readonly parentWorkdeskId?: string | null } = {},
+  ): Promise<ProjectResult> {
+    const identityRecovery = await this.prepareFolderIdentity(rootPath, options.parentWorkdeskId);
+    return this.openWorkspaceForOwner(owner, rootPath, identityRecovery);
+  }
+
+  /** Open Workdesk loose documents without treating the Workdesk root as a Project. */
+  public async openWorkdeskLooseFilesForOwner(
+    owner: object,
+    rootPath: string,
+    options: { readonly rememberAsProject?: boolean } = {},
+  ): Promise<ProjectResult> {
+    return this.openWorkspaceForOwner(owner, rootPath, undefined, options.rememberAsProject !== false);
+  }
+
+  private async openWorkspaceForOwner(
+    owner: object,
+    rootPath: string,
+    identityRecovery: { readonly code: string; readonly message: string } | undefined,
+    rememberAsProject = true,
+  ): Promise<ProjectResult> {
     const opened = await this.workspace.openForOwner(owner, rootPath);
     if (opened.kind !== "opened") return opened;
-    const result = await this.enrich(owner, opened);
-    if (result.kind === "opened") await this.remember(owner, opened.document.documentId);
+    let result = await this.enrich(owner, opened);
+    if (result.kind === "opened" && identityRecovery) {
+      result = Object.freeze({ ...result, folderIdentityRecovery: identityRecovery });
+    }
+    if (result.kind === "opened" && rememberAsProject) await this.remember(owner, opened.document.documentId);
     return result;
   }
 
@@ -356,12 +393,51 @@ export class ProjectService {
    * commits an external membership.
    */
   public async validateProjectRoot(rootPath: string): Promise<ProjectResult> {
+    const identityRecovery = await this.prepareFolderIdentity(rootPath);
     const opened = await this.workspace.openForOwner(this.validationOwner, rootPath);
     if (opened.kind !== "opened") return opened;
-    return this.enrich(this.validationOwner, opened);
+    const result = await this.enrich(this.validationOwner, opened);
+    return result.kind === "opened" && identityRecovery
+      ? Object.freeze({ ...result, folderIdentityRecovery: identityRecovery })
+      : result;
   }
 
   public async createForOwner(owner: object, parentPath: string, title: string): Promise<ProjectCreateResult> {
+    const projectRoot = await this.createProjectRoot(parentPath, title);
+    if (typeof projectRoot !== "string") return projectRoot;
+    try {
+      await createFolderMarker(projectRoot, "project");
+    } catch (error: unknown) {
+      return {
+        kind: "error",
+        code: "project-create-failed",
+        message: error instanceof Error ? error.message : "The Project marker could not be created safely.",
+      };
+    }
+    return this.openForOwner(owner, projectRoot);
+  }
+
+  /** Create an owned child folder with a typed parent relationship, without Git initialization. */
+  public async createForWorkdesk(
+    parentPath: string,
+    title: string,
+    parentWorkdeskId: string,
+  ): Promise<ProjectWorkdeskCreateResult> {
+    const projectRoot = await this.createProjectRoot(parentPath, title);
+    if (typeof projectRoot !== "string") return projectRoot;
+    try {
+      await createFolderMarker(projectRoot, "project", { parentWorkdeskId });
+      return Object.freeze({ kind: "created", canonicalRoot: projectRoot });
+    } catch (error: unknown) {
+      return {
+        kind: "error",
+        code: "project-create-failed",
+        message: error instanceof Error ? error.message : "The Project marker could not be created safely.",
+      };
+    }
+  }
+
+  private async createProjectRoot(parentPath: string, title: string): Promise<string | ProjectFailure> {
     const normalizedTitle = normalizeProjectFolderName(title);
     if (!normalizedTitle || !path.isAbsolute(parentPath)) return PROJECT_NAME_INVALID;
 
@@ -380,7 +456,7 @@ export class ProjectService {
     } catch (_error: unknown) {
       return PROJECT_CREATE_FAILED;
     }
-    return this.openForOwner(owner, projectRoot);
+    return projectRoot;
   }
 
   public async restoreForOwner(owner: object): Promise<ProjectResult | { readonly kind: "none" }> {
@@ -612,6 +688,23 @@ export class ProjectService {
       },
       files
     };
+  }
+
+  private async prepareFolderIdentity(
+    rootPath: string,
+    parentWorkdeskId?: string | null,
+  ): Promise<{ readonly code: string; readonly message: string } | undefined> {
+    try {
+      await resolveFolderMarker(rootPath, "project", parentWorkdeskId === undefined ? {} : { parentWorkdeskId });
+      return undefined;
+    } catch (error: unknown) {
+      if (error instanceof FolderMarkerError) {
+        return Object.freeze({ code: error.code, message: error.message });
+      }
+      // Folder identity is advisory for opening authored Project files. The
+      // workspace open below remains responsible for path and access errors.
+      return undefined;
+    }
   }
 
   private async remember(owner: object, projectId: string): Promise<void> {

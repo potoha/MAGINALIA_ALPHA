@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   createIdentity,
-  parseIdentity,
+  serializeFolderMarker,
   storageName,
   templateFiles,
   type RepositoryIdentity,
@@ -17,7 +17,7 @@ import {
   type LocalRepositoryOpened,
   type LocalRepositoryResult,
 } from "./repository-service.js";
-import { inspectRepository } from "./repository-local-history.js";
+import { inspectRepository, readIdentity } from "./repository-local-history.js";
 
 const roots: string[] = [];
 const IDS: Record<RepositoryKind, string> = {
@@ -55,7 +55,7 @@ function fixedFactory(id: string, handle = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
 }
 
 async function identityAt(root: string): Promise<RepositoryIdentity> {
-  return parseIdentity(JSON.parse(await fs.readFile(join(root, ".maginalia", "repository.json"), "utf8")));
+  return readIdentity(root);
 }
 
 async function exists(pathValue: string): Promise<boolean> {
@@ -117,12 +117,11 @@ describe("LocalRepositoryService", () => {
     });
     expect(created.repository.repositoryId).not.toBe(openedResult.repository.repositoryId);
 
-    await fs.writeFile(join(root, ".maginalia", "repository.json"), JSON.stringify({
-      schemaVersion: 1,
-      id: IDS.project,
-      kind: "project",
-      title: "Changed title",
-      templateVersion: 1,
+    await fs.writeFile(join(root, "project.magi"), serializeFolderMarker({
+      version: 1,
+      type: "project",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      parent: null,
     }), "utf8");
     expect(await service.resolveForOwner(owner, openedResult.repository.repositoryId)).toMatchObject({
       kind: "error",

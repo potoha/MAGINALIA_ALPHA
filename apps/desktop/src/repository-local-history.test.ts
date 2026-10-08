@@ -111,13 +111,16 @@ describe("main-only local repository state", () => {
     expect((await readIdentity(root)).id).toBe(identity.id);
   });
 
-  test("requires a real, regular, non-hard-linked marker and a valid identity before creating Git", async () => {
+  test("requires a real, regular, non-hard-linked marker and a valid typed identity before creating Git", async () => {
     const missing = await makeMarkedRoot();
     await removeMarker(missing.root);
     await expectCode(initializeRepository(missing.root), "incomplete-marker");
     expect(await fs.stat(join(missing.root, ".git")).then(() => true).catch(() => false)).toBe(false);
 
     const malformed = await makeMarkedRoot();
+    await fs.unlink(join(malformed.root, "project.magi"));
+    await fs.writeFile(join(malformed.root, "broken.magi"), "not a typed marker\n", "utf8");
+    await fs.mkdir(join(malformed.root, ".maginalia"), { recursive: true });
     await fs.writeFile(
       join(malformed.root, ".maginalia", "repository.json"),
       "{\"schemaVersion\":1}\n",
@@ -157,11 +160,25 @@ describe("main-only local repository state", () => {
     }
   });
 
+  test("keeps a valid typed marker usable when legacy identity metadata is malformed", async () => {
+    const { root, identity } = await makeMarkedRoot();
+    await removeMarker(root);
+    await fs.mkdir(join(root, ".maginalia"), { recursive: true });
+    await fs.writeFile(join(root, ".maginalia", "repository.json"), "{broken legacy identity\n", "utf8");
+
+    expect(await readIdentity(root)).toMatchObject({ id: identity.id, kind: identity.kind });
+    expect(await fs.readFile(join(root, "manuscript.md"), "utf8")).toContain("Fixture project");
+    expect(await fs.stat(join(root, ".git")).then(() => true).catch(() => false)).toBe(false);
+  });
+
   test("rejects malformed existing identity and marked roots without exposing the root path", async () => {
     const { root } = await makeMarkedRoot();
     await initializeRepository(root);
     await expectCode(inspectRepository(root), "incomplete-marker");
     await removeMarker(root);
+    await fs.unlink(join(root, "project.magi"));
+    await fs.writeFile(join(root, "bad.magi"), "not a typed marker\n", "utf8");
+    await fs.mkdir(join(root, ".maginalia"), { recursive: true });
     await fs.writeFile(join(root, ".maginalia", "repository.json"), "not json\n", "utf8");
     try {
       await inspectRepository(root);

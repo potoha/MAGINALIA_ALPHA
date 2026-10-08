@@ -221,9 +221,8 @@ function isOpaqueHandle(value: unknown): value is string {
 
 function sameIdentity(left: RepositoryIdentity, right: RepositoryIdentity): boolean {
   return left.schemaVersion === right.schemaVersion
-    && left.id === right.id
+    && left.id.toLowerCase() === right.id.toLowerCase()
     && left.kind === right.kind
-    && left.title === right.title
     && left.templateVersion === right.templateVersion;
 }
 
@@ -489,9 +488,13 @@ async function ensureDirectory(root: string, segments: readonly string[]): Promi
   }
 }
 
-async function writeTemplateFiles(root: string, identity: RepositoryIdentity): Promise<void> {
+async function writeTemplateFiles(
+  root: string,
+  identity: RepositoryIdentity,
+  options: { readonly parentWorkdeskId?: string | null } = {},
+): Promise<void> {
   const repositoryCore = await loadRepositoryCore();
-  const files = repositoryCore.templateFiles(identity);
+  const files = repositoryCore.templateFiles(identity, options);
   const entries = Object.entries(files).sort(([left], [right]) => left.localeCompare(right));
   for (const [pathValue, contents] of entries) {
     const segments = validateRepositoryPath(pathValue);
@@ -505,9 +508,10 @@ async function verifyTemplateFiles(
   root: string,
   identity: RepositoryIdentity,
   inspection: LocalRepositoryInspection,
+  options: { readonly parentWorkdeskId?: string | null } = {},
 ): Promise<void> {
   const repositoryCore = await loadRepositoryCore();
-  const expected = repositoryCore.templateFiles(identity);
+  const expected = repositoryCore.templateFiles(identity, options);
   const expectedPaths = Object.keys(expected).sort();
   const actualPaths = inspection.trackedFiles.map((file) => file.path).sort();
   if (expectedPaths.length !== actualPaths.length || expectedPaths.some((pathValue, index) => pathValue !== actualPaths[index])) {
@@ -587,6 +591,7 @@ export class LocalRepositoryService {
     parentRoot: unknown,
     kind: unknown,
     title: unknown,
+    options: { readonly parentWorkdeskId?: string | null } = {},
   ): Promise<LocalRepositoryResult> {
     if (!isOwner(owner)) return failure("invalid-owner");
     if (typeof parentRoot !== "string" || !isAbsolute(parentRoot)) return failure("invalid-parent");
@@ -618,13 +623,13 @@ export class LocalRepositoryService {
     try {
       await writeIncompleteMarker(destination);
       maybeInjectCreateFailure("before-templates");
-      await writeTemplateFiles(destination, identity);
+      await writeTemplateFiles(destination, identity, options);
       maybeInjectCreateFailure("during-initialize");
       const initialized = await initializeRepository(destination);
       if (!sameIdentity(initialized.identity, identity)) {
         throw new LocalRepositoryError("invalid-identity", FAILURE_MESSAGES["invalid-identity"]);
       }
-      await verifyTemplateFiles(destination, identity, initialized);
+      await verifyTemplateFiles(destination, identity, initialized, options);
       maybeInjectCreateFailure("before-marker-removal");
       await removeIncompleteMarker(destination);
       const inspection = await inspectRepository(destination);

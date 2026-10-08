@@ -12,6 +12,7 @@ import type {
   ShelfAnnotationV04,
   ShelfBookV04
 } from "@maginalia/format" with { "resolution-mode": "import" };
+import { FolderMarkerError, resolveFolderMarker } from "./folder-identity.js";
 
 type FormatCore = typeof import("@maginalia/format", { with: { "resolution-mode": "import" } });
 
@@ -34,6 +35,9 @@ export interface LibraryOpened {
   readonly library: LibrarySummary;
   readonly recordCount: number;
   readonly issueCount: number;
+  readonly folderIdentityId?: string;
+  /** Shelf records remain available while this explicit recovery state is surfaced. */
+  readonly folderIdentityRecovery?: { readonly code: string; readonly message: string };
 }
 
 export type LibraryFailureCode =
@@ -250,6 +254,8 @@ interface PrivateShelfLibrarySnapshot extends LibrarySnapshot {
   readonly privateShelf: true;
   readonly canonicalRoot: string;
   readonly entities: CanonicalShelfEntities;
+  readonly folderIdentityId?: string;
+  readonly folderIdentityRecovery?: { readonly code: string; readonly message: string };
 }
 
 type OwnedLibrarySnapshot = LibrarySnapshot | PrivateShelfLibrarySnapshot;
@@ -268,6 +274,8 @@ export interface ActivePrivateShelf {
   readonly canonicalRoot: string;
   readonly records: readonly LibraryRecord[];
   readonly entities: CanonicalShelfEntities;
+  readonly folderIdentityId?: string;
+  readonly folderIdentityRecovery?: { readonly code: string; readonly message: string };
 }
 
 export type ActivePrivateShelfResult = ActivePrivateShelf | LibraryFailure;
@@ -862,6 +870,21 @@ export class LibraryService {
       records.push(toSnapshotRecord(annotation.value, book));
     }
 
+    let folderIdentityId: string | undefined;
+    let folderIdentityRecovery: { readonly code: string; readonly message: string } | undefined;
+    if (privateShelf) {
+      try {
+        const resolved = await resolveFolderMarker(canonicalRoot, "shelf");
+        folderIdentityId = resolved.marker.id;
+      } catch (error: unknown) {
+        if (error instanceof FolderMarkerError) {
+          folderIdentityRecovery = Object.freeze({ code: error.code, message: error.message });
+        } else {
+          folderIdentityRecovery = Object.freeze({ code: "marker-unavailable", message: "Shelf records opened, but its folder identity could not be read." });
+        }
+      }
+    }
+
     if (expectedSnapshot !== undefined && this.owners.get(owner) !== expectedSnapshot) return LIBRARY_NOT_OWNED;
 
     const libraryId = expectedSnapshot?.library.libraryId ?? randomUUID();
@@ -882,6 +905,8 @@ export class LibraryService {
         privateShelf: true,
         canonicalRoot,
         entities,
+        ...(folderIdentityId ? { folderIdentityId } : {}),
+        ...(folderIdentityRecovery ? { folderIdentityRecovery } : {}),
       });
     } else {
       snapshot = Object.freeze({
@@ -900,6 +925,8 @@ export class LibraryService {
       library: snapshot.library,
       recordCount: records.length,
       issueCount: issues.value,
+      ...(privateShelf && folderIdentityId ? { folderIdentityId } : {}),
+      ...(privateShelf && folderIdentityRecovery ? { folderIdentityRecovery } : {}),
     };
   }
 
@@ -915,6 +942,8 @@ export class LibraryService {
       canonicalRoot: snapshot.canonicalRoot,
       records: cloneRecords(snapshot.records),
       entities: toCanonicalShelfEntities(snapshot.entities.annotations, snapshot.entities.books),
+      ...(snapshot.folderIdentityId ? { folderIdentityId: snapshot.folderIdentityId } : {}),
+      ...(snapshot.folderIdentityRecovery ? { folderIdentityRecovery: snapshot.folderIdentityRecovery } : {}),
     });
   }
 

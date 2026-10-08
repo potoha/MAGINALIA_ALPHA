@@ -1,4 +1,4 @@
-import type { WorkdeskOpened, WorkdeskRestoreResult } from "../workdesk-ipc";
+import type { WorkdeskOpened, WorkdeskRecovered, WorkdeskRestoreResult } from "../workdesk-ipc";
 
 export const WORKDESK_RETURN_RESTORE_ERROR =
   "The previous Workdesk could not be restored. Use Open Workdesk to choose another folder.";
@@ -6,7 +6,7 @@ export const WORKDESK_RETURN_RESTORE_ERROR =
 /** Restores the remembered Workdesk only; this action never invokes a picker. */
 export async function restoreWorkdeskForReturn(options: {
   readonly restore: () => Promise<WorkdeskRestoreResult>;
-  readonly activate: (result: WorkdeskOpened) => Promise<boolean>;
+  readonly activate: (result: WorkdeskOpened | WorkdeskRecovered) => Promise<boolean>;
   readonly rememberHome: () => Promise<void>;
   readonly showError: (message: string) => void;
 }): Promise<void> {
@@ -20,6 +20,10 @@ export async function restoreWorkdeskForReturn(options: {
 
   if (result.kind === "opened") {
     if (await options.activate(result)) await options.rememberHome();
+    return;
+  }
+  if (result.kind === "recovery") {
+    await options.activate(result);
     return;
   }
   options.showError(result.kind === "error" ? result.message : WORKDESK_RETURN_RESTORE_ERROR);

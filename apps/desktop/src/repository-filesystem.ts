@@ -1,19 +1,31 @@
 import { createHash } from "node:crypto";
 import { promises as fs, type Dirent, type Stats } from "node:fs";
 import { basename, join, parse, relative, resolve, sep } from "node:path";
+import type { FolderMarker } from "@maginalia/repository-core" with { "resolution-mode": "import" };
 import type { RepositoryIdentity } from "@maginalia/repository-core" with { "resolution-mode": "import" };
 
 type ParseIdentity = typeof import("@maginalia/repository-core", { with: { "resolution-mode": "import" } })["parseIdentity"];
+type ParseFolderMarker = typeof import("@maginalia/repository-core", { with: { "resolution-mode": "import" } })["parseFolderMarkerText"];
 
 let parseIdentityPromise: Promise<ParseIdentity> | undefined;
+let parseFolderMarkerPromise: Promise<ParseFolderMarker> | undefined;
 
 async function loadParseIdentity(): Promise<ParseIdentity> {
   parseIdentityPromise ??= import("@maginalia/repository-core").then((repositoryCore) => repositoryCore.parseIdentity);
   return parseIdentityPromise;
 }
 
+async function loadParseFolderMarker(): Promise<ParseFolderMarker> {
+  parseFolderMarkerPromise ??= import("@maginalia/repository-core").then((repositoryCore) => repositoryCore.parseFolderMarkerText);
+  return parseFolderMarkerPromise;
+}
+
 const IDENTITY_PATH = ".maginalia/repository.json";
 export const INCOMPLETE_MARKER = "MAGINALIA-INCOMPLETE.txt" as const;
+
+function isRootFolderMarkerPath(pathValue: string): boolean {
+  return !pathValue.includes("/") && pathValue.toLocaleLowerCase("en-US").endsWith(".magi");
+}
 
 export const DEFAULT_REPOSITORY_FILESYSTEM_LIMITS = Object.freeze({
   maxFiles: 10_000,
@@ -428,7 +440,7 @@ async function rejectIncompleteMarker(rootReal: string): Promise<void> {
   if (await hasIncompleteMarker(rootReal)) fail("incomplete-marker", INCOMPLETE_MESSAGE);
 }
 
-async function readIdentityInternal(
+async function readLegacyIdentityInternal(
   rootReal: string,
   options?: ReadIdentityOptions,
 ): Promise<RepositoryIdentity> {
@@ -449,6 +461,104 @@ async function readIdentityInternal(
     if (error instanceof RepositoryFilesystemError) throw error;
     fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
   }
+}
+
+async function readFolderPresentationTitle(rootReal: string, type: FolderMarker["type"]): Promise<string | undefined> {
+  const candidates = type === "project" ? ["project.json", "manuscript.md"]
+    : type === "workdesk" ? ["manuscript.md"]
+      : ["library.json"];
+  for (const filename of candidates) {
+    try {
+      const filepath = join(rootReal, filename);
+      const stat = await fs.lstat(filepath);
+      if (!stat.isFile() || stat.isSymbolicLink() || statSize(stat) > 1024 * 1024) continue;
+      const text = Buffer.from(await fs.readFile(filepath)).toString("utf8");
+      if (filename.endsWith(".json")) {
+        const value: unknown = JSON.parse(text);
+        if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+          const record = value as Record<string, unknown>;
+          const title = type === "shelf" ? record.name : record.title;
+          if (typeof title === "string" && title.trim().length > 0) return title;
+        }
+      } else {
+        const match = /^#\s+(.+?)\s*$/mu.exec(text);
+        if (match?.[1]) return match[1].replace(/\\([\\`*_{}\[\]()#+.!|>~-])/gu, "$1");
+      }
+    } catch {
+      // Folder identity remains usable when optional presentation files are
+      // missing, unreadable, or malformed.
+    }
+  }
+  return undefined;
+}
+
+async function readTypedFolderIdentityInternal(rootReal: string): Promise<RepositoryIdentity | undefined> {
+  const entries = await fs.readdir(rootReal, { withFileTypes: true });
+  const candidates = entries.filter((entry) => entry.name.toLocaleLowerCase("en-US").endsWith(".magi"));
+  const valid: { readonly filename: string; readonly marker: FolderMarker }[] = [];
+  for (const entry of candidates) {
+    const markerPath = join(rootReal, entry.name);
+    try {
+      const stat = await fs.lstat(markerPath);
+      if (!stat.isFile() || stat.isSymbolicLink() || statSize(stat) > 16 * 1024) continue;
+      rejectHardLinkedFile(stat);
+      const bytes = new Uint8Array(await fs.readFile(markerPath));
+      if (bytes.byteLength !== statSize(stat)) continue;
+      const parseFolderMarkerText = await loadParseFolderMarker();
+      valid.push({ filename: entry.name, marker: parseFolderMarkerText(Buffer.from(bytes).toString("utf8")) });
+    } catch {
+      // Malformed markers are migration evidence only; they never block the
+      // legacy reader from opening otherwise readable folders.
+    }
+  }
+  if (valid.length === 0) return undefined;
+  const first = valid[0]!;
+  const same = (left: typeof first.marker, right: typeof first.marker): boolean => {
+    if (left.type !== right.type || left.id.toLowerCase() !== right.id.toLowerCase()) return false;
+    if (left.type === "project" && right.type === "project") {
+      return (left.parent?.toLowerCase() ?? null) === (right.parent?.toLowerCase() ?? null);
+    }
+    return left.type !== "project" && right.type !== "project";
+  };
+  if (valid.some((candidate) => !same(first.marker, candidate.marker))) fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
+
+  const kind = first.marker.type === "workdesk" ? "workbench" : first.marker.type;
+  let title = ((await readFolderPresentationTitle(rootReal, first.marker.type)) ?? basename(rootReal))
+    || (kind === "project" ? "Project" : kind === "workbench" ? "Workdesk" : "Private Shelf");
+  if (Array.from(title).length > 200) title = Array.from(title).slice(0, 200).join("");
+  try {
+    const legacy = await readLegacyIdentityInternal(rootReal);
+    if (legacy.kind === kind && legacy.id.toLowerCase() === first.marker.id.toLowerCase()) title = legacy.title;
+  } catch {
+    // Titles are presentation metadata. A broken legacy identity cannot
+    // override a valid typed marker or hold folder contents hostage.
+  }
+  try {
+    const parseIdentity = await loadParseIdentity();
+    return parseIdentity({ schemaVersion: 1, id: first.marker.id, kind, title, templateVersion: 1 });
+  } catch {
+    try {
+      const parseIdentity = await loadParseIdentity();
+      return parseIdentity({
+        schemaVersion: 1,
+        id: first.marker.id,
+        kind,
+        title: kind === "project" ? "Project" : kind === "workbench" ? "Workdesk" : "Private Shelf",
+        templateVersion: 1
+      });
+    } catch {
+      fail("invalid-identity", INVALID_IDENTITY_MESSAGE);
+    }
+  }
+}
+
+async function readIdentityInternal(
+  rootReal: string,
+  options?: ReadIdentityOptions,
+): Promise<RepositoryIdentity> {
+  if (!options?.allowIncompleteMarker) await rejectIncompleteMarker(rootReal);
+  const typed = await readTypedFolderIdentityInternal(rootReal);
+  return typed ?? readLegacyIdentityInternal(rootReal, options);
 }
 
 export async function readIdentity(
@@ -624,6 +734,7 @@ async function captureWorkingTreeInternal(
       if (
         !tracked
         && pathValue !== IDENTITY_PATH
+        && !isRootFolderMarkerPath(pathValue)
         && options?.isIgnored
         && await options.isIgnored(pathValue)
       ) {

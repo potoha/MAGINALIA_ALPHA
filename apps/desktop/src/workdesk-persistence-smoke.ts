@@ -64,8 +64,12 @@ export async function runWorkdeskPersistenceSmoke(options: {
   }
 
   const canonicalRoot = await realpath(options.rootPath);
-  const identity = JSON.parse(await readFile(path.join(canonicalRoot, ".maginalia", "repository.json"), "utf8")) as { title?: unknown };
-  if (typeof identity.title !== "string") throw new Error("The Workdesk smoke fixture has no title.");
+  const { parseFolderMarkerText } = await import("@maginalia/repository-core");
+  const marker = parseFolderMarkerText(await readFile(path.join(canonicalRoot, "workdesk.magi"), "utf8"));
+  if (marker.type !== "workdesk") throw new Error("The Workdesk smoke fixture has an invalid folder marker.");
+  const manuscript = await readFile(path.join(canonicalRoot, "manuscript.md"), "utf8");
+  const title = /^#\s+(.+?)\s*$/mu.exec(manuscript)?.[1];
+  if (!title) throw new Error("The Workdesk smoke fixture has no manuscript heading.");
   let expectedShortcut: { readonly identityId: string; readonly title: string } | null = null;
   if (options.restore) {
     const index = JSON.parse(await readFile(path.join(canonicalRoot, ".maginalia", "workdesk-projects.json"), "utf8")) as {
@@ -90,7 +94,7 @@ export async function runWorkdeskPersistenceSmoke(options: {
     storedPrimary = await readStoredPrimary(storePath);
     lastState = await readRendererState(options.window);
     const stored = storedPrimary !== null && samePath(storedPrimary, canonicalRoot);
-    const active = lastState?.label === "Workdesk" && lastState.title === identity.title;
+    const active = lastState?.label === "Workdesk" && lastState.title === title;
     const shortcutReady = expectedShortcut === null || lastState?.projectShortcuts.some((shortcut) =>
       shortcut.identityId === expectedShortcut?.identityId
         && shortcut.title === expectedShortcut.title
@@ -98,6 +102,24 @@ export async function runWorkdeskPersistenceSmoke(options: {
         && shortcut.rootChild
     ) === true;
     if (stored && active && shortcutReady && options.pickerInvocationCount() === expectedPickerCalls) {
+      if (expectedShortcut) {
+        const clicked = await options.window.webContents.executeJavaScript(`(() => {
+          const button = [...document.querySelectorAll(".workdesk-project-shortcut")]
+            .find((candidate) => candidate.dataset.workdeskProjectShortcut === ${JSON.stringify(expectedShortcut.identityId)});
+          if (!button) return false;
+          button.click();
+          return true;
+        })()`, true) as boolean;
+        if (!clicked) throw new Error("The registered Workdesk Project shortcut could not be activated.");
+        const navigationDeadline = Date.now() + STATE_TIMEOUT_MS;
+        while (Date.now() < navigationDeadline) {
+          lastState = await readRendererState(options.window);
+          if (lastState?.label === "Project" && lastState.title !== title && lastState.projectShortcuts.length === 0) return;
+          if (lastState?.error) throw new Error(`Registered Project navigation displayed an error: ${lastState.error}`);
+          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        }
+        throw new Error(`Registered Project navigation did not open ${expectedShortcut.title}: ${JSON.stringify(lastState)}.`);
+      }
       return;
     }
     if (lastState?.error && !active) {

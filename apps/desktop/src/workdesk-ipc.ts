@@ -1,12 +1,13 @@
 import type { ProjectFileCreateResult, ProjectOpened, ProjectResult, ProjectService } from "./project-service.js";
 import type { CreateProjectFileRequest } from "./project-ipc.js";
 import type { ProjectDocumentType } from "./project-metadata.js";
-import type { LocalRepositoryResult, LocalRepositoryService } from "./repository-service.js";
 import type {
   AdoptedWorkdesk,
   WorkdeskAdoptionCandidate,
+  WorkdeskIdentityRecoveryRoot,
   WorkdeskLastActiveContext,
   WorkdeskService,
+  WorkdeskOpenBoundary,
   ValidatedWorkdesk,
 } from "./workdesk-service.js";
 
@@ -78,6 +79,11 @@ export interface WorkdeskProjectOpened {
   readonly node: WorkdeskProjectNode;
 }
 
+export interface WorkdeskProjectOpenedUnregistered {
+  readonly kind: "opened-unregistered";
+  readonly project: ProjectOpened;
+}
+
 export interface WorkdeskProjectRegistered {
   readonly kind: "registered";
   readonly node: WorkdeskProjectNode;
@@ -104,19 +110,35 @@ export interface WorkdeskOpened {
   readonly lastActiveContext: WorkdeskLastActiveContext;
 }
 
+/** A recovery result with no selected or synthesized Workdesk UUID. */
+export interface WorkdeskRecovered {
+  readonly kind: "recovery";
+  readonly workdesk: {
+    readonly documentId: string;
+    readonly title: string;
+  };
+  readonly project: ProjectOpened["project"];
+  readonly files: ProjectOpened["files"];
+  readonly recovery: {
+    readonly code: WorkdeskIdentityRecoveryRoot["code"];
+    readonly message: string;
+  };
+}
+
 export interface WorkdeskCancelled { readonly kind: "cancelled"; }
 export interface WorkdeskNone { readonly kind: "none"; }
 export interface WorkdeskFailure { readonly kind: "error"; readonly code: string; readonly message: string; }
 
-export type WorkdeskOpenResult = WorkdeskOpened | WorkdeskCancelled | WorkdeskFailure;
-export type WorkdeskRestoreResult = WorkdeskOpened | WorkdeskNone | WorkdeskFailure;
+export type WorkdeskOpenResult = WorkdeskOpened | WorkdeskRecovered | WorkdeskCancelled | WorkdeskFailure;
+export type WorkdeskRestoreResult = WorkdeskOpened | WorkdeskRecovered | WorkdeskNone | WorkdeskFailure;
 export interface SaveWorkdeskContextRequest {
   readonly workdeskIdentityId: string;
   readonly context: WorkdeskLastActiveContext;
 }
 export type SaveWorkdeskContextResult = { readonly kind: "saved" } | WorkdeskFailure;
 export type WorkdeskFileCreateResult = ProjectFileCreateResult | WorkdeskFailure;
-export type WorkdeskProjectResult = WorkdeskProjectOpened | WorkdeskProjectRegistered | WorkdeskProjectRemoved | WorkdeskCancelled | WorkdeskFailure;
+export type WorkdeskProjectResult = WorkdeskProjectOpened | WorkdeskProjectOpenedUnregistered | WorkdeskProjectRegistered | WorkdeskProjectRemoved | WorkdeskCancelled | WorkdeskFailure;
+export type ExistingProjectRegistrationChoice = "register" | "cancel" | "open-without-registration";
 export type WorkdeskCopyResult = ProjectFileCreateResult | WorkdeskFailure;
 
 export interface WorkdeskHandlerDependencies {
@@ -124,8 +146,8 @@ export interface WorkdeskHandlerDependencies {
   readonly pickWorkdeskParent: () => Promise<WorkdeskFolderSelection>;
   readonly pickExistingProjectFolder: () => Promise<WorkdeskFolderSelection>;
   readonly confirmAdoptWorkdesk: () => Promise<boolean>;
+  readonly confirmRegisterExistingProject: () => Promise<ExistingProjectRegistrationChoice>;
   readonly service: WorkdeskService;
-  readonly repositories: LocalRepositoryService;
   readonly projects: ProjectService;
   /**
    * Workdesk keeps child Project roots out of its loose-file Explorer.  This
@@ -151,6 +173,10 @@ export interface WorkdeskHandlers {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isIdentityRecovery(boundary: WorkdeskOpenBoundary): boundary is WorkdeskIdentityRecoveryRoot {
+  return "kind" in boundary && boundary.kind === "identity-recovery";
 }
 
 function isFolderSelection(value: unknown): value is WorkdeskFolderSelection {
@@ -239,7 +265,7 @@ async function opened(
   owner: object,
   desk: ValidatedWorkdesk,
 ): Promise<WorkdeskOpened | WorkdeskFailure> {
-  const loose = await dependencies.projects.openForOwner(owner, desk.canonicalRoot);
+  const loose = await dependencies.projects.openWorkdeskLooseFilesForOwner(owner, desk.canonicalRoot);
   if (loose.kind !== "opened") return failure("workdesk-open-failed", loose.message);
   // A Workdesk may contain independent child Project repositories below
   // `projects/`. They are never loose Workdesk documents, even briefly while
@@ -269,6 +295,28 @@ async function opened(
   };
 }
 
+async function recovered(
+  dependencies: WorkdeskHandlerDependencies,
+  owner: object,
+  recovery: WorkdeskIdentityRecoveryRoot,
+): Promise<WorkdeskRecovered | WorkdeskFailure> {
+  const loose = await dependencies.projects.openWorkdeskLooseFilesForOwner(owner, recovery.canonicalRoot, { rememberAsProject: false });
+  if (loose.kind !== "opened") return failure("workdesk-open-failed", loose.message);
+  const looseFiles = loose.files.filter((file) => file.displayName !== "projects" && !file.displayName.startsWith("projects/"));
+  return {
+    kind: "recovery",
+    workdesk: { documentId: loose.project.projectId, title: recovery.title },
+    project: { projectId: loose.project.projectId, displayName: loose.project.displayName },
+    files: looseFiles.map((file) => ({
+      fileId: file.fileId,
+      displayName: file.displayName,
+      documentType: file.documentType,
+      title: file.title,
+    })),
+    recovery: { code: recovery.code, message: recovery.message },
+  };
+}
+
 export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies): WorkdeskHandlers {
   // Each renderer owner has exactly one active Workdesk capability. The
   // portable UUID is checked against this map before a Project operation;
@@ -289,11 +337,7 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
     return result;
   };
   const register = async (desk: ValidatedWorkdesk, project: Awaited<ReturnType<WorkdeskService["validateExternalProject"]>>): Promise<WorkdeskProjectNode> => {
-    // The portable identity is committed first. If the app-local mapping fails
-    // afterward it remains an honest unavailable registration rather than
-    // deleting user data to "roll back".
-    await dependencies.service.registerPortableProject(desk, project.projectIdentity);
-    await dependencies.service.registerProjectPath(desk, project);
+    await dependencies.service.registerProjectLocation(desk, project);
     return Object.freeze({ projectIdentityId: project.projectIdentity.id, title: project.projectIdentity.title, available: true });
   };
   return {
@@ -305,10 +349,20 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
       if (selected.canceled || selected.filePaths.length === 0) return { kind: "cancelled" };
       if (selected.filePaths.length !== 1) return failure("invalid-request", "Choose one Workdesk folder.");
       const selectedRoot = selected.filePaths[0]!;
-      let desk: ValidatedWorkdesk;
+      let boundary: WorkdeskOpenBoundary;
       try {
-        desk = await dependencies.service.open(selectedRoot);
-      } catch {
+        boundary = await dependencies.service.openForActivation(selectedRoot);
+      } catch (openError) {
+        let identityRecovery: WorkdeskIdentityRecoveryRoot | undefined;
+        try {
+          identityRecovery = await dependencies.service.inspectIdentityRecoveryForActivation(selectedRoot, openError);
+        } catch {
+          // The adoption boundary below will report unsafe or unreadable roots.
+        }
+        if (identityRecovery && identityRecovery.code !== "missing-marker") {
+          activeDesks.delete(event.sender);
+          return recovered(dependencies, event.sender, identityRecovery);
+        }
         let candidate: WorkdeskAdoptionCandidate;
         try {
           candidate = await dependencies.service.prepareAdoption(selectedRoot);
@@ -318,23 +372,41 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
         let confirmed = false;
         try { confirmed = await dependencies.confirmAdoptWorkdesk(); }
         catch { return failure("adoption-confirmation-failed", "The Workdesk adoption confirmation could not be shown."); }
-        if (!confirmed) return { kind: "cancelled" };
+        if (!confirmed) {
+          if (identityRecovery) {
+            activeDesks.delete(event.sender);
+            return recovered(dependencies, event.sender, identityRecovery);
+          }
+          return { kind: "cancelled" };
+        }
         let adopted: AdoptedWorkdesk;
         try {
-          adopted = await dependencies.service.adoptPreparedFolder(candidate, event.sender, dependencies.repositories);
+          adopted = await dependencies.service.adoptPreparedFolder(candidate);
         } catch (error) {
+          let recoveryAfterAdoptionFailure: WorkdeskIdentityRecoveryRoot | undefined;
+          try {
+            recoveryAfterAdoptionFailure = await dependencies.service.inspectIdentityRecoveryForActivation(selectedRoot, error);
+          } catch {
+            // Preserve the adoption error when the selected root is no longer safe to inspect.
+          }
+          if (recoveryAfterAdoptionFailure) {
+            activeDesks.delete(event.sender);
+            return recovered(dependencies, event.sender, recoveryAfterAdoptionFailure);
+          }
           return asFailure(error, "The selected folder could not be adopted as a Workdesk.");
         }
         try {
           const result = await rememberOpened(event.sender, adopted.workdesk);
-          if (result.kind !== "opened") await adopted.preserveIncompleteOnFailure();
           return result;
         } catch (error) {
-          await adopted.preserveIncompleteOnFailure();
           return asFailure(error, "The adopted Workdesk could not be opened.");
         }
       }
-      return rememberOpened(event.sender, desk);
+      if (isIdentityRecovery(boundary)) {
+        activeDesks.delete(event.sender);
+        return recovered(dependencies, event.sender, boundary);
+      }
+      return rememberOpened(event.sender, boundary);
     },
     createWorkdesk: async (event, request, ...args) => {
       if (args.length !== 0 || !isCreateRequest(request)) return failure("invalid-request", "The Workdesk request was invalid.");
@@ -343,27 +415,34 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
       if (!isFolderSelection(selected)) return failure("folder-dialog-failed", "The Workdesk parent folder could not be selected.");
       if (selected.canceled || selected.filePaths.length === 0) return { kind: "cancelled" };
       if (selected.filePaths.length !== 1) return failure("invalid-request", "Choose one Workdesk parent folder.");
-      const created: LocalRepositoryResult = await dependencies.repositories.createForOwner(event.sender, selected.filePaths[0]!, "workbench", request.title);
-      if (created.kind !== "opened") return failure(created.code, created.message);
-      const resolved = await dependencies.repositories.resolveForOwner(event.sender, created.repository.repositoryId);
-      if (resolved.kind !== "resolved") return failure(resolved.code, resolved.message);
-      try { return await rememberOpened(event.sender, await dependencies.service.open(resolved.canonicalRoot)); }
+      try {
+        const desk = await dependencies.service.create(selected.filePaths[0]!, request.title);
+        return await rememberOpened(event.sender, desk);
+      }
       catch (error) { return asFailure(error, "The Workdesk was created but could not be opened."); }
     },
     restoreWorkdesk: async (event, ...args) => {
       if (args.length !== 0) return failure("invalid-request", "The Workdesk request was invalid.");
       try {
-        const desk = await dependencies.service.restorePrimary();
-        return desk === undefined ? { kind: "none" } : await rememberOpened(event.sender, desk);
+        const boundary = await dependencies.service.restorePrimaryForActivation();
+        if (boundary === undefined) return { kind: "none" };
+        if (isIdentityRecovery(boundary)) {
+          activeDesks.delete(event.sender);
+          return recovered(dependencies, event.sender, boundary);
+        }
+        return await rememberOpened(event.sender, boundary);
       } catch (error) { return asFailure(error, "The previous Workdesk could not be restored."); }
     },
     returnToWorkdesk: async (event, ...args) => {
       if (args.length !== 0) return failure("invalid-request", "The Workdesk request was invalid.");
       try {
-        const desk = await dependencies.service.restorePrimary();
-        return desk === undefined
-          ? { kind: "none" }
-          : await rememberOpened(event.sender, desk);
+        const boundary = await dependencies.service.restorePrimaryForActivation();
+        if (boundary === undefined) return { kind: "none" };
+        if (isIdentityRecovery(boundary)) {
+          activeDesks.delete(event.sender);
+          return recovered(dependencies, event.sender, boundary);
+        }
+        return await rememberOpened(event.sender, boundary);
       } catch (error) { return asFailure(error, "The primary Workdesk could not be restored."); }
     },
     saveWorkdeskContext: async (event, request, ...args) => {
@@ -402,11 +481,9 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
       if ("kind" in desk) return desk;
       try {
         const projectsRoot = await dependencies.service.prepareChildProjectDirectory(desk);
-        const created = await dependencies.repositories.createForOwner(event.sender, projectsRoot, "project", request.title);
-        if (created.kind !== "opened") return failure(created.code, created.message);
-        const resolved = await dependencies.repositories.resolveForOwner(event.sender, created.repository.repositoryId);
-        if (resolved.kind !== "resolved") return failure(resolved.code, resolved.message);
-        const boundary = await dependencies.service.validateDirectChildProject(desk, resolved.canonicalRoot);
+        const created = await dependencies.projects.createForWorkdesk(projectsRoot, request.title, desk.identity.id);
+        if (created.kind !== "created") return failure(created.code, created.message);
+        const boundary = await dependencies.service.validateDirectChildProject(desk, created.canonicalRoot);
         const checked = await dependencies.projects.validateProjectRoot(boundary.canonicalRoot);
         if (checked.kind !== "opened") return failure(checked.code, checked.message);
         let node: WorkdeskProjectNode;
@@ -414,7 +491,6 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
         catch (error) { return asFailure(error, "The Project was created but could not be registered with the Workdesk."); }
         const project = await dependencies.projects.openForOwner(event.sender, boundary.canonicalRoot);
         if (project.kind !== "opened") {
-          await dependencies.service.unregisterProject(desk, boundary.projectIdentity.id).catch(() => undefined);
           return failure(project.code, project.message);
         }
         return Object.freeze({ kind: "opened", project, node });
@@ -433,17 +509,22 @@ export function createWorkdeskHandlers(dependencies: WorkdeskHandlerDependencies
       if (selected.canceled || selected.filePaths.length === 0) return { kind: "cancelled" };
       if (selected.filePaths.length !== 1) return failure("invalid-request", "Choose one Project folder.");
       try {
-        const boundary = await dependencies.service.validateExternalProject(selected.filePaths[0]!);
+        const boundary = await dependencies.service.validateExternalProject(selected.filePaths[0]!, {
+          expectedWorkdeskIdentityId: desk.identity.id,
+          requireExistingMarker: true,
+        });
         const checked = await dependencies.projects.validateProjectRoot(boundary.canonicalRoot);
         if (checked.kind !== "opened") return failure(checked.code, checked.message);
-        const existing = (await dependencies.service.listRegisteredProjects(desk))
-          .some((candidate) => candidate.projectIdentityId.toLowerCase() === boundary.projectIdentity.id.toLowerCase());
+        const choice = await dependencies.confirmRegisterExistingProject();
+        if (choice === "cancel") return { kind: "cancelled" };
+        if (choice === "open-without-registration") {
+          const project = await dependencies.projects.openForOwner(event.sender, boundary.canonicalRoot);
+          if (project.kind !== "opened") return failure(project.code, project.message);
+          return Object.freeze({ kind: "opened-unregistered", project });
+        }
         const node = await register(desk, boundary);
         const project = await dependencies.projects.openForOwner(event.sender, boundary.canonicalRoot);
-        if (project.kind !== "opened") {
-          if (!existing) await dependencies.service.unregisterProject(desk, boundary.projectIdentity.id).catch(() => undefined);
-          return failure(project.code, project.message);
-        }
+        if (project.kind !== "opened") return failure(project.code, project.message);
         return Object.freeze({ kind: "opened", project, node });
       } catch (error) {
         return asFailure(error, "Only a complete MAGINALIA Project can be registered.");

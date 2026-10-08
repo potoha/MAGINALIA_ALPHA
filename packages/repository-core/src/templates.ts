@@ -1,9 +1,9 @@
 import { assertValidEntity } from "@maginalia/format";
 import {
-  IDENTITY_PATH,
   parseIdentity,
   type RepositoryIdentity
 } from "./domain.js";
+import { canonicalFolderMarkerFilename, serializeFolderMarker } from "./folder-marker.js";
 
 const CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -40,10 +40,6 @@ function escapeMarkdownText(value: string): string {
 
 function heading(title: string): string {
   return "# " + escapeMarkdownText(title) + "\n\n";
-}
-
-function identityJson(identity: RepositoryIdentity): string {
-  return JSON.stringify(identity, null, 2) + "\n";
 }
 
 /**
@@ -83,22 +79,25 @@ function libraryJson(identity: RepositoryIdentity): string {
   return JSON.stringify(library, null, 2) + "\n";
 }
 
-function commonFiles(identity: RepositoryIdentity): Record<string, string> {
+function commonFiles(identity: RepositoryIdentity, folderMarker: string, parentWorkdeskId: string | null = null): Record<string, string> {
   return {
-    [IDENTITY_PATH]: identityJson(identity),
+    [folderMarker]: serializeFolderMarker(identity.kind === "workbench"
+      ? { version: 1, type: "workdesk", id: identity.id }
+      : identity.kind === "project"
+        ? { version: 1, type: "project", id: identity.id, parent: parentWorkdeskId }
+        : { version: 1, type: "shelf", id: identity.id }),
     ".gitignore": GITIGNORE
   };
 }
 
-function projectFiles(identity: RepositoryIdentity): Record<string, string> {
+function projectFiles(identity: RepositoryIdentity, parentWorkdeskId: string | null): Record<string, string> {
   return {
-    ...commonFiles(identity),
+    ...commonFiles(identity, canonicalFolderMarkerFilename("project"), parentWorkdeskId),
     "README.md": [
       heading(identity.title),
       "This directory is a portable MAGINALIA Project.",
       "",
       "The canonical manuscript is `manuscript.md`. Project metadata is in `project.json`, and local notes belong under `notes/`.",
-      "The `.maginalia/repository.json` file records the portable type, title, and template version.",
       "These are ordinary local files and remain editable outside MAGINALIA or GitHub.",
       ""
     ].join("\n"),
@@ -110,13 +109,12 @@ function projectFiles(identity: RepositoryIdentity): Record<string, string> {
 
 function workbenchFiles(identity: RepositoryIdentity): Record<string, string> {
   return {
-    ...commonFiles(identity),
+    ...commonFiles(identity, canonicalFolderMarkerFilename("workdesk")),
     "README.md": [
       heading(identity.title),
       "This directory is a portable MAGINALIA Workbench for drafting and working notes.",
       "",
       "The manuscript is `manuscript.md`; no project-level metadata is required.",
-      "The `.maginalia/repository.json` file records the portable type, title, and template version.",
       "These are ordinary local files and remain editable outside MAGINALIA or GitHub.",
       ""
     ].join("\n"),
@@ -127,13 +125,12 @@ function workbenchFiles(identity: RepositoryIdentity): Record<string, string> {
 
 function shelfFiles(identity: RepositoryIdentity): Record<string, string> {
   return {
-    ...commonFiles(identity),
+    ...commonFiles(identity, canonicalFolderMarkerFilename("shelf")),
     "README.md": [
       heading(identity.title),
       "This directory is a private MAGINALIA Shelf.",
       "",
       "The canonical library metadata is in `library.json`. Books, annotations, and cover assets remain in their corresponding folders.",
-      "The `.maginalia/repository.json` file records the portable type, title, and template version.",
       "Books and annotations use existing Format v0.1 JSON or YAML records; each annotation `source` links to a Book ID.",
       "A Shelf is not copied into a Project. These are ordinary local files and remain editable outside MAGINALIA or GitHub.",
       ""
@@ -146,10 +143,18 @@ function shelfFiles(identity: RepositoryIdentity): Record<string, string> {
 }
 
 /** Return deterministic UTF-8 text files for a new portable repository. */
-export function templateFiles(identity: RepositoryIdentity): Readonly<Record<string, string>> {
+export interface TemplateOptions {
+  /** Parent Workdesk UUID for a Project; omitted means a standalone Project. */
+  readonly parentWorkdeskId?: string | null;
+}
+
+export function templateFiles(identity: RepositoryIdentity, options: TemplateOptions = {}): Readonly<Record<string, string>> {
   const value = parseIdentity(identity);
+  if (value.kind !== "project" && options.parentWorkdeskId !== undefined) {
+    throw new TypeError("Only a Project marker can declare a parent Workdesk.");
+  }
   const files = value.kind === "project"
-    ? projectFiles(value)
+    ? projectFiles(value, options.parentWorkdeskId ?? null)
     : value.kind === "workbench"
       ? workbenchFiles(value)
       : shelfFiles(value);

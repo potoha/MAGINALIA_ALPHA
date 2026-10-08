@@ -28,6 +28,7 @@ export interface ShelfViewState {
   readonly total?: number;
   readonly selectedAnnotationId: string | null;
   readonly error: string | null;
+  readonly folderIdentityRecovery?: { readonly code: string; readonly message: string };
 }
 
 export interface ShelfControllerView {
@@ -86,7 +87,8 @@ function copyState(state: ShelfViewState): ShelfViewState {
     results: copyResults(state.results),
     total: state.total,
     selectedAnnotationId: state.selectedAnnotationId,
-    error: state.error
+    error: state.error,
+    ...(state.folderIdentityRecovery ? { folderIdentityRecovery: { ...state.folderIdentityRecovery } } : {})
   });
 }
 
@@ -204,7 +206,8 @@ export class ShelfController {
       total: result.total,
       selectedAnnotationId: null,
       status: "ready",
-      error: null
+      error: null,
+      folderIdentityRecovery: result.folderIdentityRecovery
     });
   }
 

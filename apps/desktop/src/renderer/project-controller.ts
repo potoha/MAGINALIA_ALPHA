@@ -37,6 +37,7 @@ export interface ProjectNavigationState {
 export interface ProjectNavigationView {
   setProjectState(state: ProjectNavigationState): void;
   setProjectError(message: string | null): void;
+  setProjectIdentityRecovery?(recovery: NonNullable<ProjectOpened["folderIdentityRecovery"]> | null): void;
 }
 
 export interface ProjectNavigationControllerOptions {
@@ -95,6 +96,7 @@ export class ProjectNavigationController {
   private readonly flushAllDocuments: ProjectNavigationControllerOptions["flushAllDocuments"];
   private state: ProjectNavigationState = EMPTY_STATE;
   private busy = false;
+  private folderIdentityRecovery: NonNullable<ProjectOpened["folderIdentityRecovery"]> | null = null;
   private readonly openedFileIds = new Set<string>();
   private readonly fileSessionIds = new Map<string, string>();
 
@@ -357,6 +359,8 @@ export class ProjectNavigationController {
   }
 
   private async applyProject(result: ProjectOpened): Promise<boolean> {
+    this.folderIdentityRecovery = result.folderIdentityRecovery ?? null;
+    this.view.setProjectIdentityRecovery?.(this.folderIdentityRecovery);
     const first = result.files[0];
     if (!first) {
       this.openedFileIds.clear();
