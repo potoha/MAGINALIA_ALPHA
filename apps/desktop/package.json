@@ -36,7 +36,8 @@
     "smoke:h-navigation-acceptance": "npm run build && node test/workdesk-navigation-acceptance-smoke.mjs",
     "smoke:workdesk-persistence": "npm run build && node test/workdesk-persistence-smoke.mjs",
     "smoke:h5": "npm run build && node test/h5-smoke.mjs",
-    "start": "npm run build && electron dist/main/main.js"
+    "prestart": "npm run build --prefix ../.. --workspaces --if-present",
+    "start": "electron dist/main/main.js"
   },
   "devDependencies": {
     "@types/node": "22.20.2",

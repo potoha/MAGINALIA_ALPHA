@@ -143,6 +143,27 @@ describe("ProjectNavigationController", () => {
     expect(test.openProjectFile).toHaveBeenCalledTimes(2);
   });
 
+  it("reopens a file when its tab was closed and its session mapping is stale", async () => {
+    const test = harness("cancel", (file) => opened(file), true);
+    await test.navigation.openProject();
+    await test.navigation.openFile(files[1].fileId);
+    const firstView = test.writing.getDocumentViews().find((view) => view.documentId === files[0].fileId);
+    expect(firstView).toBeDefined();
+    await test.writing.closeDocumentView(firstView!.instanceId, () => "discard");
+
+    const remainingViews = test.writing.getDocumentViews();
+    test.navigation.syncOpenDocuments(remainingViews.map((view) => view.documentId));
+    test.navigation.syncActiveDocument(test.writing.getDocumentState()?.documentId ?? null);
+    expect(test.view.state.activeFileId).toBe(files[1].fileId);
+
+    await test.navigation.openFile(files[0].fileId);
+
+    expect(test.openProjectFile).toHaveBeenCalledTimes(3);
+    expect(test.writing.getDocumentSessions()).toHaveLength(2);
+    expect(test.surface.text).toBe("first");
+    expect(test.view.state.activeFileId).toBe(files[0].fileId);
+  });
+
   it("keeps opened file IDs in the ordered main-view sequence for workspace persistence", async () => {
     const test = harness("cancel", (file) => opened(file), true);
     await test.navigation.openProject();

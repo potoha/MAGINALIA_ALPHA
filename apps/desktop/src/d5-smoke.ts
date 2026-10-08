@@ -222,6 +222,22 @@ export async function runD5Smoke(
 
   await clickTab(window, "first.md");
   await waitForState(window, (state) => state.activeFile === "first.md" && state.text === firstText, "switch back to first tab");
+
+  // Selecting an already-open, inactive Markdown file from Explorer must
+  // activate its existing central tab instead of opening a second session.
+  await clickFile(window, "second.md");
+  const reactivatedSecond = await waitForState(
+    window,
+    (state) => state.activeFile === "second.md"
+      && state.tabs.length === 2
+      && state.tabs.filter((tab) => tab.name.startsWith("second.md")).length === 1
+      && state.tabs.some((tab) => tab.name.startsWith("second.md") && tab.active),
+    "Explorer activation of an already-open inactive Markdown tab"
+  );
+  assert(reactivatedSecond.tabs.filter((tab) => tab.active).length === 1, "Explorer activation left multiple central tabs active");
+
+  await clickTab(window, "first.md");
+  await waitForState(window, (state) => state.activeFile === "first.md" && state.text === firstText, "return to first tab after Explorer activation");
   await editActive(window, "\nD5 tab edit");
   const dirtyFirst = await waitForState(
     window,

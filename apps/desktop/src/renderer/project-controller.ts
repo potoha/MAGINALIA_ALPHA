@@ -406,12 +406,17 @@ export class ProjectNavigationController {
     }
     const knownSessionId = this.fileSessionIds.get(file.fileId);
     if (knownSessionId !== undefined) {
-      this.writing.activateDocument(knownSessionId);
-      if (file.fileId !== this.state.activeFileId) {
-        this.replaceState({ ...this.state, activeFileId: file.fileId });
+      if (this.writing.activateDocument(knownSessionId)) {
+        if (file.fileId !== this.state.activeFileId) {
+          this.replaceState({ ...this.state, activeFileId: file.fileId });
+        }
+        this.showError(null);
+        return;
       }
-      this.showError(null);
-      return;
+      // A tab may have been closed outside this controller. Do not let the
+      // stale file-to-session mapping turn a normal Explorer open into a no-op.
+      this.fileSessionIds.delete(file.fileId);
+      this.openedFileIds.delete(file.fileId);
     }
     if (!(await this.canSwitch({ kind: "manuscript", displayName: file.displayName }))) return;
 
