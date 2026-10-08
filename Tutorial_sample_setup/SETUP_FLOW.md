@@ -28,6 +28,8 @@ flowchart TD
 
 既存ファイルを上書きしない。選択先が不適切なら、日本語で理由を説明して別の場所を選べるようにします。
 
+新しく作成するWorkdeskのfolder identityは `workdesk.magi` です。後で作るTutorial Projectのparentには、実際に選択・作成したPrimary Workdesk markerのIDを使います。
+
 ↓
 
 ## 3. Private Shelf
@@ -43,6 +45,8 @@ flowchart TD
 ```
 
 初回セットアップ後は必ず利用可能なPrivate Shelfが1つある状態にします。
+
+新規Shelf作成時だけRepository Coreから `shelf.magi` を生成します。既存Shelfへseedを加える場合は、markerと `library.json` を保持します。
 
 ↓
 
@@ -66,8 +70,10 @@ Public Shelfは自動作成・自動公開しません。
 `private-shelf-seed/` の3 Book / 3 Annotationを追加します。
 
 - 冪等
-- 既存Bookを勝手に置換しない
-- 同一ID・別内容のAnnotationを上書きしない
+- 既存の一致するBook / Annotationをそのまま保持
+- 同じIDで内容が違うrecordはconflictとして報告し、上書きしない
+- 欠けているentityだけを追加し、既存Shelfの `library.json` や `shelf.magi` を置換しない
+- seedはFormat v0.1のまま扱い、Shelf v0.4へ移行しない
 - ページ番号を捏造しない
 - 独立したseed itemは他の競合があっても可能な範囲で処理する
 
@@ -83,9 +89,10 @@ MAGINALIA はじめてのプロジェクト
 
 を生成します。
 
-- fresh Repository UUID
-- fresh Format Project ULID
-- `.template` のplaceholderを実値へ置換
+- 1つのfresh Project UUIDを生成し、Repository Core `templateFiles()` で `project.magi` を生成
+- Project markerの `parent` はPrimary Workdesk `workdesk.magi` のID
+- `project.json` のFormat Project IDは同じUUIDからRepository Coreで生成し、別のULIDを発行しない
+- `.template` placeholderはCoreが生成した値でmaterializeし、`.maginalia/repository.json` は生成しない
 - 日本語filenameをUnicode/UTF-8で保持
 - 同名Projectがあればcollision-safeに別名を作り、上書きしない
 
@@ -125,7 +132,7 @@ MAGINALIA_チュートリアル_宮沢賢治.jpg
 4. DownloadsからJPEGをDnD
 5. draftを編集
 6. body側のSynced Blockへ反映されることを確認
-7. Preview / 自動参考文献を確認
+7. Previewを確認し、Shelfパネルの `Refresh References` を実行して引用・参考文献の解決状態を確認
 8. resolved Markdownを書き出す
 9. PDFを書き出す
 10. DOCXを書き出す

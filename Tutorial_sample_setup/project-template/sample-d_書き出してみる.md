@@ -38,6 +38,8 @@ Previewに切り替えて、
 
 が意図した状態になっているか確認します。
 
+Shelfパネルの `Refresh References` を実行し、sample-cから同期された引用も含めて参考文献が解決されていることを確認します。
+
 ## 2. Markdownを書き出す
 
 Command Paletteから `Export Markdown` を実行してください。

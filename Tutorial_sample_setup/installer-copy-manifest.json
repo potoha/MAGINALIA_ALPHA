@@ -3,13 +3,36 @@
   "tutorialProjectTemplate": "project-template",
   "privateShelfSeed": "private-shelf-seed",
   "entryDocument": "sample-a_マキナの置き手紙.md",
+  "identityMaterialization": {
+    "generator": "@maginalia/repository-core.templateFiles",
+    "project": {
+      "templateMarker": "project-template/project.magi.template",
+      "canonicalMarker": "project.magi",
+      "type": "project",
+      "projectUuidPlaceholder": "${GENERATED_PROJECT_UUID}",
+      "primaryWorkdeskUuidPlaceholder": "${PRIMARY_WORKDESK_UUID}",
+      "parentUuidSource": "primary-workdesk-marker-id",
+      "formatProjectIdPlaceholder": "${GENERATED_PROJECT_FORMAT_ID}",
+      "formatProjectIdSource": "same-identity-templateFiles-project-json-id",
+      "generationRule": "Generate one Project UUID, create one RepositoryIdentity, and use Repository Core templateFiles with the selected Workdesk UUID. Never compute a second Format Project ULID."
+    },
+    "privateShelf": {
+      "templateMarker": "private-shelf-seed/shelf.magi.template",
+      "canonicalMarker": "shelf.magi",
+      "type": "shelf",
+      "shelfUuidPlaceholder": "${GENERATED_SHELF_UUID}",
+      "generationRule": "Generate only as part of explicit new Private Shelf creation through Repository Core.",
+      "existingShelfMarker": "preserve"
+    }
+  },
   "downloads": [
     {
       "source": "resources/MAGINALIA_チュートリアル_宮沢賢治.jpg",
       "targetFileName": "MAGINALIA_チュートリアル_宮沢賢治.jpg",
       "windowsTarget": "KnownFolder:Downloads",
       "linuxTarget": "XDG_DOWNLOAD_DIR",
-      "overwrite": false
+      "overwrite": false,
+      "onNameConflict": "choose-collision-safe-name-and-update-tutorial-text"
     }
   ],
   "exportTutorial": {
@@ -24,6 +47,13 @@
   "shelfPolicy": {
     "privateShelfRequired": true,
     "publicShelfAutoCreate": false,
-    "seedMode": "idempotent-non-destructive"
+    "seedMode": "idempotent-non-destructive",
+    "seedRecordVersion": "0.1",
+    "existingShelfMarker": "preserve",
+    "existingLibraryJson": "preserve",
+    "missingEntity": "add",
+    "sameIdSameContent": "preserve-existing",
+    "sameIdDifferentContent": "explicit-conflict-no-overwrite",
+    "matchingBook": "preserve-existing"
   }
 }
