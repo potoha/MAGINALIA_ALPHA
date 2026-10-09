@@ -1,0 +1,12 @@
+{
+  "electron": "44.3.0",
+  "electronBuilder": "26.15.3",
+  "reviewerPython": "3.11",
+  "pyinstaller": "6.22.3",
+  "pandoc": {
+    "version": "3.12.1",
+    "asset": "pandoc-3.12.1-windows-x86_64.zip",
+    "url": "https://github.com/jgm/pandoc/releases/download/3.12.1/pandoc-3.12.1-windows-x86_64.zip",
+    "sha256": "6ef431cb20b2c24a0371fc19200dc49d452be54b1b5c9239f3462841ef53e587"
+  }
+}

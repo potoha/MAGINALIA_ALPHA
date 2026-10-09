@@ -1,4 +1,4 @@
-import { copyFile, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,7 +8,7 @@ import {
   EXPORT_PAPER_SIZES,
   createExportPresentationSettings
 } from "./export-presentation-settings";
-import { commitPdf, renderExportDocumentHtml, writePdfWithVivliostyle } from "./export-pdf";
+import { commitPdf, renderExportDocumentHtml, writePdfWithElectron, writePdfWithVivliostyle, type ElectronPdfWindow } from "./export-pdf";
 import { createExportDocumentModel } from "./renderer/export-document-model";
 
 const model = (source: string) => createExportDocumentModel(source);
@@ -143,6 +143,16 @@ describe("Vivliostyle process transaction", () => {
     expect(await readFile(output, "utf8")).toBe("%PDF-1.7\nfixture");
   });
 
+  it("passes an explicit packaged browser path to the Vivliostyle process", async () => {
+    const { entry, output } = await fixture('const fs = require("node:fs"); const args = process.argv.slice(2); fs.writeFileSync(process.env.MAGINALIA_TEST_BROWSER_PATH_FILE, process.env.PUPPETEER_EXECUTABLE_PATH); fs.writeFileSync(args[args.indexOf("-o") + 1], "%PDF-1.7\\nfixture");');
+    const browserPathFile = path.join(path.dirname(entry), "browser-path.txt");
+    await writePdfWithVivliostyle(output, model("日本語"), createExportPresentationSettings({}), entry, {
+      MAGINALIA_TEST_BROWSER_PATH_FILE: browserPathFile,
+      PUPPETEER_EXECUTABLE_PATH: "C:/Program Files/MAGINALIA/resources/pdf-runtime/browser/chrome.exe",
+    });
+    expect(await readFile(browserPathFile, "utf8")).toBe("C:/Program Files/MAGINALIA/resources/pdf-runtime/browser/chrome.exe");
+  });
+
   it("replaces an existing destination only after a validated artifact is staged", async () => {
     const { entry, output } = await fixture('const fs = require("node:fs"); const args = process.argv.slice(2); fs.writeFileSync(args[args.indexOf("-o") + 1], "%PDF-1.7\\nnew artifact");');
     await writeFile(output, "previous artifact", "utf8");
@@ -209,5 +219,98 @@ describe("Vivliostyle process transaction", () => {
     const { entry, output } = await fixture('const fs = require("node:fs"); const args = process.argv.slice(2); fs.writeFileSync(args[args.indexOf("-o") + 1], "not a PDF");');
     await expect(writePdfWithVivliostyle(output, model("日本語"), createExportPresentationSettings({}), entry)).rejects.toThrow("valid PDF");
     await expect(readFile(output)).rejects.toThrow();
+  });
+});
+
+describe("Electron PDF adapter", () => {
+  const directories: string[] = [];
+  afterEach(async () => {
+    for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
+  });
+
+  async function fixture(): Promise<{ root: string; output: string }> {
+    const root = await mkdtemp(path.join(os.tmpdir(), "maginalia-electron-pdf-日本語-"));
+    directories.push(root);
+    return { root, output: path.join(root, "文書.pdf") };
+  }
+
+  it("prints the shared Export Document Model with CSS page layout and always closes the isolated window", async () => {
+    const { root, output } = await fixture();
+    let destroyed = false;
+    let loadedHtml = "";
+    let readyScript = "";
+    let printOptions: Parameters<ElectronPdfWindow["webContents"]["printToPDF"]>[0] | undefined;
+    const window: ElectronPdfWindow = {
+      loadFile: async (filePath) => { loadedHtml = await readFile(filePath, "utf8"); },
+      isDestroyed: () => destroyed,
+      destroy: () => { destroyed = true; },
+      webContents: {
+        executeJavaScript: async (code) => { readyScript = code; return true; },
+        printToPDF: async (options) => {
+          printOptions = options;
+          return Buffer.from("%PDF-1.7\nElectron fixture");
+        },
+      },
+    };
+
+    await writePdfWithElectron(
+      output,
+      model("# 日本語の本文\n\n段落です。"),
+      createExportPresentationSettings({ paperSize: "B4", orientation: "landscape", pageNumber: true }),
+      () => window,
+    );
+
+    expect(loadedHtml).toContain("日本語の本文");
+    expect(loadedHtml).toContain("364mm 257mm");
+    expect(readyScript).toContain("document.fonts.ready");
+    expect(printOptions).toMatchObject({
+      displayHeaderFooter: false,
+      landscape: true,
+      preferCSSPageSize: true,
+      printBackground: true,
+    });
+    expect(printOptions?.pageSize.width).toBeCloseTo(364 / 25.4);
+    expect(printOptions?.pageSize.height).toBeCloseTo(257 / 25.4);
+    expect(destroyed).toBe(true);
+    expect(await readFile(output, "utf8")).toBe("%PDF-1.7\nElectron fixture");
+    expect((await readdir(root)).sort()).toEqual(["文書.pdf"]);
+  });
+
+  it("preserves an existing destination and destroys the window when printing fails", async () => {
+    const { root, output } = await fixture();
+    await writeFile(output, "previous PDF", "utf8");
+    let destroyed = false;
+    const window: ElectronPdfWindow = {
+      loadFile: async () => undefined,
+      isDestroyed: () => destroyed,
+      destroy: () => { destroyed = true; },
+      webContents: {
+        executeJavaScript: async () => true,
+        printToPDF: async () => { throw new Error("simulated print failure"); },
+      },
+    };
+    await expect(writePdfWithElectron(output, model("本文"), createExportPresentationSettings({}), () => window))
+      .rejects.toThrow("simulated print failure");
+    expect(destroyed).toBe(true);
+    expect(await readFile(output, "utf8")).toBe("previous PDF");
+    expect((await readdir(root)).sort()).toEqual(["文書.pdf"]);
+  });
+
+  it("bounds document loading and cleans up the hidden window and temporary files", async () => {
+    const { root, output } = await fixture();
+    let destroyed = false;
+    const window: ElectronPdfWindow = {
+      loadFile: () => new Promise<void>(() => undefined),
+      isDestroyed: () => destroyed,
+      destroy: () => { destroyed = true; },
+      webContents: {
+        executeJavaScript: async () => true,
+        printToPDF: async () => Buffer.from("%PDF-1.7\n"),
+      },
+    };
+    await expect(writePdfWithElectron(output, model("本文"), createExportPresentationSettings({}), () => window, 5))
+      .rejects.toThrow("PDFの準備に時間がかかっています");
+    expect(destroyed).toBe(true);
+    expect(await readdir(root)).toEqual([]);
   });
 });

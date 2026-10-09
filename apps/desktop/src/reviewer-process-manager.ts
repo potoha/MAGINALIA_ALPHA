@@ -220,10 +220,7 @@ export class PythonReviewerLaunchStrategy implements ReviewerLaunchStrategy {
   }
 }
 
-/**
- * Future installer seam. It intentionally accepts an explicit executable and
- * does not choose a Python/packaging technology for the product.
- */
+/** Launch a frozen Reviewer executable from the packaged app resources. */
 export class PackagedReviewerLaunchStrategy implements ReviewerLaunchStrategy {
   public constructor(private readonly executablePath: string) {}
 

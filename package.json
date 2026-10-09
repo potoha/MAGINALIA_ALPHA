@@ -23,6 +23,8 @@
     "smoke:g": "npm run smoke:g --workspace @maginalia/desktop",
     "smoke:h": "npm run smoke:h --workspace @maginalia/desktop",
     "smoke:workdesk-persistence": "npm run smoke:workdesk-persistence --workspace @maginalia/desktop",
+    "smoke:first-run": "npm run smoke:first-run --workspace @maginalia/desktop",
+    "dist:windows": "npm run build && npm run dist:windows --workspace @maginalia/desktop",
     "start": "npm run start --workspace @maginalia/desktop"
   }
 }

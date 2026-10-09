@@ -105,6 +105,42 @@ function pageSize(settings: ExportPresentationSettings): string {
   return settings.orientation === "portrait" ? `${short}mm ${long}mm` : `${long}mm ${short}mm`;
 }
 
+export interface ElectronPdfWindow {
+  readonly webContents: {
+    executeJavaScript(code: string): Promise<unknown>;
+    printToPDF(options: {
+      readonly displayHeaderFooter: false;
+      readonly landscape: boolean;
+      readonly pageSize: { readonly width: number; readonly height: number };
+      readonly preferCSSPageSize: true;
+      readonly printBackground: true;
+    }): Promise<Uint8Array>;
+  };
+  loadFile(filePath: string): Promise<void>;
+  isDestroyed(): boolean;
+  destroy(): void;
+}
+
+function electronPageSize(settings: ExportPresentationSettings): { readonly width: number; readonly height: number } {
+  const [short, long] = PAGE_DIMENSIONS[settings.paperSize];
+  const [widthMm, heightMm] = settings.orientation === "portrait" ? [short, long] : [long, short];
+  return Object.freeze({ width: widthMm / 25.4, height: heightMm / 25.4 });
+}
+
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /** Convert the format-neutral model into Vivliostyle input HTML. */
 export function renderExportDocumentHtml(model: ExportDocumentModel, settings: ExportPresentationSettings): string {
   const header = settings.header;
@@ -130,6 +166,47 @@ img { max-width: 100%; }
 </style></head><body>${body}</body></html>`;
 }
 
+/** Render a PDF with Electron's bundled Chromium, keeping all artifacts outside the user's Project. */
+export async function writePdfWithElectron(
+  outputPath: string,
+  model: ExportDocumentModel,
+  settings: ExportPresentationSettings,
+  createWindow: () => ElectronPdfWindow,
+  timeoutMs = 120_000,
+): Promise<void> {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "maginalia-electron-pdf-日本語-"));
+  const htmlPath = path.join(temporaryRoot, "resolved.html");
+  const stagedPdfPath = path.join(temporaryRoot, "resolved.pdf");
+  let window: ElectronPdfWindow | undefined;
+  try {
+    await writeFile(htmlPath, renderExportDocumentHtml(model, settings), "utf8");
+    window = createWindow();
+    await withTimeout(window.loadFile(htmlPath), timeoutMs, "PDFの準備に時間がかかっています。もう一度お試しください。");
+    if (window.isDestroyed()) throw new Error("The PDF rendering window closed before the document loaded.");
+    await withTimeout(
+      window.webContents.executeJavaScript("document.fonts.ready.then(() => true)"),
+      timeoutMs,
+      "PDFの文字を準備できませんでした。もう一度お試しください。",
+    );
+    const printed = await withTimeout(window.webContents.printToPDF({
+      displayHeaderFooter: false,
+      landscape: settings.orientation === "landscape",
+      pageSize: electronPageSize(settings),
+      preferCSSPageSize: true,
+      printBackground: true,
+    }), timeoutMs, "PDFを書き出せませんでした。保存先を確認して、もう一度お試しください。");
+    const bytes = Buffer.from(printed);
+    if (bytes.length < 5 || !bytes.subarray(0, 5).equals(Buffer.from("%PDF-"))) {
+      throw new Error("Electron did not create a valid PDF.");
+    }
+    await writeFile(stagedPdfPath, bytes, { flag: "wx" });
+    await commitPdf(stagedPdfPath, outputPath);
+  } finally {
+    if (window !== undefined && !window.isDestroyed()) window.destroy();
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
 async function executableOnPath(executable: string): Promise<string> {
   if (path.isAbsolute(executable)) return executable;
   if (executable.includes("/") || executable.includes("\\")) return path.resolve(executable);
@@ -146,7 +223,7 @@ async function executableOnPath(executable: string): Promise<string> {
   throw new Error("Vivliostyle CLI was not found. Configure its executable or JavaScript CLI entry.");
 }
 
-async function vivliostyleCommand(executable: string, args: readonly string[]): Promise<{
+async function vivliostyleCommand(executable: string, args: readonly string[], envOverride: NodeJS.ProcessEnv): Promise<{
   readonly executable: string;
   readonly args: readonly string[];
   readonly env: NodeJS.ProcessEnv;
@@ -166,13 +243,13 @@ async function vivliostyleCommand(executable: string, args: readonly string[]): 
     await access(entry);
   }
   if (/\.(?:mjs|cjs|js)$/iu.test(entry)) {
-    return { executable: process.execPath, args: [entry, ...args], env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } };
+    return { executable: process.execPath, args: [entry, ...args], env: { ...process.env, ...envOverride, ELECTRON_RUN_AS_NODE: "1" } };
   }
-  return { executable: resolved, args, env: process.env };
+  return { executable: resolved, args, env: { ...process.env, ...envOverride } };
 }
 
-async function runVivliostyle(executable: string, args: readonly string[], workingDirectory: string): Promise<void> {
-  const command = await vivliostyleCommand(executable, args);
+async function runVivliostyle(executable: string, args: readonly string[], workingDirectory: string, envOverride: NodeJS.ProcessEnv): Promise<void> {
+  const command = await vivliostyleCommand(executable, args, envOverride);
   return new Promise((resolve, reject) => {
     const child = spawn(command.executable, [...command.args], {
       cwd: workingDirectory,
@@ -200,7 +277,8 @@ export async function writePdfWithVivliostyle(
   outputPath: string,
   model: ExportDocumentModel,
   settings: ExportPresentationSettings,
-  executable = process.env.MAGINALIA_VIVLIOSTYLE_BIN ?? "vivliostyle"
+  executable = process.env.MAGINALIA_VIVLIOSTYLE_BIN ?? "vivliostyle",
+  envOverride: NodeJS.ProcessEnv = {}
 ): Promise<void> {
   // The installed app directory may be read-only; keep all Vivliostyle
   // intermediate artifacts in the operating system's writable temp root.
@@ -221,7 +299,7 @@ export async function writePdfWithVivliostyle(
     const commandArgs = /(?:^|[\\/])npx(?:\.cmd)?$/iu.test(executable)
       ? ["--yes", "@vivliostyle/cli", "build", relativeInputPath, "-o", relativeStagedPdfPath, "-d", "--no-enable-static-serve"]
       : ["build", relativeInputPath, "-o", relativeStagedPdfPath, "-d", "--no-enable-static-serve"];
-    await runVivliostyle(executable, commandArgs, inputDirectory);
+    await runVivliostyle(executable, commandArgs, inputDirectory, envOverride);
     const output = await stat(stagedPdfPath);
     if (!output.isFile() || output.size < 5 || !(await readFile(stagedPdfPath)).subarray(0, 5).equals(Buffer.from("%PDF-"))) {
       throw new Error("Vivliostyle did not create a valid PDF.");

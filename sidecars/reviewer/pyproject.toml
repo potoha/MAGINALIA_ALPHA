@@ -30,3 +30,8 @@ addopts = "--basetemp=.pytest-tmp -o cache_dir=.pytest_cache"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/marginalia_reviewer"]
+
+[dependency-groups]
+packaging = [
+    "pyinstaller>=6.22,<7",
+]

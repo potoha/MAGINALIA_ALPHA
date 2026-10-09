@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { parseDocument, stringify } from "yaml";
 
@@ -111,6 +111,23 @@ function withPrivateShelfRegistry(
   });
 }
 
+function withPublicShelfRegistry(
+  config: ShelfLocationRegistryConfig,
+  registry: string,
+): ShelfLocationRegistryConfig {
+  return Object.freeze({
+    version: 1,
+    privateShelf: copyLocation(config.privateShelf),
+    publicShelf: Object.freeze({ registry, urls: copyUrls(config.publicShelf.urls) }),
+  });
+}
+
+const EMPTY_CONFIG: ShelfLocationRegistryConfig = Object.freeze({
+  version: 1,
+  privateShelf: Object.freeze({ registry: null, urls: DEFAULT_URLS }),
+  publicShelf: Object.freeze({ registry: null, urls: DEFAULT_URLS }),
+});
+
 function serializeConfig(config: ShelfLocationRegistryConfig): string {
   return stringify({
     version: config.version,
@@ -183,6 +200,31 @@ export class ShelfLocationRegistry {
     }
   }
 
+  /** Create an empty app-local configuration only when it is genuinely absent. */
+  public async initializeEmpty(): Promise<ShelfLocationRegistryResult> {
+    try {
+      await lstat(this.resolvedFilePath);
+      return this.load();
+    } catch (error: unknown) {
+      const code = error !== null && typeof error === "object" && "code" in error
+        ? (error as { readonly code?: unknown }).code
+        : undefined;
+      if (code !== "ENOENT") return this.load();
+    }
+    try {
+      await mkdir(path.dirname(this.resolvedFilePath), { recursive: true });
+      await writeFile(this.resolvedFilePath, serializeConfig(EMPTY_CONFIG), { encoding: "utf8", flag: "wx" });
+    } catch (error: unknown) {
+      const code = error !== null && typeof error === "object" && "code" in error
+        ? (error as { readonly code?: unknown }).code
+        : undefined;
+      if (code !== "EEXIST") {
+        return Object.freeze({ kind: "error", message: "Shelfの保存設定を作成できませんでした。" });
+      }
+    }
+    return this.load();
+  }
+
   /**
    * Persist only the Private Shelf registry path while preserving Public Shelf
    * and optional URL metadata. Callers validate/open the selected Shelf first.
@@ -205,6 +247,22 @@ export class ShelfLocationRegistry {
         kind: "error",
         message: `Private Shelf configuration could not be saved:\n${this.resolvedFilePath}`,
       });
+    }
+  }
+
+  /** Persist an explicitly selected Public Shelf folder without changing Private Shelf metadata. */
+  public async savePublicShelfRegistry(registry: string): Promise<ShelfLocationRegistryResult> {
+    if (!path.isAbsolute(registry)) {
+      return Object.freeze({ kind: "error", message: "Public Shelfの保存場所を確認できませんでした。" });
+    }
+    const loaded = await this.load();
+    if (loaded.kind === "error") return loaded;
+    const config = withPublicShelfRegistry(loaded.config, path.resolve(registry));
+    try {
+      await writeFile(this.resolvedFilePath, serializeConfig(config), "utf8");
+      return Object.freeze({ kind: "loaded", config: copyConfig(config) });
+    } catch {
+      return Object.freeze({ kind: "error", message: "Public Shelfの保存場所を記録できませんでした。" });
     }
   }
 }

@@ -6,11 +6,13 @@ import {
   ipcMain,
   shell,
   type IpcMainInvokeEvent,
+  type LoadFileOptions,
   type MessageBoxOptions,
   type OpenDialogReturnValue,
   type WebContents
 } from "electron";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { findBrandAssetPath } from "./brand-assets";
@@ -106,7 +108,7 @@ import { createReviewerShelfSyncAdapter } from "./reviewer-shelf-sync";
 import { materializeApprovedReviewerRecords } from "./reviewer-approval-materializer";
 import { createReferenceHandlers } from "./reference-ipc";
 import { resolveShelfQuoteRefs } from "./shelf-resolution";
-import { ReviewerProcessManager, UserDataReviewerWorkspaceLocator } from "./reviewer-process-manager";
+import { PackagedReviewerLaunchStrategy, ReviewerProcessManager, UserDataReviewerWorkspaceLocator } from "./reviewer-process-manager";
 import { createReviewerEmbeddedHost, isSafeReviewerViewBounds } from "./reviewer-embedded-view-host";
 import {
   CLOSE_REVIEWER_VIEW_CHANNEL,
@@ -120,7 +122,7 @@ import {
   WRITE_EXPORT_CHANNEL,
   createExportHandlers
 } from "./export-ipc";
-import { writePdfWithVivliostyle } from "./export-pdf";
+import { writePdfWithElectron, writePdfWithVivliostyle } from "./export-pdf";
 import { writeDocxWithPandoc } from "./export-docx";
 import {
   INVOKE_MOD_COMMAND_CHANNEL,
@@ -187,6 +189,17 @@ import {
 } from "./autosave-ipc";
 import { AutosaveShutdownCoordinator } from "./autosave-shutdown";
 import { establishApplicationIdentity, MAGINALIA_APPLICATION_NAME } from "./application-identity";
+import { FirstRunCoordinator } from "./first-run-coordinator";
+import { FirstRunJournalStore } from "./first-run-setup";
+import { runFirstRunRestoreSmoke, runFirstRunSmoke } from "./first-run-smoke";
+import { resolvePackagedRuntimePaths } from "./packaged-runtime-paths";
+import { OPEN_BUNDLED_MANUAL_CHANNEL } from "./manual-ipc";
+import {
+  FIRST_RUN_PROGRESS_CHANNEL,
+  GET_FIRST_RUN_STATUS_CHANNEL,
+  RUN_FIRST_RUN_SETUP_CHANNEL,
+  isFirstRunChoices,
+} from "./first-run-ipc";
 
 // Set a product-stable Electron identity before resolving any local stores.
 // Retain the profile Electron selected before this upgrade so existing state
@@ -202,6 +215,8 @@ if (!hasSingleInstanceLock) {
 } else {
 const quickSmokeMode = process.argv.includes("--smoke");
 const brandProgressSmoke = process.argv.includes("--brand-progress-smoke");
+const firstRunSmoke = process.argv.includes("--first-run-smoke");
+const firstRunRestoreSmoke = process.argv.includes("--first-run-restore-smoke");
 const writingSmoke = parseWritingSmokeMode(process.argv);
 const workspaceSmoke = parseWorkspaceSmokeMode(process.argv);
 const quotationSmoke = parseQuotationSmokeMode(process.argv);
@@ -234,7 +249,9 @@ const smokeMode = quickSmokeMode
   || hSmoke.requested
   || h5Smoke.requested
   || workdeskPersistenceSmoke.requested
-  || brandProgressSmoke;
+  || brandProgressSmoke
+  || firstRunSmoke
+  || firstRunRestoreSmoke;
 const markdownFileService = new MarkdownFileService();
 const workspaceStateStore = new FileWorkspaceStateStore(path.join(userDataPath, "workspace-state.json"));
 const workspaceStateHandlers = createWorkspaceStateHandlers({
@@ -292,7 +309,12 @@ async function getActivePrivateShelfForDesktop(owner: object) {
 // never needs a Python runtime merely to open MAGINALIA.
 let reviewerProcessManager: ReviewerProcessManager | undefined;
 function getReviewerProcessManager(): ReviewerProcessManager {
+  const packagedRuntime = app.isPackaged ? resolvePackagedRuntimePaths(process.resourcesPath) : null;
   reviewerProcessManager ??= new ReviewerProcessManager({
+    ...(packagedRuntime === null ? {} : {
+      launchStrategy: new PackagedReviewerLaunchStrategy(packagedRuntime.reviewerExecutable),
+      contractsDir: packagedRuntime.contractsDirectory,
+    }),
     workspaceLocator: new UserDataReviewerWorkspaceLocator(userDataPath),
     // Reviewer keeps its existing explicit CLI/config boundary. The Desktop
     // supplies the deterministic, absolute application configuration path.
@@ -349,6 +371,83 @@ function createReviewerEmbeddedHostForMain() {
 const workdeskPathStorePath = path.join(userDataPath, "workdesk-paths.json");
 const workdeskPathStore = new FileWorkdeskPathStore(workdeskPathStorePath);
 const workdeskService = new WorkdeskService(workdeskPathStore);
+const firstRunJournal = new FirstRunJournalStore(path.join(userDataPath, "first-run-setup.json"));
+let firstRunOnLaunch = false;
+
+function getTutorialResourceRoot(): string {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "tutorial-sample")
+    : path.resolve(__dirname, "..", "..", "..", "..", "Tutorial_sample_setup");
+}
+
+function createFirstRunCoordinator(owner: WebContents): FirstRunCoordinator {
+  const defaultWorkdeskRoot = path.join(app.getPath("documents"), "MAGINALIA", "Workdesk");
+  const defaultShelfRoot = path.join(app.getPath("documents"), "MAGINALIA", "Private Shelf");
+  return new FirstRunCoordinator({
+    journal: firstRunJournal,
+    workdesks: workdeskService,
+    libraries: libraryService,
+    shelfLocations: new ShelfLocationRegistry(getDesktopConfigurationPaths().shelfLocationPath),
+    tutorialRoot: getTutorialResourceRoot(),
+    downloadsRoot: firstRunSmoke && process.env.MAGINALIA_FIRST_RUN_SMOKE_DOWNLOADS
+      ? process.env.MAGINALIA_FIRST_RUN_SMOKE_DOWNLOADS
+      : app.getPath("downloads"),
+    defaultWorkdeskRoot,
+    defaultShelfRoot,
+    pickFolder: async (title, defaultPath) => {
+      if (firstRunSmoke) {
+        if (title.includes("Workdesk")) return process.env.MAGINALIA_FIRST_RUN_SMOKE_WORKDESK;
+        if (title.includes("Shelf")) return process.env.MAGINALIA_FIRST_RUN_SMOKE_SHELF;
+      }
+      const options = { title, defaultPath, properties: ["openDirectory", "createDirectory"] as ("openDirectory" | "createDirectory")[] };
+      const window = BrowserWindow.fromWebContents(owner);
+      const selection = window === null
+        ? await dialog.showOpenDialog(options)
+        : await dialog.showOpenDialog(window, options);
+      return selection.canceled || selection.filePaths.length !== 1 ? undefined : selection.filePaths[0];
+    },
+    confirmAdoption: async (kind, folderName) => {
+      const isWorkdesk = kind === "workdesk";
+      const options: MessageBoxOptions = {
+        type: "warning",
+        title: "管理情報を作成しますか",
+        message: `「${folderName}」を${isWorkdesk ? "Workdesk" : "Private Shelf"}として使いますか？`,
+        detail: isWorkdesk
+          ? "この場所には、利用できる管理情報がありません。新しい管理情報を追加します。ファイルはそのまま残りますが、以前のProject登録や前回の作業場所とはつながらない可能性があります。"
+          : "Shelfの記録を読み取れます。新しい管理情報だけを追加します。引用や書籍の記録、画像はそのまま残ります。",
+        buttons: ["管理情報を作成して続ける", "別の場所を選ぶ"],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      };
+      const window = BrowserWindow.fromWebContents(owner);
+      const response = window === null
+        ? await dialog.showMessageBox(options)
+        : await dialog.showMessageBox(window, options);
+      return response.response === 0;
+    },
+    onProgress: (message) => {
+      if (!owner.isDestroyed()) owner.send(FIRST_RUN_PROGRESS_CHANNEL, { message });
+    },
+    onError: (error) => console.error("MAGINALIA_FIRST_RUN_SETUP_FAILED", error),
+  });
+}
+
+async function shouldOpenFirstRunSetup(): Promise<boolean> {
+  if (firstRunSmoke) return true;
+  if (smokeMode) return false;
+  const journal = await firstRunJournal.load();
+  if (journal?.stage === "complete") return false;
+  if (journal !== undefined) return true;
+  try {
+    const saved = await workdeskPathStore.loadForRestore();
+    if (saved?.primaryWorkdesk) return false;
+  } catch {
+    // Preserve damaged app-local state and leave the existing recovery path available.
+    return false;
+  }
+  return true;
+}
 const repositoryService = new LocalRepositoryService({
   // Repository History asks only the main-process Workdesk coordinator for
   // validated direct-child boundaries; renderer paths never become ignores.
@@ -617,6 +716,31 @@ const referenceResolution = async (owner: object, documentText: string) => {
 };
 const referenceHandlers = createReferenceHandlers({ resolve: referenceResolution });
 let exportDialogSequence = 0;
+function createIsolatedPdfWindow(): BrowserWindow {
+  const window = new BrowserWindow({
+    show: false,
+    width: 900,
+    height: 1200,
+    webPreferences: {
+      partition: `maginalia-pdf-${randomUUID()}`,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+    },
+  });
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event, destination) => {
+    if (!destination.startsWith("file:")) event.preventDefault();
+  });
+  window.webContents.session.webRequest.onBeforeRequest(
+    { urls: ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"] },
+    (_details, callback) => callback({ cancel: true }),
+  );
+  window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  return window;
+}
+
 const exportHandlers = createExportHandlers({
   sessions: markdownFileService,
   resolve: referenceResolution,
@@ -641,8 +765,12 @@ const exportHandlers = createExportHandlers({
       ? dialog.showSaveDialog(options)
       : dialog.showSaveDialog(ownerWindow, options);
   },
-  writePdf: (outputPath, document, settings) => writePdfWithVivliostyle(outputPath, document, settings),
-  writeDocx: (outputPath, document, settings) => writeDocxWithPandoc(outputPath, document, settings)
+  writePdf: (outputPath, document, settings) => app.isPackaged || process.env.MAGINALIA_SMOKE_ELECTRON_PDF === "1"
+    ? writePdfWithElectron(outputPath, document, settings, createIsolatedPdfWindow)
+    : writePdfWithVivliostyle(outputPath, document, settings),
+  writeDocx: (outputPath, document, settings) => app.isPackaged
+    ? writeDocxWithPandoc(outputPath, document, settings, resolvePackagedRuntimePaths(process.resourcesPath).pandocExecutable)
+    : writeDocxWithPandoc(outputPath, document, settings)
 });
 const repositoryHandlers = createRepositoryHandlers({
   pickParentFolder: () => repositorySmoke.requested
@@ -1100,6 +1228,36 @@ async function logWorkdeskPersistenceDiagnostic(action: "open" | "restore", resu
 }
 
 function registerMarkdownIpc(): void {
+  ipcMain.handle(OPEN_BUNDLED_MANUAL_CHANNEL, async (event) => {
+    if (event.sender !== mainWindow?.webContents) return { kind: "error" as const };
+    const manualPath = app.isPackaged
+      ? resolvePackagedRuntimePaths(process.resourcesPath).manualPdfPath
+      : path.resolve(__dirname, "..", "..", "packaging", "manual", "マニュアル.pdf");
+    if (!existsSync(manualPath)) return { kind: "missing" as const };
+    try {
+      const error = await shell.openPath(manualPath);
+      return error.length === 0 ? { kind: "opened" as const } : { kind: "error" as const };
+    } catch {
+      return { kind: "error" as const };
+    }
+  });
+  ipcMain.handle(GET_FIRST_RUN_STATUS_CHANNEL, async (event) => {
+    if (event.sender !== mainWindow?.webContents) return { kind: "error" as const, message: "設定画面を確認できませんでした。" };
+    try {
+      const journal = await firstRunJournal.load();
+      return journal?.stage === "complete"
+        ? { kind: "complete" as const, stage: "complete" }
+        : { kind: "ready" as const, stage: journal?.stage ?? "start" };
+    } catch {
+      return { kind: "error" as const, message: "設定を読み取れませんでした。選んだ場所のデータは変更していません。もう一度お試しください。" };
+    }
+  });
+  ipcMain.handle(RUN_FIRST_RUN_SETUP_CHANNEL, async (event, choices: unknown) => {
+    if (event.sender !== mainWindow?.webContents || !isFirstRunChoices(choices)) {
+      return { kind: "error" as const, message: "設定内容を確認できませんでした。画面を閉じず、もう一度お試しください。" };
+    }
+    return createFirstRunCoordinator(event.sender).run(event.sender, choices);
+  });
   ipcMain.handle(OPEN_MARKDOWN_CHANNEL, handleOpenMarkdown);
   ipcMain.handle(SAVE_MARKDOWN_CHANNEL, handleSaveMarkdown);
   ipcMain.handle(OPEN_DOCUMENT_CHANNEL, documentWorkspaceHandlers.openDocument);
@@ -1177,6 +1335,9 @@ function registerMarkdownIpc(): void {
 }
 
 function unregisterMarkdownIpc(): void {
+  ipcMain.removeHandler(OPEN_BUNDLED_MANUAL_CHANNEL);
+  ipcMain.removeHandler(GET_FIRST_RUN_STATUS_CHANNEL);
+  ipcMain.removeHandler(RUN_FIRST_RUN_SETUP_CHANNEL);
   ipcMain.removeHandler(OPEN_MARKDOWN_CHANNEL);
   ipcMain.removeHandler(SAVE_MARKDOWN_CHANNEL);
   ipcMain.removeHandler(OPEN_DOCUMENT_CHANNEL);
@@ -1479,7 +1640,8 @@ function createMainWindow(): BrowserWindow {
       || exportSmoke.requested
       || gSmoke.requested
       || workdeskPersistenceSmoke.requested
-      || h5Smoke.requested,
+      || h5Smoke.requested
+      || firstRunSmoke,
     webPreferences: createSecureWebPreferences(path.join(__dirname, "preload.js"))
   });
   if (!smokeMode) updateStartupProgress("編集画面を準備しています", 0.82);
@@ -1522,7 +1684,64 @@ function createMainWindow(): BrowserWindow {
     ? path.join(app.getPath("temp"), `maginalia-missing-renderer-${process.pid}.html`)
     : path.join(__dirname, "..", "renderer", "index.html");
 
-  if (workdeskPersistenceSmoke.requested) {
+  if (firstRunSmoke) {
+    const smokeOptions = {
+      window,
+      workdeskRoot: process.env.MAGINALIA_FIRST_RUN_SMOKE_WORKDESK ?? "",
+      shelfRoot: process.env.MAGINALIA_FIRST_RUN_SMOKE_SHELF ?? "",
+      downloadsRoot: process.env.MAGINALIA_FIRST_RUN_SMOKE_DOWNLOADS ?? "",
+      userDataRoot: userDataPath,
+      expectedUserDataRoot: process.env.MAGINALIA_SMOKE_EXPECTED_USER_DATA,
+      outputDirectory: process.env.MAGINALIA_FIRST_RUN_SMOKE_OUTPUT ?? app.getPath("temp"),
+      exit: (code: number) => app.exit(code),
+    };
+    if (!smokeOptions.workdeskRoot || !smokeOptions.shelfRoot || !smokeOptions.downloadsRoot) {
+      console.error("MAGINALIA_FIRST_RUN_SMOKE_FAILED Temporary Workdesk, Shelf, or Downloads path was not provided.");
+      app.exit(1);
+    } else {
+      window.webContents.once("did-finish-load", () => {
+        void runFirstRunSmoke(smokeOptions).catch((error: unknown) => {
+          console.error(`MAGINALIA_FIRST_RUN_SMOKE_FAILED ${error instanceof Error ? error.message : String(error)}`);
+          app.exit(1);
+        });
+      });
+      window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) {
+          console.error(`MAGINALIA_FIRST_RUN_SMOKE_FAILED Renderer load ${errorCode}: ${errorDescription}`);
+          app.exit(1);
+        }
+      });
+      window.webContents.on("render-process-gone", (_event, details) => {
+        console.error(`MAGINALIA_FIRST_RUN_SMOKE_FAILED Renderer process exited: ${details.reason}`);
+        app.exit(1);
+      });
+    }
+  } else if (firstRunRestoreSmoke) {
+    const workdeskRoot = process.env.MAGINALIA_FIRST_RUN_SMOKE_WORKDESK ?? "";
+    if (!workdeskRoot) {
+      console.error("MAGINALIA_FIRST_RUN_RESTORE_SMOKE_FAILED Temporary Workdesk path was not provided.");
+      app.exit(1);
+    } else {
+      window.webContents.once("did-finish-load", () => {
+        void runFirstRunRestoreSmoke({
+          window,
+          workdeskRoot,
+          userDataRoot: userDataPath,
+          expectedUserDataRoot: process.env.MAGINALIA_SMOKE_EXPECTED_USER_DATA,
+          exit: (code: number) => app.exit(code),
+        }).catch((error: unknown) => {
+          console.error(`MAGINALIA_FIRST_RUN_RESTORE_SMOKE_FAILED ${error instanceof Error ? error.message : String(error)}`);
+          app.exit(1);
+        });
+      });
+      window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) {
+          console.error(`MAGINALIA_FIRST_RUN_RESTORE_SMOKE_FAILED Renderer load ${errorCode}: ${errorDescription}`);
+          app.exit(1);
+        }
+      });
+    }
+  } else if (workdeskPersistenceSmoke.requested) {
     if (!workdeskPersistenceSmoke.rootPath) {
       failWorkdeskPersistenceSmoke(new Error("The Workdesk persistence fixture path was not provided."));
     } else {
@@ -1927,7 +2146,7 @@ function createMainWindow(): BrowserWindow {
         failQuickSmoke("Electron did not use the requested isolated userData directory");
         return;
       }
-      console.log("MAGINALIA_ELECTRON_SMOKE_OK");
+      console.log(`MAGINALIA_ELECTRON_SMOKE_OK userData=${JSON.stringify(userDataPath)}`);
       app.quit();
     });
     window.webContents.once("did-fail-load", (_event, errorCode, errorDescription) => {
@@ -1942,7 +2161,7 @@ function createMainWindow(): BrowserWindow {
     window.webContents.once("unresponsive", () => failQuickSmoke("renderer became unresponsive"));
   }
 
-  const loadOptions = writingSmoke.requested
+  const loadOptions: LoadFileOptions | undefined = writingSmoke.requested
     ? { query: { smoke: "writing" } }
     : workspaceSmoke.requested
       ? { query: { smoke: "workspace" } }
@@ -1966,7 +2185,9 @@ function createMainWindow(): BrowserWindow {
                     : hSmoke.restore ? "h-restore" : "h" } }
                 : gSmoke.requested
                   ? { query: { smoke: gSmoke.restore ? "g-restore" : "g" } }
-                  : undefined;
+                  : firstRunOnLaunch
+                    ? { query: { setup: "first-run" } }
+                    : undefined;
   void window.loadFile(rendererPath, loadOptions).then(
     () => rendererStartupGate.markRendererLoaded(),
     (error: unknown) => rendererStartupGate.failRendererLoad(error),
@@ -2075,6 +2296,13 @@ const autosaveShutdown = new AutosaveShutdownCoordinator({
 app.on("before-quit", (event) => autosaveShutdown.beforeQuit(event));
 
 void app.whenReady().then(async () => {
+  try {
+    firstRunOnLaunch = await shouldOpenFirstRunSetup();
+  } catch (error: unknown) {
+    // A damaged first-run journal must not prevent readable existing user data from opening.
+    firstRunOnLaunch = false;
+    console.error("MAGINALIA_FIRST_RUN_JOURNAL_UNAVAILABLE", error);
+  }
   if (!smokeMode || brandProgressSmoke) {
     updateStartupProgress("MAGINALIA desktop α1 を起動しています", 0.08);
     startStartupProgressWindow(140);

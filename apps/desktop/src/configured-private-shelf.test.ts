@@ -82,6 +82,29 @@ function locationYaml(registry: string | null): string {
 }
 
 describe("shelf_location.yml", () => {
+  it("initializes missing location settings and registers a Public Shelf without changing the Private Shelf", async () => {
+    await withTempDirectory(async (directory) => {
+      const registry = new ShelfLocationRegistry(path.join(directory, SHELF_LOCATION_FILE_NAME));
+      const privateRoot = path.join(directory, "資料", "Private Shelf");
+      const publicRoot = path.join(directory, "資料", "Public Shelf");
+      await expect(registry.initializeEmpty()).resolves.toMatchObject({
+        kind: "loaded",
+        config: { privateShelf: { registry: null }, publicShelf: { registry: null } },
+      });
+      await expect(registry.savePrivateShelfRegistry(privateRoot)).resolves.toMatchObject({
+        kind: "loaded",
+        config: { privateShelf: { registry: privateRoot }, publicShelf: { registry: null } },
+      });
+      await expect(registry.savePublicShelfRegistry(publicRoot)).resolves.toMatchObject({
+        kind: "loaded",
+        config: { privateShelf: { registry: privateRoot }, publicShelf: { registry: publicRoot } },
+      });
+      const beforeRepeatedInitialize = await readFile(registry.configurationPath, "utf8");
+      await registry.initializeEmpty();
+      expect(await readFile(registry.configurationPath, "utf8")).toBe(beforeRepeatedInitialize);
+    });
+  });
+
   it("parses an explicit Unicode Private Shelf and accepts an absent Public Shelf", async () => {
     await withTempDirectory(async (directory) => {
       const configPath = path.join(directory, SHELF_LOCATION_FILE_NAME);

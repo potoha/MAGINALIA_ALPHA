@@ -1,7 +1,7 @@
 {
   "name": "@maginalia/desktop",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "main": "dist/main/main.js",
   "dependencies": {
     "@maginalia/format": "0.1.0-alpha.0",
@@ -17,10 +17,10 @@
   "scripts": {
     "postinstall": "install-electron",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.main.json --noEmit",
-    "build": "npm run build:main && npm run build:renderer && npm run build:brand-assets",
+    "build": "npm run build:main && npm run build:renderer",
     "build:main": "tsc -p tsconfig.main.json && npm run build:preload",
     "build:preload": "vite build --mode preload",
-    "build:renderer": "vite build",
+    "build:renderer": "npm run build:brand-assets && vite build",
     "build:brand-assets": "node scripts/build-brand-assets.mjs",
     "test": "vitest run --config vitest.config.mts",
     "smoke": "npm run build && node test/electron-smoke.mjs",
@@ -32,11 +32,17 @@
     "smoke:shelf": "npm run build && node test/shelf-smoke.mjs",
     "smoke:d5": "npm run build && node test/d5-smoke.mjs",
     "smoke:export": "npm run build && node test/export-smoke.mjs",
+    "smoke:export:electron-pdf": "npm run build && node test/export-electron-pdf-smoke.mjs",
     "smoke:g": "npm run build && node test/g-smoke.mjs",
     "smoke:h": "npm run build && node test/h-smoke.mjs",
     "smoke:h-navigation-acceptance": "npm run build && node test/workdesk-navigation-acceptance-smoke.mjs",
     "smoke:workdesk-persistence": "npm run build && node test/workdesk-persistence-smoke.mjs",
     "smoke:brand-progress": "npm run build && node test/brand-progress-smoke.mjs",
+    "smoke:first-run": "npm run build && node test/first-run-smoke.mjs",
+    "package:windows:runtime": "node scripts/build-windows-runtime.mjs",
+    "package:windows:stage": "node scripts/stage-windows-app.mjs",
+    "package:windows:installer": "electron-builder --win nsis --x64 --config packaging/electron-builder.json",
+    "dist:windows": "npm run package:windows:runtime && npm run package:windows:stage && npm run package:windows:installer",
     "smoke:h5": "npm run build && node test/h5-smoke.mjs",
     "prestart": "npm run build --prefix ../.. --workspaces --if-present",
     "start": "electron dist/main/main.js"
@@ -44,6 +50,7 @@
   "devDependencies": {
     "@types/node": "22.20.2",
     "electron": "44.3.0",
+    "electron-builder": "^26.15.3",
     "typescript": "7.0.2",
     "vite": "8.3.0",
     "vitest": "5.0.0"

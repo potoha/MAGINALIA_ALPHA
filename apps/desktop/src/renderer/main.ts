@@ -1,5 +1,6 @@
 import "./style.css";
 import brandHeaderUrl from "../../../../assets/header.png?url";
+const brandMarkerUrl = new URL("../../dist/branding/marker-stroke.png", import.meta.url).href;
 import { WritingController, type CapturedInsertionTarget, type WritingStatus, type WritingView } from "./controller";
 import { AutosaveCoordinator } from "./autosave-coordinator";
 import { decideDirtySwitch } from "./dirty-decision";
@@ -113,8 +114,11 @@ import { restoreRememberedWorkdeskContext, shouldPromptForPrimaryWorkdesk } from
 import { workdeskProjectShortcutsForRoot, type WorkdeskProjectExplorerShortcut } from "./workdesk-project-explorer";
 import { restoreWorkdeskForReturn } from "./workdesk-return";
 import { projectIdentityRecoveryNotice, workdeskIdentityRecoveryNotice, type FolderIdentityRecoveryNotice } from "./folder-identity-recovery-copy";
+import type { FirstRunChoices, FirstRunResult } from "../first-run-coordinator";
+import type { FirstRunStatus } from "../first-run-ipc";
 
 const app = document.querySelector<HTMLDivElement>("#app");
+const firstRunMode = new URLSearchParams(window.location.search).get("setup") === "first-run";
 
 if (!app) {
   throw new Error("Renderer root element was not found");
@@ -157,6 +161,8 @@ app.innerHTML = `
                         <hr class="project-action-menu-separator" role="separator">
                         <button id="open-workdesk" type="button" role="menuitem">Open Workdesk…</button>
                         <button id="workdesk-create" type="button" role="menuitem">Create Workdesk…</button>
+                        <hr class="project-action-menu-separator" role="separator">
+                        <button id="open-bundled-manual" type="button" role="menuitem">取扱説明書を開く</button>
                       </div>
                     </div>
                   </div>
@@ -410,11 +416,153 @@ app.innerHTML = `
   </main>
 `;
 
+if (firstRunMode) {
+  document.body.classList.add("first-run-mode");
+  requiredElement<HTMLElement>("#workbench").hidden = true;
+  const setup = document.createElement("section");
+  setup.id = "first-run-setup";
+  setup.className = "first-run-setup";
+  setup.setAttribute("aria-labelledby", "first-run-title");
+  setup.style.setProperty("--brand-marker-image", `url("${brandMarkerUrl}")`);
+  setup.innerHTML = `
+    <div class="first-run-card">
+      <img class="first-run-wordmark" src="${brandHeaderUrl}" alt="MAGINALIA — Before Kaldi">
+      <h1 id="first-run-title" tabindex="-1">MAGINALIAを使う準備</h1>
+      <p class="first-run-intro">作業場所と引用棚を確認します。選んだ場所にあるファイルや記録は、上書きしません。</p>
+      <form id="first-run-form">
+        <fieldset>
+          <legend>Workdesk</legend>
+          <label><input type="radio" name="workdeskMode" value="new" checked> 新しく作る</label>
+          <label><input type="radio" name="workdeskMode" value="existing"> すでにあるデータを使う</label>
+        </fieldset>
+        <fieldset>
+          <legend>Private Shelf</legend>
+          <label><input type="radio" name="privateShelfMode" value="new" checked> 新しく作る</label>
+          <label><input type="radio" name="privateShelfMode" value="existing"> すでにあるデータを使う</label>
+        </fieldset>
+        <label class="first-run-public"><input id="first-run-public" type="checkbox"> すでにあるPublic Shelfも使う</label>
+        <button id="first-run-submit" class="first-run-primary" type="submit">保存場所を選んで設定する</button>
+      </form>
+      <div class="first-run-progress" aria-hidden="true" hidden><span></span></div>
+      <div class="first-run-status-stage">
+        <span class="first-run-status-paint" aria-hidden="true"></span>
+        <p id="first-run-status" class="first-run-status" role="status" aria-live="polite">既定の保存先は「ドキュメント\\MAGINALIA\\Workdesk」と「ドキュメント\\MAGINALIA\\Private Shelf」です。</p>
+      </div>
+      <p id="first-run-error" class="first-run-error" role="alert" aria-live="assertive" hidden></p>
+      <button id="first-run-open" class="first-run-primary" type="button" hidden>MAGINALIAを開く</button>
+      <p class="first-run-data-note">設定を中断しても、選んだ場所のデータはそのまま残ります。</p>
+    </div>`;
+  app.append(setup);
+}
+
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
   if (!element) throw new Error(`Renderer element was not found: ${selector}`);
   return element;
 }
+
+function initializeFirstRunScreen(): void {
+  if (!firstRunMode) return;
+  const form = requiredElement<HTMLFormElement>("#first-run-form");
+  const status = requiredElement<HTMLElement>("#first-run-status");
+  const error = requiredElement<HTMLElement>("#first-run-error");
+  const submit = requiredElement<HTMLButtonElement>("#first-run-submit");
+  const open = requiredElement<HTMLButtonElement>("#first-run-open");
+  const progress = requiredElement<HTMLElement>(".first-run-progress");
+  const api = window.maginalia;
+  const showSetupError = (message: string) => {
+    error.textContent = message;
+    error.hidden = false;
+  };
+  const showComplete = (result?: Extract<FirstRunResult, { readonly kind: "completed" }>) => {
+    form.hidden = true;
+    submit.hidden = true;
+    progress.hidden = false;
+    progress.dataset.state = "complete";
+    status.textContent = result
+      ? `${result.projectTitle}を用意しました。続けてチュートリアルを開きます。`
+      : "前回の設定が完了しています。チュートリアルを開きます。";
+    open.hidden = false;
+    open.focus({ preventScroll: true });
+    if (result?.shelfSeed.conflicts.length) {
+      showSetupError(`一部の引用資料は、同じIDで内容が異なるため追加しませんでした。既存の記録はそのままです。Private Shelfから内容を確認できます。（${result.shelfSeed.conflicts.length}件）`);
+    }
+  };
+
+  if (typeof api.getFirstRunStatus !== "function"
+    || typeof api.runFirstRunSetup !== "function"
+    || typeof api.onFirstRunProgress !== "function") {
+    showSetupError("設定画面を開けませんでした。MAGINALIAを終了して、もう一度起動してください。");
+    submit.disabled = true;
+    return;
+  }
+  api.onFirstRunProgress((event) => {
+    status.textContent = event.message;
+    progress.hidden = false;
+    progress.dataset.state = "busy";
+  });
+  void api.getFirstRunStatus().then((current: FirstRunStatus) => {
+    if (current.kind === "complete") showComplete();
+    else if (current.kind === "error") showSetupError(current.message ?? "設定を読み取れませんでした。もう一度お試しください。");
+    else if (current.stage !== "start") status.textContent = "前回の続きから設定します。選んだ場所のファイルは上書きしません。";
+  }).catch(() => showSetupError("設定を読み取れませんでした。MAGINALIAを終了して、もう一度起動してください。"));
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const formData = new FormData(form);
+    const workdeskMode = formData.get("workdeskMode");
+    const privateShelfMode = formData.get("privateShelfMode");
+    if ((workdeskMode !== "new" && workdeskMode !== "existing")
+      || (privateShelfMode !== "new" && privateShelfMode !== "existing")) {
+      showSetupError("保存場所の選び方を確認してください。");
+      return;
+    }
+    const choices: FirstRunChoices = {
+      workdeskMode,
+      privateShelfMode,
+      registerPublicShelf: requiredElement<HTMLInputElement>("#first-run-public").checked,
+    };
+    error.hidden = true;
+    submit.disabled = true;
+    form.querySelectorAll<HTMLInputElement>("input").forEach((input) => { input.disabled = true; });
+    progress.hidden = false;
+    progress.dataset.state = "busy";
+    status.textContent = "保存場所を確認しています";
+    void api.runFirstRunSetup(choices).then((result: FirstRunResult) => {
+      if (result.kind === "completed") {
+        showComplete(result);
+        return;
+      }
+      submit.disabled = false;
+      form.querySelectorAll<HTMLInputElement>("input").forEach((input) => { input.disabled = false; });
+      progress.hidden = true;
+      progress.dataset.state = "idle";
+      if (result.kind === "cancelled") {
+        status.textContent = "設定を中断しました。選んだ場所のデータは変更していません。もう一度選べます。";
+      } else {
+        status.textContent = "設定を続けるには、保存場所を確認してください。";
+        showSetupError(result.message);
+      }
+    }).catch(() => {
+      submit.disabled = false;
+      form.querySelectorAll<HTMLInputElement>("input").forEach((input) => { input.disabled = false; });
+      progress.hidden = true;
+      progress.dataset.state = "idle";
+      status.textContent = "設定を続けるには、保存場所を確認してください。";
+      showSetupError("設定を完了できませんでした。選んだ場所のデータはそのままです。もう一度お試しください。");
+    });
+  });
+
+  open.addEventListener("click", () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("setup");
+    url.searchParams.set("tutorial-entry", "1");
+    window.location.replace(url.href);
+  });
+  requiredElement<HTMLElement>("#first-run-title").focus();
+}
+
+initializeFirstRunScreen();
 
 const activityViewButtonHost = requiredElement<HTMLElement>("#activity-view-buttons");
 for (const view of WORKBENCH_VIEW_MANIFEST) {
@@ -569,6 +717,7 @@ const projectNewMenu = requiredElement<HTMLElement>("#project-new-menu");
 const explorerNewFolderButton = requiredElement<HTMLButtonElement>("#explorer-new-folder");
 const projectOverflowButton = requiredElement<HTMLButtonElement>("#project-overflow");
 const projectOverflowMenu = requiredElement<HTMLElement>("#project-overflow-menu");
+const openBundledManualButton = requiredElement<HTMLButtonElement>("#open-bundled-manual");
 const projectCreateForm = requiredElement<HTMLFormElement>("#project-create-form");
 const projectCreateCancelButton = requiredElement<HTMLButtonElement>("#project-create-cancel");
 const projectInlineCreate = requiredElement<HTMLElement>("#project-inline-create");
@@ -1623,6 +1772,22 @@ commandRegistry.register({
   category: "Workbench",
   keywords: ["commands", "actions", "more"]
 }, () => commandPalette?.isOpen() ? commandPalette.close() : commandPalette?.open());
+commandRegistry.register({
+  id: "maginalia.help.openManual",
+  title: "取扱説明書を開く",
+  description: "Open the bundled offline user guide.",
+  category: "Help",
+  keywords: ["manual", "guide", "help", "tutorial"]
+}, async () => {
+  const result = await window.maginalia.openBundledManual?.();
+  if (result?.kind === "opened") {
+    projectView.setProjectError(null);
+  } else if (result?.kind === "missing") {
+    projectView.setProjectError("取扱説明書はまだ用意されていません。チュートリアルの「マキナの置き手紙」から操作を確認できます。");
+  } else {
+    projectView.setProjectError("取扱説明書を開けませんでした。チュートリアルの「マキナの置き手紙」を開いてください。");
+  }
+});
 commandRegistry.register({
   id: "maginalia.workdesk.open",
   title: "Open Workdesk",
@@ -2746,6 +2911,7 @@ function bindProjectMenuTriggerKeyboard(menu: HTMLElement, trigger: HTMLButtonEl
 
 let workspaceController: WorkspaceNavigationController | undefined;
 let persistedWorkspaceState: WorkspaceState | null = null;
+let persistedWorkspaceStateLoad: Promise<void> = Promise.resolve();
 
 const workspaceView: WorkspaceNavigationView = {
   setWorkspaceState(state: WorkspaceNavigationState): void {
@@ -3690,7 +3856,12 @@ if (legacyWorkspaceMode) {
         ? () => smokeDecisionQueue.shift() ?? "cancel"
         : (context) => decideDirtySwitch(context, (message) => window.confirm(message))
     });
-    if ((!projectLikeSmokeMode && !workbenchSmokeMode) || projectRestoreSmokeMode) {
+    if (!workbenchSmokeMode && window.maginalia.loadWorkspaceState) {
+      persistedWorkspaceStateLoad = window.maginalia.loadWorkspaceState().then((result) => {
+        if ("version" in result && result.version === 1) persistedWorkspaceState = result;
+      }).catch(() => undefined);
+    }
+    if (((!projectLikeSmokeMode && !workbenchSmokeMode) || projectRestoreSmokeMode) && !firstRunMode) {
       const workdeskApi = getWorkdeskApi();
       if (workdeskApi) {
         void workdeskApi.restoreWorkdesk().then(async (result) => {
@@ -3701,6 +3872,21 @@ if (legacyWorkspaceMode) {
               activateProject: openWorkdeskProjectResult,
               showError: (message) => projectView.setProjectError(message),
             });
+            if (contextResult.kind === "project") {
+              await persistedWorkspaceStateLoad;
+              await restorePersistedProjectViews();
+            }
+            const launchQuery = new URLSearchParams(window.location.search);
+            if (launchQuery.get("tutorial-entry") === "1") {
+              const entry = projectController?.getState().files.find((file) => file.displayName === "sample-a_マキナの置き手紙.md");
+              if (entry) {
+                await projectController?.openFile(entry.fileId);
+                launchQuery.delete("tutorial-entry");
+                const nextUrl = new URL(window.location.href);
+                nextUrl.search = launchQuery.toString();
+                window.history.replaceState(null, "", nextUrl.href);
+              }
+            }
             if (contextResult.kind === "home-fallback") {
               await rememberActiveWorkdeskContext({ kind: "home" });
             }
@@ -3736,10 +3922,12 @@ if (legacyWorkspaceMode) {
             if (selected.kind === "error") restoreError = selected.message;
           }
           await projectController?.restoreProject();
+          await persistedWorkspaceStateLoad;
           await restorePersistedProjectViews();
           if (restoreError !== null) projectView.setProjectError(restoreError);
         }).catch(() => {
           void projectController?.restoreProject().then(async () => {
+            await persistedWorkspaceStateLoad;
             await restorePersistedProjectViews();
             projectView.setProjectError("The previous Workdesk could not be restored. Use Open Workdesk to choose another folder.");
           }).catch(() => {
@@ -3748,21 +3936,16 @@ if (legacyWorkspaceMode) {
         });
       } else {
         const restore = projectController.restoreProject();
-        void restore.then(() => restorePersistedProjectViews());
+        void restore.then(async () => {
+          await persistedWorkspaceStateLoad;
+          await restorePersistedProjectViews();
+        });
       }
     }
   }
 }
 
 if (projectController && !workbenchSmokeMode) {
-  const load = window.maginalia.loadWorkspaceState;
-  if (load) {
-    void load().then((result) => {
-      if (!("version" in result) || result.version !== 1) return;
-      persistedWorkspaceState = result;
-      void restorePersistedProjectViews();
-    }).catch(() => undefined);
-  }
   controller.onSessionChange((change) => {
     projectController?.syncOpenDocuments(change.views
       .filter((view) => view.region === "main" && view.groupId === "editor-group-1")
@@ -4071,6 +4254,10 @@ if (writingSmokeMode) {
   });
   workdeskHomeButton.addEventListener("click", () => {
     void commandRegistry.execute("maginalia.workdesk.return", commandContext.snapshot());
+  });
+  openBundledManualButton.addEventListener("click", () => {
+    setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
+    void commandRegistry.execute("maginalia.help.openManual", commandContext.snapshot());
   });
 }
 

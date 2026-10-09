@@ -13,6 +13,31 @@ function loadRepositoryCore(): Promise<RepositoryCore> {
   return repositoryCorePromise;
 }
 
+async function writeUtf8Exclusive(destination: string, contents: string): Promise<boolean> {
+  const temporary = `${destination}.${randomUUID()}.tmp`;
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(temporary, "wx", 0o644);
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    try {
+      await fs.link(temporary, destination);
+      return true;
+    } catch (error: unknown) {
+      const code = error !== null && typeof error === "object" && "code" in error
+        ? (error as { readonly code?: unknown }).code
+        : undefined;
+      if (code === "EEXIST") return false;
+      throw error;
+    }
+  } finally {
+    await handle?.close().catch(() => undefined);
+    await fs.unlink(temporary).catch(() => undefined);
+  }
+}
+
 /**
  * Workdesk identity is a typed `.magi` marker. Existing Workdesk registration
  * and History adapters retain their internal `kind: "workbench"` shape.
@@ -568,7 +593,11 @@ export class WorkdeskService {
    */
   public async adoptPreparedFolder(
     candidate: WorkdeskAdoptionCandidate,
+    identityId?: string,
   ): Promise<AdoptedWorkdesk> {
+    if (identityId !== undefined && !isUuid(identityId)) {
+      throw new WorkdeskBoundaryError("adoption-not-allowed", "The reserved Workdesk identity is invalid.");
+    }
     const prepared = this.adoptionCandidates.get(candidate);
     if (!prepared) throw new WorkdeskBoundaryError("adoption-not-allowed", "The Workdesk adoption choice is no longer valid.");
     const key = process.platform === "win32" ? prepared.canonicalRoot.toLocaleLowerCase("en-US") : prepared.canonicalRoot;
@@ -581,7 +610,7 @@ export class WorkdeskService {
       const current = this.adoptionCandidates.get(candidate);
       if (!current) throw new WorkdeskBoundaryError("adoption-not-allowed", "This Workdesk folder is already being adopted.");
       this.adoptionCandidates.delete(candidate);
-      return await this.publishAdoption(current);
+      return await this.publishAdoption(current, identityId);
     } finally {
       release();
       if (this.adoptionLocks.get(key) === lock) this.adoptionLocks.delete(key);
@@ -590,6 +619,7 @@ export class WorkdeskService {
 
   private async publishAdoption(
     prepared: PreparedWorkdeskAdoption,
+    identityId?: string,
   ): Promise<AdoptedWorkdesk> {
     try {
       const currentRoot = await assertSafeRoot(prepared.canonicalRoot);
@@ -604,7 +634,9 @@ export class WorkdeskService {
       if (await fingerprintAdoptionContents(currentRoot) !== prepared.contentFingerprint) {
         throw new WorkdeskBoundaryError("adoption-changed", "Folder contents changed after the Workdesk adoption was confirmed.");
       }
-      const created = await createFolderMarker(currentRoot, "workdesk");
+      const created = await createFolderMarker(currentRoot, "workdesk", identityId === undefined
+        ? {}
+        : { uuidFactory: () => identityId });
       if (created.source === "marker") {
         throw new WorkdeskBoundaryError("adoption-changed", "A Workdesk marker appeared after the folder was confirmed.");
       }
@@ -686,6 +718,87 @@ export class WorkdeskService {
     } catch (error: unknown) {
       if (error instanceof WorkdeskBoundaryError) throw error;
       throw new WorkdeskBoundaryError("create-failed", error instanceof Error ? error.message : "The Workdesk files could not be created safely.");
+    }
+  }
+
+  /**
+   * Explicit, journal-friendly creation for first-run setup. The caller must
+   * persist and reuse `identityId` before calling. The marker is written first
+   * so a restart can resume only this known identity; existing authored files
+   * are never replaced.
+   */
+  public async createAtRootForSetup(root: string, title: string, identityId: string): Promise<ValidatedWorkdesk> {
+    if (!path.isAbsolute(root)) throw new WorkdeskBoundaryError("invalid-workdesk", "Choose a valid Workdesk location.");
+    let repositoryCore: RepositoryCore;
+    let identity: RepositoryIdentity;
+    try {
+      repositoryCore = await loadRepositoryCore();
+      identity = repositoryCore.createIdentity("workbench", title, identityId);
+      await fs.mkdir(root, { recursive: true });
+    } catch (error: unknown) {
+      throw new WorkdeskBoundaryError("create-failed", error instanceof Error ? error.message : "The Workdesk folder could not be prepared safely.");
+    }
+
+    const canonicalRoot = await assertSafeRoot(root);
+    const markerState = await inspectFolderMarkers(canonicalRoot);
+    if (markerState.kind === "conflict") {
+      throw new WorkdeskBoundaryError("marker-conflict", "This folder contains conflicting valid .magi markers.");
+    }
+    if (markerState.kind === "valid") {
+      if (markerState.marker.type !== "workdesk" || markerState.marker.id.toLowerCase() !== identityId.toLowerCase()) {
+        throw new WorkdeskBoundaryError("wrong-kind", "This folder already has a different identity.");
+      }
+    } else {
+      const entries = await fs.readdir(canonicalRoot);
+      if (entries.length > 0) {
+        throw new WorkdeskBoundaryError("create-failed", "The selected folder already contains files. Choose a new folder or use the existing-folder option.");
+      }
+      const marker = await createFolderMarker(canonicalRoot, "workdesk", { uuidFactory: () => identityId });
+      if (marker.marker.id.toLowerCase() !== identityId.toLowerCase()) {
+        throw new WorkdeskBoundaryError("create-failed", "The saved Workdesk identity no longer matches this setup.");
+      }
+    }
+
+    try {
+      const markerFilename = repositoryCore.canonicalFolderMarkerFilename("workdesk");
+      const files = repositoryCore.templateFiles(identity);
+      for (const [relativePath, contents] of Object.entries(files).sort(([left], [right]) => left.localeCompare(right))) {
+        if (relativePath === markerFilename) continue;
+        const segments = relativePath.split("/");
+        if (segments.some((segment) => segment.length === 0 || segment === "." || segment === ".." || segment.includes("\\"))) {
+          throw new Error("The Workdesk template contains an unsafe path.");
+        }
+        let current = canonicalRoot;
+        for (const segment of segments.slice(0, -1)) {
+          current = path.join(current, segment);
+          try {
+            await fs.mkdir(current);
+          } catch (error: unknown) {
+            const code = error !== null && typeof error === "object" && "code" in error
+              ? (error as { readonly code?: unknown }).code
+              : undefined;
+            if (code !== "EEXIST") throw error;
+            const stats = await fs.lstat(current);
+            if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error("The Workdesk template path is unsafe.");
+          }
+        }
+        const destination = path.join(current, segments.at(-1)!);
+        const created = await writeUtf8Exclusive(destination, contents);
+        if (!created) {
+          const existing = await fs.lstat(destination);
+          if (!existing.isFile() || existing.isSymbolicLink()) throw new Error("The Workdesk template path is unsafe.");
+          // A resumed setup preserves any file already present at this path.
+        }
+      }
+      const workdesk = await this.open(canonicalRoot);
+      if (workdesk.identity.id.toLowerCase() !== identityId.toLowerCase()) {
+        throw new WorkdeskBoundaryError("create-failed", "The Workdesk marker identity changed during setup.");
+      }
+      await this.setPrimary(workdesk);
+      return workdesk;
+    } catch (error: unknown) {
+      if (error instanceof WorkdeskBoundaryError) throw error;
+      throw new WorkdeskBoundaryError("create-failed", error instanceof Error ? error.message : "The Workdesk files could not be prepared safely.");
     }
   }
 

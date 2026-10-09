@@ -114,6 +114,17 @@ import {
 } from "./project-ipc";
 import type { CreateFolderResult, ExplorerListResult } from "./document-workspace";
 import {
+  FIRST_RUN_PROGRESS_CHANNEL,
+  GET_FIRST_RUN_STATUS_CHANNEL,
+  RUN_FIRST_RUN_SETUP_CHANNEL,
+  isFirstRunProgressEvent,
+  type FirstRunChoices,
+  type FirstRunProgressEvent,
+  type FirstRunSetupResult,
+  type FirstRunStatus
+} from "./first-run-ipc";
+import { OPEN_BUNDLED_MANUAL_CHANNEL, type OpenBundledManualResult } from "./manual-ipc";
+import {
   CREATE_WORKDESK_CHANNEL,
   CREATE_WORKDESK_FILE_CHANNEL,
   CREATE_WORKDESK_PROJECT_CHANNEL,
@@ -335,6 +346,10 @@ export type ModCapabilityCallback = (
 ) => ModCapabilityResponse | Promise<ModCapabilityResponse>;
 
 export interface MarkdownPreloadApi {
+  getFirstRunStatus?(): Promise<FirstRunStatus>;
+  runFirstRunSetup?(choices: FirstRunChoices): Promise<FirstRunSetupResult>;
+  onFirstRunProgress?(callback: (event: FirstRunProgressEvent) => void): EventUnsubscribe;
+  openBundledManual?(): Promise<OpenBundledManualResult>;
   openMarkdown(): Promise<OpenMarkdownResult>;
   saveMarkdown(request: SaveMarkdownRequest): Promise<SaveMarkdownResult>;
   openDocument?(): Promise<OpenDocumentResult>;
@@ -397,6 +412,10 @@ export interface MarkdownPreloadApi {
 }
 
 export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
+  getFirstRunStatus(): Promise<FirstRunStatus>;
+  runFirstRunSetup(choices: FirstRunChoices): Promise<FirstRunSetupResult>;
+  onFirstRunProgress(callback: (event: FirstRunProgressEvent) => void): EventUnsubscribe;
+  openBundledManual(): Promise<OpenBundledManualResult>;
   openDocument(): Promise<OpenDocumentResult>;
   openManuscript(request: OpenManuscriptRequest): Promise<OpenManuscriptResult>;
   listExplorer(request: ExplorerListRequest): Promise<ExplorerListResult>;
@@ -467,6 +486,15 @@ export function createMarkdownPreloadApi(
   droppedFilePath: DroppedFilePathProvider = () => "",
 ): CompleteMarkdownPreloadApi {
   return {
+    getFirstRunStatus: () => invoke(GET_FIRST_RUN_STATUS_CHANNEL) as Promise<FirstRunStatus>,
+    runFirstRunSetup: (choices) => invoke(RUN_FIRST_RUN_SETUP_CHANNEL, choices) as Promise<FirstRunSetupResult>,
+    onFirstRunProgress: (callback) => {
+      if (typeof callback !== "function") throw new TypeError("The first-run progress callback is invalid.");
+      return subscribe(FIRST_RUN_PROGRESS_CHANNEL, (value) => {
+        if (isFirstRunProgressEvent(value)) callback(value);
+      });
+    },
+    openBundledManual: () => invoke(OPEN_BUNDLED_MANUAL_CHANNEL) as Promise<OpenBundledManualResult>,
     openMarkdown: () => invoke(OPEN_MARKDOWN_CHANNEL) as Promise<OpenMarkdownResult>,
     saveMarkdown: (request) => invoke(SAVE_MARKDOWN_CHANNEL, request) as Promise<SaveMarkdownResult>,
     openDocument: () => invoke(OPEN_DOCUMENT_CHANNEL) as Promise<OpenDocumentResult>,
