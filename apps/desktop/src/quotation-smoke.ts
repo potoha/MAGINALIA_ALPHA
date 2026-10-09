@@ -64,7 +64,7 @@ const READ_STATE_SCRIPT = [
   "  return {",
   "    smokeReady: true,",
   "    documentName: documentName.textContent ?? '',",
-  "    manuscripts: manuscriptButtons.map((button) => button.textContent ?? ''),",
+  "    manuscripts: manuscriptButtons.map((button) => button.dataset.explorerFileName ?? ''),",
   "    activeManuscript: active?.dataset.explorerFileName ?? null,",
   "    text: editor.dataset.smokeText ?? '',",
   "    statusKind: status.dataset.state ?? '',",
@@ -105,9 +105,19 @@ async function waitForState(
     await delay(POLL_INTERVAL_MS);
   }
   const details = lastState
-    ? " Last state: " + lastState.statusKind + " (" + lastState.statusMessage + "), library "
-      + lastState.libraryStatusKind + " (" + lastState.libraryStatusMessage + "), text length "
-      + lastState.text.length + ": " + JSON.stringify(lastState.text) + "."
+    ? " Last state: " + JSON.stringify({
+      documentName: lastState.documentName,
+      manuscripts: lastState.manuscripts,
+      activeManuscript: lastState.activeManuscript,
+      statusKind: lastState.statusKind,
+      statusMessage: lastState.statusMessage,
+      saveEnabled: lastState.saveEnabled,
+      libraryName: lastState.libraryName,
+      libraryStatusKind: lastState.libraryStatusKind,
+      libraryStatusMessage: lastState.libraryStatusMessage,
+      textLength: lastState.text.length,
+      text: lastState.text,
+    }) + "."
     : " Renderer probe was not available.";
   throw new Error("Quotation smoke timed out while waiting for " + description + "." + details);
 }
