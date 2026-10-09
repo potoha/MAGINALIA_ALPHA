@@ -23,7 +23,7 @@
   "win": {
     "target": [{ "target": "nsis", "arch": ["x64"] }],
     "icon": "packaging/.stage/app/dist/branding/maginalia.ico",
-    "artifactName": "MAGINALIA-desktop-a1-Setup.exe"
+    "artifactName": "MAGINALIA-desktop-${version}-Setup.exe"
   },
   "nsis": {
     "oneClick": false,

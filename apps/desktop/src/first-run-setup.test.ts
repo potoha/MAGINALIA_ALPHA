@@ -50,6 +50,25 @@ describe("first-run materialization", () => {
     expect(await readFile(path.join(root, "shelf.magi"))).toEqual(markerBytes);
   });
 
+  it("does not initialize a missing library inside an existing marker-only Shelf", async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), "maginalia-first-run-marker-only-shelf-"));
+    roots.push(parent);
+    const root = path.join(parent, "Private Shelf");
+    const id = "33333333-3333-4333-8333-333333333333";
+    const markerBytes = Buffer.from(`version = 1\ntype = shelf\nid = ${id}\n`, "utf8");
+    await mkdir(root, { recursive: true });
+    await writeFile(path.join(root, "shelf.magi"), markerBytes);
+
+    await expect(createPrivateShelfForSetup(
+      root,
+      id,
+      path.join(tutorialRoot, "private-shelf-seed"),
+      path.join(tutorialRoot, "installer-copy-manifest.json"),
+    )).rejects.toThrow("選んだShelfに一覧がありません。");
+    expect(await readFile(path.join(root, "shelf.magi"))).toEqual(markerBytes);
+    await expect(readFile(path.join(root, "library.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("materializes the Tutorial Project with the reserved identity, parent, and collision-safe Downloads image", async () => {
     const parent = await mkdtemp(path.join(tmpdir(), "maginalia-first-run-project-"));
     roots.push(parent);

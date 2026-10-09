@@ -253,7 +253,13 @@ export class FirstRunCoordinator {
         return { root, identityId: journal.shelfIdentityId!, seedResult: seeded };
       }
       if (journal.privateShelfMode === "new" && current.kind === "error") {
-        const seeded = await createPrivateShelfForSetup(root, journal.shelfIdentityId!, path.join(this.options.tutorialRoot, "private-shelf-seed"), path.join(this.options.tutorialRoot, "installer-copy-manifest.json"));
+        const seeded = await createPrivateShelfForSetup(
+          root,
+          journal.shelfIdentityId!,
+          path.join(this.options.tutorialRoot, "private-shelf-seed"),
+          path.join(this.options.tutorialRoot, "installer-copy-manifest.json"),
+          journal.stage === "workdesk",
+        );
         await this.options.journal.save(Object.freeze({ ...journal, stage: "shelf", shelfSeedResult: seeded }));
         return { root, identityId: journal.shelfIdentityId!, seedResult: seeded };
       }

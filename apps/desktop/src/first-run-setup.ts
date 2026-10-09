@@ -181,16 +181,18 @@ function validateRelative(relative: string): string[] {
   return segments;
 }
 
-/** Create/registering-time identity writer for a new Shelf. Existing folder contents are preserved. */
+/** Initialize a reserved new Shelf when empty, then add tutorial records without replacing existing data. */
 export async function createPrivateShelfForSetup(
   root: string,
   identityId: string,
   seedRoot: string,
   manifestPath: string,
+  allowReservedNewShelfInitialization = false,
 ): Promise<TutorialSeedResult> {
   if (!UUID_PATTERN.test(identityId)) throw new FirstRunSetupError("Shelfの管理情報を準備できませんでした。");
   const canonicalRoot = await assertSafeDirectory(root, true);
   const markerState = await inspectFolderMarkers(canonicalRoot);
+  let markerCreatedForNewShelf = false;
   if (markerState.kind === "conflict") throw new FirstRunSetupError("この場所には異なる管理情報があります。別の場所を選んでください。");
   if (markerState.kind === "valid" && (markerState.marker.type !== "shelf" || markerState.marker.id.toLowerCase() !== identityId.toLowerCase())) {
     throw new FirstRunSetupError("この場所には別のデータがあります。内容はそのまま残しています。");
@@ -199,15 +201,27 @@ export async function createPrivateShelfForSetup(
     if ((await readdir(canonicalRoot)).length > 0) throw new FirstRunSetupError("選んだ場所に既存ファイルがあります。既存Shelfを選ぶか、空の場所を選んでください。");
     const created = await createFolderMarker(canonicalRoot, "shelf", { uuidFactory: () => identityId });
     if (created.marker.id.toLowerCase() !== identityId.toLowerCase()) throw new FirstRunSetupError("Shelfの管理情報が一致しません。");
+    markerCreatedForNewShelf = true;
   }
 
   const seedCanonical = await assertSafeDirectory(seedRoot, false);
   const seedLibrary = await readFile(path.join(seedCanonical, "library.json"));
   const libraryPath = path.join(canonicalRoot, "library.json");
-  if (!await writeBufferExclusive(libraryPath, seedLibrary)) {
-    if (!(await readFile(libraryPath)).equals(seedLibrary)) {
-      throw new FirstRunSetupError("既存のShelf一覧はそのまま残しました。内容を確認してください。");
+  try {
+    await readFile(libraryPath);
+  } catch (error: unknown) {
+    const code = error !== null && typeof error === "object" && "code" in error ? error.code : undefined;
+    if (code !== "ENOENT") {
+      throw new FirstRunSetupError("Shelfの一覧を確認できませんでした。既存の内容は変更していません。");
     }
+    if (!markerCreatedForNewShelf && !allowReservedNewShelfInitialization) {
+      throw new FirstRunSetupError("選んだShelfに一覧がありません。既存のファイルや記録は変更していません。");
+    }
+    const entries = await readdir(canonicalRoot);
+    if (entries.length !== 1 || entries[0] !== "shelf.magi") {
+      throw new FirstRunSetupError("選んだShelfに一覧がありません。既存のファイルや記録は変更していません。");
+    }
+    await writeBufferExclusive(libraryPath, seedLibrary);
   }
   return materializeTutorialShelfSeed(manifestPath, canonicalRoot);
 }

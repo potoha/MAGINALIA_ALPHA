@@ -21,10 +21,6 @@ async function capture(window: BrowserWindow, outputPath: string): Promise<void>
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      await window.webContents.executeJavaScript(
-        "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
-        true,
-      );
       const image = await window.webContents.capturePage();
       await writeFile(outputPath, image.toPNG());
       return;

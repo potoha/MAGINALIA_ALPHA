@@ -11,7 +11,9 @@ try {
   const workdeskRoot = path.join(temporaryDirectory, "Documents", "MAGINALIA", "Workdesk");
   const shelfRoot = path.join(temporaryDirectory, "Documents", "MAGINALIA", "Private Shelf");
   const downloadsRoot = path.join(temporaryDirectory, "Downloads");
-  const outputDirectory = path.resolve(desktopRoot, "../../docs/installer-readiness/screenshots");
+  const outputDirectory = process.env.MAGINALIA_FIRST_RUN_SMOKE_OUTPUT
+    ? path.resolve(process.env.MAGINALIA_FIRST_RUN_SMOKE_OUTPUT)
+    : path.resolve(desktopRoot, "../../docs/installer-readiness/screenshots");
   const result = await runElectronSmoke({
     userDataRoot,
     appArgs: ["--first-run-smoke"],

@@ -32,23 +32,11 @@ FunctionEnd
 
 !macro customInstall
   ${If} $MAGINALIA_DESKTOP_SHORTCUT_STATE == ${BST_CHECKED}
-    IfFileExists "$INSTDIR\maginalia-desktop-shortcut-created" MAGINALIA_CreateOwnedDesktopShortcut
     IfFileExists "$DESKTOP\MAGINALIA desktop α1.lnk" MAGINALIA_DesktopShortcutConflict
-    MAGINALIA_CreateOwnedDesktopShortcut:
-      CreateShortCut "$DESKTOP\MAGINALIA desktop α1.lnk" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
-      FileOpen $0 "$INSTDIR\maginalia-desktop-shortcut-created" w
-      FileWrite $0 "1"
-      FileClose $0
-      Goto MAGINALIA_DesktopShortcutDone
+    CreateShortCut "$DESKTOP\MAGINALIA desktop α1.lnk" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+    Goto MAGINALIA_DesktopShortcutDone
     MAGINALIA_DesktopShortcutConflict:
       MessageBox MB_ICONEXCLAMATION|MB_OK "同じ名前のショートカットがあるため、デスクトップには追加しませんでした。"
     MAGINALIA_DesktopShortcutDone:
   ${EndIf}
-!macroend
-
-!macro customUnInstall
-  IfFileExists "$INSTDIR\maginalia-desktop-shortcut-created" 0 un.MAGINALIA_DesktopShortcutDone
-  Delete "$DESKTOP\MAGINALIA desktop α1.lnk"
-  Delete "$INSTDIR\maginalia-desktop-shortcut-created"
-  un.MAGINALIA_DesktopShortcutDone:
 !macroend
