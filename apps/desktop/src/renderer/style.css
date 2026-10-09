@@ -39,6 +39,14 @@ body {
   gap: 0.75rem;
 }
 
+.brand-wordmark {
+  display: block;
+  width: min(21rem, 48vw);
+  max-height: 2.5rem;
+  object-fit: contain;
+  object-position: left center;
+}
+
 .eyebrow {
   margin: 0;
   color: #9b4b36;
@@ -1288,6 +1296,12 @@ button:focus-visible {
 
 .workbench .toolbar .brand {
   min-width: 0;
+  align-items: center;
+}
+
+.workbench .toolbar .brand-wordmark {
+  width: min(21rem, 62vw);
+  max-height: 2.65rem;
 }
 
 .workbench-home-action {

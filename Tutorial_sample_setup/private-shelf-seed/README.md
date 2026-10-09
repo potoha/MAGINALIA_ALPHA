@@ -2,7 +2,7 @@
 
 初回オンボーディング用の小さなPublic Domain引用セットです。
 
-現行MAGINALIA Format v0.1のBook / Annotation形状に合わせています。
+このseedは現行MAGINALIA Format v0.1のBook / Annotation形状です。D063の延期方針に従い、v0.4への移行は行いません。
 
 | Annotation | Work | Book ISBN |
 |---|---|---|
@@ -12,12 +12,11 @@
 
 ページ番号は意図的に省略し、青空文庫図書カード/節を `location.path` に保持します。
 
-新規Private Shelfならrepository identity templateと`library.json`を利用できます。
+`shelf.magi.template` は新規Private Shelf作成時のfolder identity modelです。実際の `shelf.magi` は新しいShelf UUIDからRepository Core `templateFiles()` で生成します。Shelf identityは `library.json`、Book、Annotation、引用元ファイルの代わりにはなりません。
 
 既存Private Shelfへ追加するときは:
 
-- repository identityを置換しない
-- `library.json`を置換しない
+- 既存の `shelf.magi` と `library.json` を保持し、seed適用を理由に生成・置換しない
 - 欠けているseed entityだけを現行Shelf contract経由で追加
-- 既存Book metadataを優先
-- 同一ID・別内容Annotationを上書きしない
+- IDと内容が一致する既存Books / Annotationsはそのまま保持
+- 同じIDで内容が異なるrecordは明示的conflictとして扱い、上書きしない

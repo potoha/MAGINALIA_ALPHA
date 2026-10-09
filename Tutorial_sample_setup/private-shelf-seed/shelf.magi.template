@@ -1,0 +1,4 @@
+# MAGINALIA Desktop のフォルダ識別子です。
+version = 1
+type = shelf
+id = ${GENERATED_SHELF_UUID}

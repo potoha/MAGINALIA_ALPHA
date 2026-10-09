@@ -10,8 +10,18 @@ import {
   type OpenDialogReturnValue,
   type WebContents
 } from "electron";
+import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { findBrandAssetPath } from "./brand-assets";
+import {
+  brandProgressUpdateScript,
+  createBrandProgressState,
+  renderBrandProgressHtml,
+  type BrandProgressState,
+} from "./brand-progress";
+import { runBrandProgressElectronSmoke } from "./brand-progress-smoke";
+import { RendererStartupGate, StartupProgressReadiness } from "./startup-progress-lifecycle";
 import { DocumentWorkspaceService } from "./document-workspace";
 import {
   createDocumentWorkspaceHandlers,
@@ -176,7 +186,7 @@ import {
   type AutosaveFlushResponseResult
 } from "./autosave-ipc";
 import { AutosaveShutdownCoordinator } from "./autosave-shutdown";
-import { establishApplicationIdentity } from "./application-identity";
+import { establishApplicationIdentity, MAGINALIA_APPLICATION_NAME } from "./application-identity";
 
 // Set a product-stable Electron identity before resolving any local stores.
 // Retain the profile Electron selected before this upgrade so existing state
@@ -191,6 +201,7 @@ if (!hasSingleInstanceLock) {
   app.quit();
 } else {
 const quickSmokeMode = process.argv.includes("--smoke");
+const brandProgressSmoke = process.argv.includes("--brand-progress-smoke");
 const writingSmoke = parseWritingSmokeMode(process.argv);
 const workspaceSmoke = parseWorkspaceSmokeMode(process.argv);
 const quotationSmoke = parseQuotationSmokeMode(process.argv);
@@ -222,7 +233,8 @@ const smokeMode = quickSmokeMode
   || gSmoke.requested
   || hSmoke.requested
   || h5Smoke.requested
-  || workdeskPersistenceSmoke.requested;
+  || workdeskPersistenceSmoke.requested
+  || brandProgressSmoke;
 const markdownFileService = new MarkdownFileService();
 const workspaceStateStore = new FileWorkspaceStateStore(path.join(userDataPath, "workspace-state.json"));
 const workspaceStateHandlers = createWorkspaceStateHandlers({
@@ -1218,10 +1230,245 @@ function unregisterMarkdownIpc(): void {
   repositoryService.dispose();
 }
 
+let startupProgressWindow: BrowserWindow | null = null;
+let startupProgressWindowReady = false;
+let startupProgressWindowShown = false;
+let startupProgressState: BrandProgressState = createBrandProgressState("MAGINALIA desktop α1 を起動しています", 0);
+let startupOutcome: "pending" | "succeeded" | "failed" = "pending";
+let startupProgressTimer: NodeJS.Timeout | null = null;
+const startupProgressReadiness = new StartupProgressReadiness<BrowserWindow>(10_000);
+let startupProgressWindowListenerCleanup: (() => void) | null = null;
+
+function brandAssetRoots(): string[] {
+  const roots = [
+    path.join(__dirname, "..", "branding"),
+    path.join(app.getAppPath(), "dist", "branding"),
+    path.join(process.resourcesPath, "branding"),
+    path.resolve(app.getAppPath(), "../../assets"),
+  ];
+  return [...new Set(roots)];
+}
+
+function resolveBrandAsset(...fileNames: string[]): string | null {
+  const roots = brandAssetRoots();
+  for (const fileName of fileNames) {
+    const resolved = findBrandAssetPath(fileName, roots);
+    if (resolved !== null) return resolved;
+  }
+  return null;
+}
+
+function readBrandPngDataUrl(...fileNames: string[]): string | null {
+  const resolved = resolveBrandAsset(...fileNames);
+  if (resolved === null) return null;
+  try {
+    return `data:image/png;base64,${readFileSync(resolved).toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
+
+function applicationIconPath(): string | null {
+  return process.platform === "win32"
+    ? resolveBrandAsset("maginalia.ico", "iconnottran.png", "icon.png")
+    : resolveBrandAsset("icon.png", "iconnottran.png");
+}
+
+function updateStartupProgress(message: string, progress: number | null): void {
+  startupProgressState = createBrandProgressState(message, progress);
+  const window = startupProgressWindow;
+  if (window !== null && !window.isDestroyed() && startupProgressWindowReady) {
+    void window.webContents.executeJavaScript(brandProgressUpdateScript(startupProgressState)).catch(() => undefined);
+  }
+}
+
+function waitForStartupProgressWindow(): Promise<BrowserWindow> {
+  if (startupProgressWindow !== null && startupProgressWindowReady && !startupProgressWindow.isDestroyed()) {
+    return Promise.resolve(startupProgressWindow);
+  }
+  if (startupProgressReadiness.state === "ready") {
+    startupProgressReadiness.invalidate(new Error("The startup progress window closed before it could be used."));
+  }
+  return startupProgressReadiness.wait();
+}
+
+function cleanupStartupProgressWindowListeners(): void {
+  const cleanup = startupProgressWindowListenerCleanup;
+  startupProgressWindowListenerCleanup = null;
+  cleanup?.();
+}
+
+function failStartupProgressWindow(window: BrowserWindow, error: unknown): void {
+  startupProgressWindowReady = false;
+  startupProgressWindowShown = false;
+  if (startupProgressWindow === window) startupProgressWindow = null;
+  startupProgressReadiness.invalidate(error);
+  cleanupStartupProgressWindowListeners();
+  if (!window.isDestroyed()) window.destroy();
+}
+
+function startStartupProgressWindow(delayMs: number): void {
+  if (smokeMode && !brandProgressSmoke) return;
+  const createWindow = () => {
+    if ((startupOutcome !== "pending" && !brandProgressSmoke) || (startupProgressWindow !== null && !startupProgressWindow.isDestroyed())) return;
+    const icon = applicationIconPath();
+    const window = new BrowserWindow({
+      width: 610,
+      height: 390,
+      title: MAGINALIA_APPLICATION_NAME,
+      ...(icon === null ? {} : { icon }),
+      center: true,
+      show: false,
+      skipTaskbar: true,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      autoHideMenuBar: true,
+      backgroundColor: "#fffdf3",
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+    startupProgressWindow = window;
+    const splashContents = window.webContents;
+    const html = renderBrandProgressHtml({
+      logoDataUrl: readBrandPngDataUrl("splash.png", "header.png", "icon.png"),
+      markerDataUrl: readBrandPngDataUrl("marker-stroke.png"),
+    });
+    const onReadyToShow = () => {
+      if (window.isDestroyed()) {
+        failStartupProgressWindow(window, new Error("The startup progress window was destroyed before it became ready."));
+        return;
+      }
+      if (!startupProgressReadiness.markReady(window)) return;
+      startupProgressWindowReady = true;
+      void window.webContents.executeJavaScript(brandProgressUpdateScript(startupProgressState)).catch(() => undefined);
+      if (startupOutcome !== "succeeded" || brandProgressSmoke) {
+        startupProgressWindowShown = true;
+        window.show();
+      }
+    };
+    const onClosed = () => {
+      if (startupProgressWindow === window) startupProgressWindow = null;
+      startupProgressWindowReady = false;
+      startupProgressWindowShown = false;
+      if (startupOutcome !== "succeeded") {
+        startupProgressReadiness.invalidate(new Error("The startup progress window closed before startup completed."));
+      }
+      cleanupStartupProgressWindowListeners();
+    };
+    const onDidFailLoad = (_event: Electron.Event, errorCode: number, errorDescription: string, _validatedUrl: string, isMainFrame: boolean) => {
+      if (!isMainFrame) return;
+      failStartupProgressWindow(window, new Error(`Branded startup splash failed to load (${errorCode}): ${errorDescription}`));
+    };
+    window.on("ready-to-show", onReadyToShow);
+    window.on("closed", onClosed);
+    splashContents.on("did-fail-load", onDidFailLoad);
+    startupProgressWindowListenerCleanup = () => {
+      window.removeListener("ready-to-show", onReadyToShow);
+      window.removeListener("closed", onClosed);
+      splashContents.removeListener("did-fail-load", onDidFailLoad);
+    };
+    if (brandProgressSmoke && process.env.MAGINALIA_BRAND_SMOKE_DESTROY_SPLASH === "1") {
+      window.destroy();
+      return;
+    }
+    const splashUrl = brandProgressSmoke && process.env.MAGINALIA_BRAND_SMOKE_FAIL_SPLASH === "1"
+      ? "maginalia-startup-smoke://invalid-splash"
+      : `data:text/html;charset=UTF-8,${encodeURIComponent(html)}`;
+    void window.loadURL(splashUrl).catch((error: unknown) => {
+      failStartupProgressWindow(window, new Error("Branded startup splash failed to load.", { cause: error }));
+    });
+  };
+
+  if (delayMs <= 0) {
+    createWindow();
+    return;
+  }
+  startupProgressTimer = setTimeout(createWindow, delayMs);
+}
+
+function completeStartupProgress(window: BrowserWindow): void {
+  if (startupOutcome === "failed" || window.isDestroyed()) return;
+  const completesInitialStartup = startupOutcome === "pending";
+  if (completesInitialStartup) {
+    startupOutcome = "succeeded";
+    if (startupProgressTimer !== null) {
+      clearTimeout(startupProgressTimer);
+      startupProgressTimer = null;
+    }
+    updateStartupProgress("MAGINALIA desktop α1 の準備ができました", 1);
+  }
+  window.show();
+  if (!completesInitialStartup) return;
+  const splash = startupProgressWindow;
+  if (splash !== null && !splash.isDestroyed()) {
+    if (startupProgressWindowShown && splash.isVisible()) {
+      setTimeout(() => {
+        if (!splash.isDestroyed()) splash.close();
+      }, 140);
+    } else {
+      splash.close();
+    }
+  }
+}
+
+function failMainRendererLoad(window: BrowserWindow, error: unknown): void {
+  startupOutcome = "failed";
+  console.error("MAGINALIA renderer failed to load", error);
+  if (startupProgressTimer !== null) {
+    clearTimeout(startupProgressTimer);
+    startupProgressTimer = null;
+  }
+  const splash = startupProgressWindow;
+  if (splash !== null) failStartupProgressWindow(splash, new Error("Main Renderer loading failed.", { cause: error }));
+
+  if (brandProgressSmoke) {
+    console.error("MAGINALIA_BRAND_RENDERER_LOAD_FAILED", error);
+    app.exit(1);
+  } else if (writingSmoke.requested) {
+    failWritingSmoke(error);
+  } else if (workspaceSmoke.requested) {
+    failWorkspaceSmoke(error);
+  } else if (projectSmoke.requested) {
+    failProjectSmoke(error);
+  } else if (quotationSmoke.requested) {
+    failQuotationSmoke(error);
+  } else if (repositorySmoke.requested) {
+    failRepositorySmoke(error);
+  } else if (shelfSmoke.requested) {
+    failShelfSmoke(error);
+  } else if (d5Smoke.requested) {
+    failD5Smoke(error);
+  } else if (exportSmoke.requested) {
+    failExportSmoke(error);
+  } else if (hSmoke.requested) {
+    failHSmoke(error);
+  } else if (h5Smoke.requested) {
+    failH5Smoke(error);
+  } else if (gSmoke.requested) {
+    failGSmoke(error);
+  } else if (quickSmokeMode) {
+    app.exit(1);
+  } else if (!smokeMode) {
+    dialog.showErrorBox(
+      "MAGINALIAを起動できませんでした",
+      "編集画面を読み込めませんでした。MAGINALIAを終了します。\nもう一度起動してください。問題が続く場合は、アプリのインストール状態を確認してください。",
+    );
+    if (!window.isDestroyed()) window.destroy();
+    app.exit(1);
+  }
+}
+
 function createMainWindow(): BrowserWindow {
+  const icon = applicationIconPath();
   const window = new BrowserWindow({
     width: 960,
     height: 640,
+    title: MAGINALIA_APPLICATION_NAME,
+    ...(icon === null ? {} : { icon }),
     show: writingSmoke.requested
       || workspaceSmoke.requested
       || projectSmoke.requested
@@ -1232,15 +1479,48 @@ function createMainWindow(): BrowserWindow {
       || exportSmoke.requested
       || gSmoke.requested
       || workdeskPersistenceSmoke.requested
-      || h5Smoke.requested
-      || !smokeMode,
+      || h5Smoke.requested,
     webPreferences: createSecureWebPreferences(path.join(__dirname, "preload.js"))
   });
+  if (!smokeMode) updateStartupProgress("編集画面を準備しています", 0.82);
+  const rendererStartupGate = new RendererStartupGate(
+    () => {
+      if (brandProgressSmoke) {
+        void waitForStartupProgressWindow().then(async (splash) => {
+          const outputDirectory = process.env.MAGINALIA_BRAND_SMOKE_OUTPUT
+            ?? path.join(app.getPath("temp"), "maginalia-brand-progress-smoke");
+          await runBrandProgressElectronSmoke({
+            splash,
+            mainWindow: window,
+            outputDirectory,
+            applicationName: app.getName(),
+            userDataPath,
+            expectedUserDataPath: process.env.MAGINALIA_SMOKE_EXPECTED_USER_DATA,
+            update: updateStartupProgress,
+            complete: () => completeStartupProgress(window),
+          });
+          console.log("MAGINALIA_BRAND_PROGRESS_SMOKE_OK");
+          app.exit(0);
+        }).catch((error: unknown) => {
+          console.error("MAGINALIA_BRAND_PROGRESS_SMOKE_FAILED", error);
+          const splash = startupProgressWindow;
+          if (splash !== null && !splash.isDestroyed()) failStartupProgressWindow(splash, error);
+          app.exit(1);
+        });
+      } else if (!smokeMode) {
+        completeStartupProgress(window);
+      }
+    },
+    (error) => failMainRendererLoad(window, error),
+  );
+  window.once("ready-to-show", () => rendererStartupGate.markWindowReady());
   // Resolve once at window creation so an existing explicit registry is ready
   // for normal Shelf use. The shared binding also reloads it on demand.
   void getConfiguredPrivateShelf().getActive(window.webContents);
 
-  const rendererPath = path.join(__dirname, "..", "renderer", "index.html");
+  const rendererPath = brandProgressSmoke && process.env.MAGINALIA_BRAND_SMOKE_FAIL_RENDERER === "1"
+    ? path.join(app.getPath("temp"), `maginalia-missing-renderer-${process.pid}.html`)
+    : path.join(__dirname, "..", "renderer", "index.html");
 
   if (workdeskPersistenceSmoke.requested) {
     if (!workdeskPersistenceSmoke.rootPath) {
@@ -1687,34 +1967,10 @@ function createMainWindow(): BrowserWindow {
                 : gSmoke.requested
                   ? { query: { smoke: gSmoke.restore ? "g-restore" : "g" } }
                   : undefined;
-  void window.loadFile(rendererPath, loadOptions).catch((error: unknown) => {
-    console.error("MAGINALIA renderer failed to load", error);
-    if (writingSmoke.requested) {
-      failWritingSmoke(error);
-    } else if (workspaceSmoke.requested) {
-      failWorkspaceSmoke(error);
-    } else if (projectSmoke.requested) {
-      failProjectSmoke(error);
-    } else if (quotationSmoke.requested) {
-      failQuotationSmoke(error);
-    } else if (repositorySmoke.requested) {
-      failRepositorySmoke(error);
-    } else if (shelfSmoke.requested) {
-      failShelfSmoke(error);
-    } else if (d5Smoke.requested) {
-      failD5Smoke(error);
-    } else if (exportSmoke.requested) {
-      failExportSmoke(error);
-    } else if (hSmoke.requested) {
-      failHSmoke(error);
-    } else if (h5Smoke.requested) {
-      failH5Smoke(error);
-    } else if (gSmoke.requested) {
-      failGSmoke(error);
-    } else if (quickSmokeMode) {
-      app.exit(1);
-    }
-  });
+  void window.loadFile(rendererPath, loadOptions).then(
+    () => rendererStartupGate.markRendererLoaded(),
+    (error: unknown) => rendererStartupGate.failRendererLoad(error),
+  );
 
   window.on("closed", () => {
     if (writingSmoke.requested && !writingSmokeFinished) {
@@ -1819,17 +2075,28 @@ const autosaveShutdown = new AutosaveShutdownCoordinator({
 app.on("before-quit", (event) => autosaveShutdown.beforeQuit(event));
 
 void app.whenReady().then(async () => {
+  if (!smokeMode || brandProgressSmoke) {
+    updateStartupProgress("MAGINALIA desktop α1 を起動しています", 0.08);
+    startStartupProgressWindow(140);
+    if (process.platform === "darwin") {
+      const dockIcon = resolveBrandAsset("icon.png", "iconnottran.png");
+      if (dockIcon !== null) app.dock?.setIcon(dockIcon);
+    }
+  }
   try {
     await projectPathStore.ensureDefaultCreationParentPlaceholder();
   } catch {
     // A malformed/unreadable app-local record is preserved for recovery.
     console.error("MAGINALIA_PROJECT_PATH_SETTINGS_NOT_INITIALIZED");
   }
+  if (!smokeMode || brandProgressSmoke) updateStartupProgress("Workdesk の保存情報を確認しています", 0.28);
   registerMarkdownIpc();
+  if (!smokeMode || brandProgressSmoke) updateStartupProgress("作業環境を準備しています", 0.52);
   modHostReady = modHost.start().catch((error: unknown) => {
     console.error("MAGINALIA_MOD_START_FAILED", error);
     return modHost.snapshot();
   });
+  if (!smokeMode || brandProgressSmoke) updateStartupProgress("編集画面を読み込んでいます", 0.72);
   openMainWindow();
   app.on("activate", openMainWindow);
 });
@@ -1837,6 +2104,12 @@ void app.whenReady().then(async () => {
 app.on("will-quit", () => {
   // Normally shutdown completed in the before-quit coordinator. This is a
   // final best-effort guard for platform-forced paths; it never starts one.
+  if (startupProgressTimer !== null) {
+    clearTimeout(startupProgressTimer);
+    startupProgressTimer = null;
+  }
+  startupProgressReadiness.abort();
+  cleanupStartupProgressWindowListeners();
   if (reviewerProcessManager !== undefined) void reviewerProcessManager.shutdown();
   void modHost.dispose();
   unregisterMarkdownIpc();

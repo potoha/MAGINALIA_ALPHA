@@ -1,0 +1,5 @@
+# MAGINALIA Desktop のフォルダ識別子です。
+version = 1
+type = project
+id = ${GENERATED_PROJECT_UUID}
+parent = ${PRIMARY_WORKDESK_UUID}
