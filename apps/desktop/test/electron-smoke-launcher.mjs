@@ -41,10 +41,14 @@ export function runElectronSmoke({ userDataRoot, appArgs, env = {}, electronSwit
   // parent Node-based test runner inherited this development-only switch.
   delete childEnv.ELECTRON_RUN_AS_NODE;
 
-  const child = spawn(electronExecutable, [
+  const packagedExecutable = process.env.MAGINALIA_SMOKE_PACKAGED_EXECUTABLE;
+  const executable = packagedExecutable || electronExecutable;
+  const applicationEntry = packagedExecutable ? [] : [mainPath];
+
+  const child = spawn(executable, [
     ...electronSwitches,
     `--user-data-dir=${userDataRoot}`,
-    mainPath,
+    ...applicationEntry,
     ...appArgs
   ], {
     cwd: desktopRoot,

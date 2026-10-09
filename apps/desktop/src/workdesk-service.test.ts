@@ -52,6 +52,46 @@ describe("Workdesk portable and local state", () => {
     expect((await fs.readdir(created.canonicalRoot)).filter((name) => name.endsWith(".magi"))).toEqual(["workdesk.magi"]);
   });
 
+  it("creates a setup Workdesk with its reserved identity and resumes without replacing files", async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-setup-"));
+    roots.push(parent);
+    const storePath = path.join(parent, "profile", "workdesk-paths.json");
+    const root = path.join(parent, "Documents", "MAGINALIA");
+    const identityId = "44444444-4444-4444-8444-444444444444";
+    const service = new WorkdeskService(new FileWorkdeskPathStore(storePath));
+
+    const created = await service.createAtRootForSetup(root, "My Workdesk", identityId);
+    expect(created.identity.id).toBe(identityId);
+    expect(parseFolderMarkerText(await readFile(path.join(root, "workdesk.magi"), "utf8"))).toEqual({
+      version: 1,
+      type: "workdesk",
+      id: identityId,
+    });
+    const authoredText = "# My own Workdesk notes\n";
+    await writeFile(path.join(root, "manuscript.md"), authoredText, "utf8");
+
+    const resumedService = new WorkdeskService(new FileWorkdeskPathStore(storePath));
+    const resumed = await resumedService.createAtRootForSetup(root, "My Workdesk", identityId);
+    expect(resumed.identity.id).toBe(identityId);
+    expect(await readFile(path.join(root, "manuscript.md"), "utf8")).toBe(authoredText);
+    await expect(resumedService.restorePrimary()).resolves.toMatchObject({ identity: { id: identityId } });
+  });
+
+  it("refuses to create a setup identity in a non-empty unmarked folder", async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-setup-nonempty-"));
+    roots.push(parent);
+    const root = path.join(parent, "existing");
+    await mkdir(root);
+    const authoredText = "Keep this file untouched.\n";
+    await writeFile(path.join(root, "notes.md"), authoredText, "utf8");
+    const service = new WorkdeskService(new FileWorkdeskPathStore(path.join(parent, "profile.json")));
+
+    await expect(service.createAtRootForSetup(root, "My Workdesk", "55555555-5555-4555-8555-555555555555"))
+      .rejects.toMatchObject({ code: "create-failed" });
+    expect(await readFile(path.join(root, "notes.md"), "utf8")).toBe(authoredText);
+    await expect(fs.lstat(path.join(root, "workdesk.magi"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("migrates a valid legacy Workbench UUID into workdesk.magi without changing legacy metadata", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "maginalia-workdesk-legacy-"));
     roots.push(root);

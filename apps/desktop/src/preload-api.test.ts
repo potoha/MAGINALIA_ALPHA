@@ -56,6 +56,8 @@ import {
   OPEN_REPOSITORY_DOCUMENT_CHANNEL,
   USE_REPOSITORY_SHELF_CHANNEL
 } from "./preload-api";
+import { GET_FIRST_RUN_STATUS_CHANNEL, RUN_FIRST_RUN_SETUP_CHANNEL } from "./first-run-ipc";
+import { OPEN_BUNDLED_MANUAL_CHANNEL } from "./manual-ipc";
 
 describe("preload boundary", () => {
   it("exposes only the narrow semantic methods", async () => {
@@ -66,6 +68,10 @@ describe("preload boundary", () => {
     }, undefined, () => "C:\\drop\\figure.png");
 
     expect(Object.keys(api)).toEqual([
+      "getFirstRunStatus",
+      "runFirstRunSetup",
+      "onFirstRunProgress",
+      "openBundledManual",
       "openMarkdown",
       "saveMarkdown",
       "openDocument",
@@ -123,6 +129,10 @@ describe("preload boundary", () => {
       "useRepositoryShelf",
       "onAutosaveFlushRequest"
     ]);
+    await api.getFirstRunStatus();
+    await api.runFirstRunSetup({ workdeskMode: "new", privateShelfMode: "existing", registerPublicShelf: false });
+    api.onFirstRunProgress(() => undefined);
+    await api.openBundledManual();
     await api.openMarkdown();
     await api.saveMarkdown({ sessionId: "opaque-session", text: "# Draft\r\n" });
     await api.openDocument();
@@ -244,6 +254,9 @@ describe("preload boundary", () => {
       repositoryId: "44444444-4444-4444-8444-444444444444"
     });
     expect(calls).toEqual([
+      { channel: GET_FIRST_RUN_STATUS_CHANNEL, args: [] },
+      { channel: RUN_FIRST_RUN_SETUP_CHANNEL, args: [{ workdeskMode: "new", privateShelfMode: "existing", registerPublicShelf: false }] },
+      { channel: OPEN_BUNDLED_MANUAL_CHANNEL, args: [] },
       { channel: OPEN_MARKDOWN_CHANNEL, args: [] },
       { channel: SAVE_MARKDOWN_CHANNEL, args: [{ sessionId: "opaque-session", text: "# Draft\r\n" }] },
       { channel: OPEN_DOCUMENT_CHANNEL, args: [] },

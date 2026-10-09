@@ -249,6 +249,33 @@ describe("resolved Markdown export IPC boundary", () => {
     expect(await readFile(source, "utf8")).toBe("# 日本語\n");
   });
 
+  it("keeps packaged DOCX failures understandable without exposing runtime details", async () => {
+    const { root, source, service } = await fixture("# 日本語\n");
+    const sessionId = await open(service, source, "# 日本語\n");
+    const output = path.join(root, "draft.resolved.docx");
+    const handlers = createExportHandlers({
+      sessions: service,
+      resolve: async () => resolution,
+      showSaveDialog: async () => ({ canceled: false, filePath: output }),
+      writeDocx: async () => { throw new Error("Pandoc process failed"); },
+    });
+    const prepared = await resolve(handlers, sessionId, "# 日本語\n");
+    const result = await handlers.writeExport(event, {
+      exportId: prepared.exportId,
+      documentId: sessionId,
+      revision: prepared.revision,
+      text: "# 日本語\n",
+      format: "docx",
+      settings: createExportPresentationSettings(),
+    });
+
+    expect(result).toEqual({
+      kind: "error",
+      code: "write-failed",
+      message: "DOCXを書き出せませんでした。保存先を確認して、もう一度お試しください。",
+    });
+  });
+
   it("rejects exact source overwrite and stale or cross-owner transactions", async () => {
     const { source, service } = await fixture();
     const sessionId = await open(service, source);

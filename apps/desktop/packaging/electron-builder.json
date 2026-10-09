@@ -1,0 +1,43 @@
+{
+  "appId": "org.maginalia.desktop.alpha1",
+  "productName": "MAGINALIA desktop α1",
+  "asar": true,
+  "directories": {
+    "app": "packaging/.stage/app",
+    "output": "release"
+  },
+  "files": [
+    "dist/**/*",
+    "node_modules/**/*",
+    "package.json",
+    "!**/*.map"
+  ],
+  "extraResources": [
+    { "from": "packaging/runtime/reviewer", "to": "reviewer" },
+    { "from": "packaging/runtime/contracts", "to": "contracts" },
+    { "from": "packaging/runtime/pandoc", "to": "pandoc" },
+    { "from": "packaging/runtime/tutorial-sample", "to": "tutorial-sample" },
+    { "from": "packaging/manual", "to": "manual", "filter": ["マニュアル.pdf"] },
+    { "from": "packaging/runtime/THIRD-PARTY-NOTICES", "to": "THIRD-PARTY-NOTICES" }
+  ],
+  "win": {
+    "target": [{ "target": "nsis", "arch": ["x64"] }],
+    "icon": "packaging/.stage/app/dist/branding/maginalia.ico",
+    "artifactName": "MAGINALIA-desktop-a1-Setup.exe"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowElevation": true,
+    "allowToChangeInstallationDirectory": false,
+    "createStartMenuShortcut": true,
+    "createDesktopShortcut": false,
+    "shortcutName": "MAGINALIA desktop α1",
+    "deleteAppDataOnUninstall": false,
+    "runAfterFinish": true,
+    "language": 1041,
+    "installerLanguages": ["ja_JP"],
+    "displayLanguageSelector": false,
+    "include": "packaging/installer-shortcut.nsh"
+  }
+}

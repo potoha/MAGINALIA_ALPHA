@@ -1,67 +1,66 @@
-# MAGINALIA α
+# MAGINALIA desktop α1 — Before Kaldi
 
-**MAGINALIA** is a local-first research and writing workspace for the humanities.
-This repository is the active implementation line for the independent **Electron + Monaco** desktop application.
+[English README](README_en.md)
 
-> **Status:** pre-alpha
-> **Version:** α0.01
-> **Codename:** Before Kaldi
-> **Current implementation cycle:** coffee Sapling
+**MAGINALIA** は、人文学のためのローカルファーストな研究・執筆ワークスペースです。
+このリポジトリは、独立した **Electron + Monaco** デスクトップアプリケーションの現行実装ラインです。
 
-MAGINALIA is built for students, researchers, and writers who should be able to collect sources and quotations, write, render, and preserve their work without needing Git, terminals, or a general-purpose programming IDE.
+> **状況:** α1 開発中。Windows インストーラーの実機受け入れ確認前です。
 
-## What exists now
+MAGINALIA は、学生・研究者・書き手が、Gitやターミナル、汎用プログラミングIDEを理解しなくても、資料や引用を集め、書き、レンダリングし、成果を保存できることを目指しています。
 
-The current pre-alpha contains the working substrate for:
+## 現在あるもの
 
-- Workdesk / Project navigation and Registry browsing
-- multi-document Markdown tabs
-- Monaco-based editing
-- required local autosave and local persistence
-- Shelf search and structured quotation insertion
-- Reviewer approval into the canonical Private Shelf
-- generic Source references beyond ISBN-only books
-- automatic reference resolution
-- rich Markdown rendering, including vertical-writing support
-- resolved Markdown, PDF, and DOCX export
-- local Git-backed History for Projects, Workdesks, and the Private Shelf
-- a shared command surface and Command Palette
-- a small filesystem-based Mod host and first-party Mod experiments
-- host-independent Format, Repository, Source, and Writing core packages
+現在のα1開発版には、以下の実動基盤が含まれています。
 
-The project is intentionally still pre-alpha. Interfaces, Mod APIs, UX details, and storage workflows may change while the main research-writing flow is being proven.
+- Workdesk / Project のナビゲーションと Registry 閲覧
+- 複数Markdown文書のタブ表示
+- Monacoベースの編集
+- 必須のローカルAutosaveとローカル永続化
+- Shelf検索と構造化された引用挿入
+- Reviewerで承認した引用のcanonical Private Shelfへの反映
+- ISBN付き書籍に限定されない汎用Source参照
+- 参考文献の自動解決
+- 縦書きを含むリッチなMarkdownレンダリング
+- 参照解決済みMarkdown・PDF・DOCXのエクスポート
+- Project / Workdesk / Private ShelfのローカルGit-backed History
+- 共通コマンド基盤とCommand Palette
+- 小規模なファイルシステムベースのModホストとfirst-party Modの実験
+- ホスト非依存のFormat / Repository / Source / Writing coreパッケージ
 
-## Core principles
+このリポジトリはα1の開発用ソースです。Windowsインストーラー、初回設定、対応環境での受け入れ確認を進めています。インターフェース、Mod API、UX、保存ワークフローは変更される可能性があります。
 
-1. **Local first.** Ordinary local files remain usable even when a network service is unavailable.
-2. **Portable research data.** Markdown, YAML, JSON, images, and Git-backed history are durable formats. Electron and Monaco are implementation details.
-3. **Autosave is baseline safety.** Editing persists locally without requiring a manual Save ritual. Autosave is separate from Git history or remote synchronization.
-4. **Humanities UX first.** Normal UI describes research and writing work rather than exposing implementation jargon unnecessarily.
-5. **Simple outside, explicit inside.** External services and specialist tools live behind bounded adapters and replaceable capabilities.
-6. **AI is optional.** MAGINALIA must remain useful without an AI provider.
-7. **Mods are capabilities, not ambient privilege.** Project content is data, not executable code.
+## 基本原則
 
-## Repository layout
+1. **Local first.** ネットワークサービスが利用できない場合でも、通常のローカルファイルは引き続き利用できること。
+2. **Portable research data.** Markdown、YAML、JSON、画像、Gitベースの履歴を永続的な形式とすること。ElectronとMonacoは実装詳細にすぎません。
+3. **Autosave is baseline safety.** 手動Saveを儀式として要求せず、編集内容はローカルへ保存されます。AutosaveはGit履歴やリモート同期とは別のものです。
+4. **Humanities UX first.** 通常UIでは、実装上の専門用語を必要以上に露出させず、研究・執筆の作業として表現します。
+5. **Simple outside, explicit inside.** 外部サービスや専門ツールは、境界の明確なadapterや交換可能なcapabilityの背後に置きます。
+6. **AI is optional.** AI providerがなくてもMAGINALIAは有用でなければなりません。
+7. **Mods are capabilities, not ambient privilege.** Projectの内容はデータであり、実行可能コードではありません。
+
+## リポジトリ構成
 
 ```text
 MAGINALIA_ALPHA/
-├─ apps/desktop/            # Electron desktop application
+├─ apps/desktop/            # Electronデスクトップアプリケーション
 ├─ packages/format/         # portable format contracts
 ├─ packages/repository-core/
 ├─ packages/source-core/
 ├─ packages/writing-core/
-├─ spec/                    # authoritative portable format schemas
+├─ spec/                    # portable format schemaの正本
 ├─ sidecars/reviewer/       # Python / FastAPI Reviewer
-├─ mods/                    # first-party / development Mods
-├─ docs/                    # maintained implementation and contract guidance
-├─ memory/                  # retrieval-oriented development context
+├─ mods/                    # first-party / 開発用Mods
+├─ docs/                    # 維持対象の実装・contractガイド
+├─ memory/                  # 検索型の開発コンテキスト
 ├─ package.json
 └─ package-lock.json
 ```
 
-## Development
+## 開発
 
-This is an npm workspace.
+このリポジトリはnpm workspaceです。
 
 ```bash
 npm ci
@@ -71,7 +70,7 @@ npm test
 npm start
 ```
 
-Useful smoke suites include:
+主なsmoke test:
 
 ```bash
 npm run smoke
@@ -83,37 +82,37 @@ npm run smoke:shelf
 npm run smoke:export
 ```
 
-For exact dependency versions, use `package-lock.json` and package manifests as the source of truth.
+依存関係の正確なバージョンについては、`package-lock.json` と各package manifestを正本としてください。
 
-## Read before changing architecture
+## アーキテクチャを変更する前に読むもの
 
-- [`AGENTS.md`](AGENTS.md) — repository workflow, invariants, and source authority
-- [MAGINALIA_IDE Decision Log](https://github.com/potoha/MAGINALIA_IDE/blob/main/plan/09_DECISION_LOG.md) — canonical cross-product decisions
-- [MAGINALIA_IDE Alpha Close Sequence](https://github.com/potoha/MAGINALIA_IDE/blob/main/plan/27_ALPHA_CLOSE_SLICE_SEQUENCE.md) — canonical alpha-close planning
+- [`AGENTS.md`](AGENTS.md) — repository workflow、invariant、source authority
+- [MAGINALIA_IDE Decision Log](https://github.com/potoha/MAGINALIA_IDE/blob/main/plan/09_DECISION_LOG.md) — product横断のcanonical decision
+- [MAGINALIA_IDE Alpha Close Sequence](https://github.com/potoha/MAGINALIA_IDE/blob/main/plan/27_ALPHA_CLOSE_SLICE_SEQUENCE.md) — canonicalなalpha close計画
 
-Canonical cross-product decisions, ADRs, and planning live in `potoha/MAGINALIA_IDE`. Package manifests and `package-lock.json` are the dependency authority. When old implementation and an accepted decision disagree, the accepted decision wins.
+プロダクト横断のdecision、ADR、計画の正本は `potoha/MAGINALIA_IDE` にあります。依存関係の正本は各package manifestと `package-lock.json` です。古い実装とAccepted decisionが食い違う場合は、Accepted decisionを優先します。
 
-## Salvage sources
+## Salvage元
 
-`MAGINALIA_ALPHA` is the implementation target. Older repositories are evidence and salvage sources, not places to add new Before Kaldi implementation unless explicitly instructed.
+`MAGINALIA_ALPHA` が実装先です。明示的な指示がない限り、旧リポジトリは新しいBefore Kaldi実装を追加する場所ではなく、証拠・salvage元として扱います。
 
-- `potoha/MAGINALIA_IDE` — canonical decisions, contracts, Writing Core and Repository Core history
-- `potoha/MY_marginallia` — Quote Capture / Reviewer implementation and contracts
-- `potoha/Uttate-writer` — MAGINALIA Input legacy implementation
-- `potoha/toybox` — historical design context; read-only from the MAGINALIA Workspace project
+- `potoha/MAGINALIA_IDE` — canonical decision、contract、Writing Core / Repository Coreの履歴
+- `potoha/MY_marginallia` — Quote Capture / Reviewerの実装とcontract
+- `potoha/Uttate-writer` — MAGINALIA Inputの旧実装
+- `potoha/toybox` — 過去の設計文脈。MAGINALIA Workspaceプロジェクトからはread-only
 
-## Current safety boundary
+## 現在の安全境界
 
-Production Git/GitHub authentication, discovery, fetch, push, provisioning, and restore are frozen by D032. Local Git-backed History remains supported. Local autosave and persistence continue independently of the remote-sync gate.
+ProductionのGit/GitHub認証、discovery、fetch、push、provisioning、restoreはD032により凍結されています。ローカルGit-backed Historyは引き続きサポートします。Autosaveとローカル永続化はremote-sync gateとは独立しています。
 
-The absence of cloud connectivity must not make local writing unavailable, and credentials must never be stored in portable research repositories.
+クラウド接続がなくてもローカル執筆は利用可能でなければならず、credentialをportableな研究リポジトリへ保存してはいけません。
 
-## License / distribution
+## ライセンス / 配布
 
-MAGINALIA_ALPHA code owned by **beyond the Word. / MAGINALIA PROJECT** is released under the [MIT License](LICENSE), unless a file or component states otherwise.
+**beyond the Word. / MAGINALIA PROJECT** が権利を持つ MAGINALIA_ALPHA のコードは、個別のファイルやコンポーネントに別の記載がない限り [MIT License](LICENSE) で公開します。
 
-The **MAGINALIA** name, wordmark, logo, visual identity, and other project/product branding are not granted by the MIT License. See [NOTICE](NOTICE).
+**MAGINALIA** の名称、ワードマーク、ロゴ、ビジュアルアイデンティティその他のプロジェクト／製品ブランドは、MIT License の許諾対象には含まれません。詳細は [NOTICE](NOTICE) を参照してください。
 
-Third-party components remain under their respective licenses. User-created manuscripts, notes, quotations, images, Project data, and other research content are not relicensed merely by being created or processed with MAGINALIA.
+third-party component はそれぞれのライセンスに従います。また、MAGINALIAで作成・編集・保存・処理された原稿、ノート、引用、画像、Projectデータその他のユーザー作成コンテンツに、このソフトウェアライセンスが自動的に適用されることはありません。
 
-This is still a pre-alpha repository; installer support and stable Mod compatibility are not yet release guarantees.
+このリポジトリは公開インストーラーではありません。Windows環境でのインストール、更新、アンインストールの受け入れ確認はこれからです。

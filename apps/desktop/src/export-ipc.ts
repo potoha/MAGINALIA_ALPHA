@@ -427,7 +427,7 @@ export class ExportService {
           return {
             kind: "error",
             code: "write-failed",
-            message: "PDF export is unavailable because the Vivliostyle adapter is not configured."
+            message: "PDFを書き出せませんでした。保存先を確認して、もう一度お試しください。"
           };
         }
         await this.dependencies.writePdf(outputPath, createExportDocumentModel(request.text), settings);
@@ -436,7 +436,7 @@ export class ExportService {
           return {
             kind: "error",
             code: "write-failed",
-            message: "DOCX export is unavailable because the Pandoc adapter is not configured."
+            message: "DOCXを書き出せませんでした。保存先を確認して、もう一度お試しください。"
           };
         }
         await this.dependencies.writeDocx(outputPath, createExportDocumentModel(request.text), settings);
@@ -448,9 +448,9 @@ export class ExportService {
         kind: "error",
         code: "write-failed",
         message: format === "pdf"
-          ? "The PDF could not be generated. Check the Vivliostyle installation and destination."
+          ? "PDFを書き出せませんでした。保存先を確認して、もう一度お試しください。"
           : format === "docx"
-            ? "The DOCX could not be generated. Check the Pandoc installation and destination."
+            ? "DOCXを書き出せませんでした。保存先を確認して、もう一度お試しください。"
             : "The exported Markdown could not be written. Check the destination and try again."
       };
     }
