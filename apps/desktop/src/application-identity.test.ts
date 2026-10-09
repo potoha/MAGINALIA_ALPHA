@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 describe("Electron application identity", () => {
+  it("uses the branded desktop α1 name", () => {
+    expect(MAGINALIA_APPLICATION_NAME).toBe("MAGINALIA desktop α1");
+  });
+
   it("sets a stable product name before stores are resolved and retains the existing profile path", () => {
     let name = "Electron";
     const profileParent = mkdtempSync(join(tmpdir(), "maginalia-profile-"));

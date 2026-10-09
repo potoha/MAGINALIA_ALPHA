@@ -1,4 +1,5 @@
 import "./style.css";
+import brandHeaderUrl from "../../../../assets/header.png?url";
 import { WritingController, type CapturedInsertionTarget, type WritingStatus, type WritingView } from "./controller";
 import { AutosaveCoordinator } from "./autosave-coordinator";
 import { decideDirtySwitch } from "./dirty-decision";
@@ -123,8 +124,8 @@ app.innerHTML = `
   <main id="workbench" class="workspace workbench" aria-labelledby="title" data-editor-only="false">
     <header class="toolbar" id="workbench-toolbar">
       <div class="brand">
-        <p class="eyebrow">MAGINALIA</p>
-        <h1 id="title">Before Kaldi</h1>
+        <img class="brand-wordmark" src="${brandHeaderUrl}" alt="" aria-hidden="true">
+        <h1 id="title" class="visually-hidden">MAGINALIA desktop α1 — Before Kaldi</h1>
       </div>
       <button id="workdesk-home" class="workbench-home-action" data-workbench-command="maginalia.workdesk.return" type="button" title="Return to your Workdesk" aria-label="Back to Workdesk" aria-pressed="false" disabled>← Workdesk</button>
     </header>

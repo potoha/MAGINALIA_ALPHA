@@ -17,10 +17,11 @@
   "scripts": {
     "postinstall": "install-electron",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.main.json --noEmit",
-    "build": "npm run build:main && npm run build:renderer",
+    "build": "npm run build:main && npm run build:renderer && npm run build:brand-assets",
     "build:main": "tsc -p tsconfig.main.json && npm run build:preload",
     "build:preload": "vite build --mode preload",
     "build:renderer": "vite build",
+    "build:brand-assets": "node scripts/build-brand-assets.mjs",
     "test": "vitest run --config vitest.config.mts",
     "smoke": "npm run build && node test/electron-smoke.mjs",
     "smoke:writing": "npm run build && node test/writing-smoke.mjs",
@@ -35,6 +36,7 @@
     "smoke:h": "npm run build && node test/h-smoke.mjs",
     "smoke:h-navigation-acceptance": "npm run build && node test/workdesk-navigation-acceptance-smoke.mjs",
     "smoke:workdesk-persistence": "npm run build && node test/workdesk-persistence-smoke.mjs",
+    "smoke:brand-progress": "npm run build && node test/brand-progress-smoke.mjs",
     "smoke:h5": "npm run build && node test/h5-smoke.mjs",
     "start": "npm run build && electron dist/main/main.js"
   },
