@@ -80,8 +80,8 @@ export function renderBrandProgressHtml(images: BrandProgressImages): string {
       align-self: center; height: 32px; width: 100%;
       background-image: var(--marker-image, linear-gradient(93deg, #baff13 0%, #c4f51a 78%, #baff13 100%));
       background-repeat: no-repeat; background-position: center; background-size: 100% 100%;
-      transform: scaleX(var(--progress, 0)); transform-origin: left center;
-      transition: transform var(--motion) linear; opacity: 0.88;
+      clip-path: inset(0 100% 0 0);
+      transition: clip-path var(--motion) linear; opacity: 0.88;
     }
     .message-text { position: relative; margin: 0; padding: 8px 7px; font-size: 16px; line-height: 1.45; font-weight: 600; overflow-wrap: anywhere; }
     .progress-track {
@@ -92,17 +92,17 @@ export function renderBrandProgressHtml(images: BrandProgressImages): string {
       position: absolute; inset: 0; width: 100%;
       background-image: var(--marker-image, linear-gradient(93deg, #baff13 0%, #c4f51a 78%, #baff13 100%));
       background-repeat: no-repeat; background-position: center; background-size: 100% 100%;
-      transform: scaleX(var(--progress, 0)); transform-origin: left center;
-      transition: transform var(--motion) linear;
+      clip-path: inset(0 100% 0 0);
+      transition: clip-path var(--motion) linear;
     }
     .is-indeterminate .message-paint, .is-indeterminate .progress-stroke {
-      width: 42%; transform: translateX(-110%); transform-origin: left center;
+      clip-path: inset(0 58% 0 0); transform: translateX(-42%);
       animation: marker-sweep 1.8s cubic-bezier(0.42, 0, 0.2, 1) infinite;
     }
     .is-indeterminate .progress-track .progress-stroke { animation-delay: 60ms; }
     .footer { display: flex; justify-content: space-between; gap: 12px; margin-top: 9px; color: var(--muted); font-size: 11px; letter-spacing: 0.04em; }
     .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-    @keyframes marker-sweep { from { transform: translateX(-110%); } to { transform: translateX(245%); } }
+    @keyframes marker-sweep { from { transform: translateX(-42%); } to { transform: translateX(110%); } }
     @media (max-width: 440px) {
       main { width: calc(100vw - 28px); padding: 16px 14px 18px; }
       .brand { min-height: 112px; }
@@ -112,7 +112,7 @@ export function renderBrandProgressHtml(images: BrandProgressImages): string {
     @media (prefers-reduced-motion: reduce) {
       :root { --motion: 0ms; }
       .is-indeterminate .message-paint, .is-indeterminate .progress-track .progress-stroke {
-        animation: none; transform: scaleX(0.42); left: 0;
+        animation: none; transform: none;
       }
     }
   </style>
@@ -138,6 +138,8 @@ export function renderBrandProgressHtml(images: BrandProgressImages): string {
       const root = document.getElementById("brand-progress");
       const message = document.getElementById("startup-message");
       const bar = document.getElementById("startup-progress");
+      const messagePaint = document.querySelector(".message-paint");
+      const progressStroke = document.querySelector(".progress-stroke");
       const caption = document.getElementById("progress-caption");
       const brandImage = document.getElementById("brand-image");
       const fallback = document.getElementById("brand-fallback");
@@ -156,13 +158,16 @@ export function renderBrandProgressHtml(images: BrandProgressImages): string {
         message.textContent = state.message || "MAGINALIA desktop α1 を準備しています";
         root.classList.toggle("is-indeterminate", value === null);
         if (value === null) {
-          root.style.setProperty("--progress", "0.42");
+          messagePaint.style.removeProperty("clip-path");
+          progressStroke.style.removeProperty("clip-path");
           bar.removeAttribute("aria-valuenow");
           bar.setAttribute("aria-valuetext", message.textContent);
           caption.textContent = "";
         } else {
           const percent = Math.round(value * 100);
-          root.style.setProperty("--progress", String(value));
+          const clippedPercent = (100 - percent) + "%";
+          messagePaint.style.clipPath = "inset(0 " + clippedPercent + " 0 0)";
+          progressStroke.style.clipPath = "inset(0 " + clippedPercent + " 0 0)";
           bar.setAttribute("aria-valuenow", String(percent));
           bar.setAttribute("aria-valuetext", percent + "%");
           caption.textContent = percent + "%";

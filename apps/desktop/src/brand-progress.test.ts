@@ -25,6 +25,10 @@ describe("brand progress presentation", () => {
     expect(html).toContain("aria-valuemax=\"100\"");
     expect(html).toContain("role=\"progressbar\"");
     expect(html).toContain("prefers-reduced-motion: reduce");
+    expect(html).toContain("clip-path: inset(0 100% 0 0)");
+    expect(html).toContain("transition: clip-path var(--motion) linear");
+    expect(html).toContain('messagePaint.style.clipPath = "inset(0 " + clippedPercent + " 0 0)"');
+    expect(html).not.toContain("transform: scaleX(var(--progress");
     expect(html).toContain("data:image/png;base64,logo");
     expect(html).toContain("data:image/png;base64,marker");
     expect(html).toContain("MAGINALIA desktop α1");
@@ -36,6 +40,7 @@ describe("brand progress presentation", () => {
     expect(html).toContain("brand-fallback");
     expect(html).toContain("MAGINALIA <small>desktop α1 · Before Kaldi</small>");
     expect(html).toContain("linear-gradient(93deg, #baff13");
+    expect(html).toContain("clip-path: inset(0 58% 0 0)");
   });
 
   it("updates status text without treating it as markup and retains a numeric fraction", () => {
