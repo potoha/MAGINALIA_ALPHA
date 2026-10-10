@@ -765,12 +765,14 @@ const exportHandlers = createExportHandlers({
       ? dialog.showSaveDialog(options)
       : dialog.showSaveDialog(ownerWindow, options);
   },
-  writePdf: (outputPath, document, settings) => app.isPackaged || process.env.MAGINALIA_SMOKE_ELECTRON_PDF === "1"
-    ? writePdfWithElectron(outputPath, document, settings, createIsolatedPdfWindow)
-    : writePdfWithVivliostyle(outputPath, document, settings),
-  writeDocx: (outputPath, document, settings) => app.isPackaged
-    ? writeDocxWithPandoc(outputPath, document, settings, resolvePackagedRuntimePaths(process.resourcesPath).pandocExecutable)
-    : writeDocxWithPandoc(outputPath, document, settings)
+  resolveProjectAsset: (owner, projectId, relativePath) =>
+    projectAssetService.resolveForOwner(owner, projectId, relativePath),
+  writePdf: (outputPath, document, settings, images) => app.isPackaged || process.env.MAGINALIA_SMOKE_ELECTRON_PDF === "1"
+    ? writePdfWithElectron(outputPath, document, settings, createIsolatedPdfWindow, undefined, images)
+    : writePdfWithVivliostyle(outputPath, document, settings, undefined, {}, images),
+  writeDocx: (outputPath, document, settings, images) => app.isPackaged
+    ? writeDocxWithPandoc(outputPath, document, settings, resolvePackagedRuntimePaths(process.resourcesPath).pandocExecutable, images)
+    : writeDocxWithPandoc(outputPath, document, settings, undefined, images)
 });
 const repositoryHandlers = createRepositoryHandlers({
   pickParentFolder: () => repositorySmoke.requested

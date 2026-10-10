@@ -1,8 +1,9 @@
-import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import sharp, { type Metadata } from "sharp";
 
 import { commitStagedArtifact } from "./export-artifact-transaction";
 import type { ExportPresentationSettings, ExportPaperSize } from "./export-presentation-settings";
@@ -10,6 +11,12 @@ import { parseMarkdownInlines, safeExternalHref, type MarkdownInline } from "./r
 import { parseMarkdownHeading, parseMarkdownListItem } from "./renderer/markdown-structure";
 import type { ExportDocumentBlock, ExportDocumentModel } from "./renderer/export-document-model";
 import { serializeExportDocumentModel } from "./renderer/export-document-model";
+import {
+  assertExportImagesResolved,
+  collectExportImageReferences,
+  type ExportImageAsset,
+  type ExportImageAssets
+} from "./export-project-images";
 
 const PAGE_DIMENSIONS_MM: Readonly<Record<ExportPaperSize, readonly [number, number]>> = Object.freeze({
   A3: [297, 420],
@@ -198,7 +205,7 @@ function assertTextHasNoUnresolvedResources(value: string): void {
   }
 }
 
-function assertInlineExportable(value: string): void {
+function assertInlineExportable(value: string, images: ExportImageAssets): void {
   const visit = (nodes: readonly MarkdownInline[]): void => {
     let textRun = "";
     const flushTextRun = (): void => {
@@ -215,7 +222,10 @@ function assertInlineExportable(value: string): void {
         continue;
       }
       flushTextRun();
-      if (node.kind === "local-media") throw new Error("DOCX export cannot resolve Project media in this document.");
+      if (node.kind === "local-media") {
+        if (!images.has(node.target)) throw new Error(`Project内の画像「${node.target}」を確認できないため、書き出せませんでした。`);
+        continue;
+      }
       if (node.kind === "internal-link") throw new Error("DOCX export contains an unresolved internal link.");
       if (node.kind === "quote-ref") throw new Error("DOCX export contains an unresolved quotation marker.");
       if (node.kind === "link" || node.kind === "strong" || node.kind === "emphasis") {
@@ -227,12 +237,12 @@ function assertInlineExportable(value: string): void {
   visit(parseMarkdownInlines(value));
 }
 
-function assertBlockExportable(block: ExportDocumentBlock): void {
+function assertBlockExportable(block: ExportDocumentBlock, images: ExportImageAssets): void {
   if (block.kind === "metadata" || block.kind === "raw" || block.kind === "code") return;
   if (block.kind === "table") {
     if (block.table === undefined) throw new Error("DOCX export received a table block without its Export Document Model projection.");
-    for (const cell of block.table.header) assertInlineExportable(cell);
-    for (const row of block.table.rows) for (const cell of row) assertInlineExportable(cell);
+    for (const cell of block.table.header) assertInlineExportable(cell, images);
+    for (const row of block.table.rows) for (const cell of row) assertInlineExportable(cell, images);
     return;
   }
   let text = block.markdown.replace(/\r?\n$/u, "");
@@ -241,18 +251,143 @@ function assertBlockExportable(block: ExportDocumentBlock): void {
   } else if (block.kind === "blockquote") {
     text = text.split(/\r?\n/gu).map((line) => line.replace(/^>\s?/u, "")).join("\n");
   } else if (block.kind === "list") {
-    for (const line of text.split(/\r?\n/gu)) assertInlineExportable(parseMarkdownListItem(line)?.content ?? line);
+    for (const line of text.split(/\r?\n/gu)) assertInlineExportable(parseMarkdownListItem(line)?.content ?? line, images);
     return;
   }
-  assertInlineExportable(text);
+  assertInlineExportable(text, images);
 }
 
-function validateModel(model: ExportDocumentModel): string {
+function validateModel(model: ExportDocumentModel, images: ExportImageAssets): string {
   if (model.kind !== "export-document" || model.version !== 1 || !Array.isArray(model.blocks)) {
     throw new Error("DOCX export received an invalid Export Document Model.");
   }
-  for (const block of model.blocks) assertBlockExportable(block);
+  assertExportImagesResolved(model, images);
+  for (const block of model.blocks) assertBlockExportable(block, images);
   return serializeExportDocumentModel(model);
+}
+
+interface DocxImageResource {
+  readonly relativePath: string;
+  readonly widthInches: number;
+}
+
+function dataUrlBytes(image: ExportImageAsset): Buffer {
+  const prefix = `data:${image.mimeType};base64,`;
+  if (!image.dataUrl.startsWith(prefix)) throw new Error("Project画像を安全に読み取れませんでした。画像ファイルを確認してください。");
+  const encoded = image.dataUrl.slice(prefix.length);
+  if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded)) throw new Error("Project画像を安全に読み取れませんでした。画像ファイルを確認してください。");
+  return Buffer.from(encoded, "base64");
+}
+
+function effectiveImageDimensions(width: number, height: number, orientation: number | undefined): { readonly width: number; readonly height: number } {
+  return orientation !== undefined && orientation >= 5 && orientation <= 8
+    ? { width: height, height: width }
+    : { width, height };
+}
+
+async function materializeDocxImages(
+  workspace: string,
+  model: ExportDocumentModel,
+  settings: ExportPresentationSettings,
+  images: ExportImageAssets
+): Promise<Map<string, DocxImageResource>> {
+  const targets = [...new Set(collectExportImageReferences(model))];
+  if (targets.length === 0) return new Map();
+  const assetsDirectory = path.join(workspace, "assets");
+  await mkdir(assetsDirectory, { recursive: true });
+  const [shortWidth, longWidth] = PAGE_DIMENSIONS_MM[settings.paperSize];
+  const [pageWidthMm, pageHeightMm] = settings.orientation === "portrait"
+    ? [shortWidth, longWidth]
+    : [longWidth, shortWidth];
+  const maximumWidthInches = (pageWidthMm - 32) / 25.4;
+  const maximumHeightInches = (pageHeightMm - 38) / 25.4;
+  const resources = new Map<string, DocxImageResource>();
+
+  for (const [index, target] of targets.entries()) {
+    const image = images.get(target);
+    if (image === undefined) throw new Error(`Project内の画像「${target}」を確認できないため、書き出せませんでした。`);
+    const bytes = dataUrlBytes(image);
+    let metadata: Metadata;
+    try { metadata = await sharp(bytes, { failOn: "error" }).metadata(); }
+    catch { throw new Error(`画像「${target}」を読み取れませんでした。画像ファイルを確認してください。`); }
+    if (!metadata.width || !metadata.height || metadata.width < 1 || metadata.height < 1) {
+      throw new Error(`画像「${target}」の大きさを確認できませんでした。`);
+    }
+    const dimensions = effectiveImageDimensions(metadata.width, metadata.height, metadata.orientation);
+    const nativeWidth = dimensions.width / 96;
+    const nativeHeight = dimensions.height / 96;
+    const widthInches = Math.max(0.05, Math.min(nativeWidth, maximumWidthInches, maximumHeightInches * dimensions.width / dimensions.height));
+    let outputBytes = bytes;
+    let extension = image.mimeType === "image/jpeg" ? "jpg" : image.mimeType === "image/png" ? "png" : "png";
+    if (image.mimeType === "image/webp") {
+      try { outputBytes = await sharp(bytes, { failOn: "error" }).png().toBuffer(); }
+      catch { throw new Error(`画像「${target}」をDOCX用に変換できませんでした。WebP画像を確認してください。`); }
+    }
+    const fileName = `image-${index + 1}.${extension}`;
+    await writeFile(path.join(assetsDirectory, fileName), outputBytes, { flag: "wx" });
+    resources.set(target, { relativePath: `assets/${fileName}`, widthInches });
+  }
+  return resources;
+}
+
+function escapeMarkdownImageAlt(value: string): string {
+  return value.replace(/\\/gu, "\\\\").replace(/\]/gu, "\\]");
+}
+
+function rewriteInlineImages(
+  source: string,
+  images: ExportImageAssets,
+  resources: ReadonlyMap<string, DocxImageResource>
+): string {
+  let output = "";
+  let cursor = 0;
+  while (cursor < source.length) {
+    if (source[cursor] === "`") {
+      const end = source.indexOf("`", cursor + 1);
+      if (end > cursor + 1) {
+        output += source.slice(cursor, end + 1);
+        cursor = end + 1;
+        continue;
+      }
+    }
+    if (source.startsWith("![[", cursor)) {
+      const close = source.indexOf("]]", cursor + 3);
+      if (close >= 0) {
+        const target = source.slice(cursor + 3, close);
+        const resource = resources.get(target);
+        const resolved = images.get(target);
+        if (resource !== undefined && resolved !== undefined) {
+          const alt = target.split("/").at(-1) ?? "image";
+          output += `![${escapeMarkdownImageAlt(alt)}](${resource.relativePath}){width=${resource.widthInches.toFixed(2)}in}`;
+          cursor = close + 2;
+          continue;
+        }
+      }
+    }
+    const imageMarkdown = /^!\[([^\]]*)\]\(([^\s)]+)\)/u.exec(source.slice(cursor));
+    if (imageMarkdown !== null) {
+      const target = imageMarkdown[2]!;
+      const resource = resources.get(target);
+      if (resource !== undefined && images.has(target)) {
+        output += `![${imageMarkdown[1]}](${resource.relativePath}){width=${resource.widthInches.toFixed(2)}in}`;
+        cursor += imageMarkdown[0].length;
+        continue;
+      }
+    }
+    output += source[cursor]!;
+    cursor += 1;
+  }
+  return output;
+}
+
+function markdownWithDocxImages(
+  model: ExportDocumentModel,
+  images: ExportImageAssets,
+  resources: ReadonlyMap<string, DocxImageResource>
+): string {
+  return model.blocks.map((block) => block.kind === "metadata" || block.kind === "raw" || block.kind === "code"
+    ? block.markdown
+    : rewriteInlineImages(block.markdown, images, resources)).join("");
 }
 
 function validateDocxBytes(bytes: Uint8Array): void {
@@ -342,9 +477,10 @@ export async function writeDocxWithPandoc(
   outputPath: string,
   model: ExportDocumentModel,
   settings: ExportPresentationSettings,
-  executable = process.env.MAGINALIA_PANDOC_BIN ?? "pandoc"
+  executable = process.env.MAGINALIA_PANDOC_BIN ?? "pandoc",
+  images: ExportImageAssets = new Map()
 ): Promise<void> {
-  const markdown = validateModel(model);
+  const markdown = validateModel(model, images);
   const resolvedExecutable = await resolvePandocExecutable(executable);
   const workspace = await mkdtemp(path.join(tmpdir(), "maginalia-pandoc-docx-"));
   const sourcePath = path.join(workspace, "resolved.md");
@@ -352,7 +488,9 @@ export async function writeDocxWithPandoc(
   const referencePatchedPath = path.join(workspace, "reference-maginalia.docx");
   const stagedDocxPath = path.join(workspace, "resolved.docx");
   try {
-    await writeFile(sourcePath, markdown, "utf8");
+    const resources = await materializeDocxImages(workspace, model, settings, images);
+    const pandocMarkdown = resources.size === 0 ? markdown : markdownWithDocxImages(model, images, resources);
+    await writeFile(sourcePath, pandocMarkdown, "utf8");
     // Pandoc's documented reference-doc workflow supplies the styles and
     // section defaults; it remains the only Markdown-to-DOCX content writer.
     await runPandoc(resolvedExecutable, ["-o", referencePath, "--print-default-data-file", "reference.docx"], workspace);
@@ -363,6 +501,7 @@ export async function writeDocxWithPandoc(
       "--to=docx",
       "--reference-doc", referencePatchedPath,
       "--wrap=none",
+      ...(resources.size === 0 ? [] : [`--resource-path=${workspace}`]),
       "--output", stagedDocxPath,
       sourcePath
     ], workspace);

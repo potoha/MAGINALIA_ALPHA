@@ -10,6 +10,7 @@ import {
 } from "./export-presentation-settings";
 import { commitPdf, renderExportDocumentHtml, writePdfWithElectron, writePdfWithVivliostyle, type ElectronPdfWindow } from "./export-pdf";
 import { createExportDocumentModel } from "./renderer/export-document-model";
+import type { ExportImageAssets } from "./export-project-images";
 
 const model = (source: string) => createExportDocumentModel(source);
 
@@ -26,9 +27,30 @@ describe("Vivliostyle PDF adapter", () => {
 
   it("fails closed instead of printing unresolved local media or internal markers", () => {
     expect(() => renderExportDocumentHtml(model("本文 ![[images/figure.png]]\n"), createExportPresentationSettings({})))
-      .toThrow("cannot resolve Project media");
+      .toThrow("Project内の画像「images/figure.png」を確認できないため、書き出せませんでした。");
     expect(() => renderExportDocumentHtml(model("<!-- maginalia:synced-block v1 {\\\"target\\\":\\\"child.md\\\"} -->\n"), createExportPresentationSettings({})))
       .toThrow("unresolved MAGINALIA marker");
+  });
+
+  it("embeds authorized local image data at the original document position with bounded sizing", () => {
+    const source = "本文の前 ![図 & 説明](assets/figure.png) の後、![[assets/図版 資料.webp]]。\n";
+    const images: ExportImageAssets = new Map([
+      ["assets/figure.png", { mimeType: "image/png", dataUrl: "data:image/png;base64,iVBORw0KGgo=" }],
+      ["assets/図版 資料.webp", { mimeType: "image/webp", dataUrl: "data:image/webp;base64,UklGRg==" }]
+    ]);
+    const html = renderExportDocumentHtml(model(source), createExportPresentationSettings({ paperSize: "A5" }), images);
+
+    expect(html).toContain('<img src="data:image/png;base64,iVBORw0KGgo=" alt="図 &amp; 説明">');
+    expect(html).toContain('<img src="data:image/webp;base64,UklGRg==" alt="図版 資料.webp">');
+    expect(html.indexOf("本文の前")).toBeLessThan(html.indexOf("data:image/png"));
+    expect(html.indexOf("data:image/png")).toBeLessThan(html.indexOf("の後"));
+    expect(html).toContain("max-width: 100%; max-height: 172mm;");
+    expect(html).not.toContain("assets/figure.png");
+  });
+
+  it("fails with a Japanese actionable message when any exact Project image was not resolved", () => {
+    expect(() => renderExportDocumentHtml(model("![[assets/figure.png]]"), createExportPresentationSettings({})))
+      .toThrow("Project内の画像「assets/figure.png」を確認できないため、書き出せませんでした。");
   });
 
   it("maps every supported paper size, including JIS B-series, and orientation", () => {

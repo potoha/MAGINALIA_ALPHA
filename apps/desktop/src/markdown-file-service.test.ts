@@ -26,12 +26,15 @@ describe("Markdown file service", () => {
       const filePath = path.join(directory, "notes.MARKDOWN");
       const text = "# Heading\r\n";
       await writeFile(filePath, Buffer.from(text, "utf8"));
-      const result = await new MarkdownFileService().openForOwner({}, filePath);
+      const owner = {};
+      const service = new MarkdownFileService();
+      const result = await service.openForOwner(owner, filePath);
 
       const metadata = opened(result);
       expect(metadata.displayName).toBe("notes.MARKDOWN");
       expect(metadata.text).toBe(text);
       expect(JSON.stringify(metadata)).not.toContain(filePath);
+      expect(service.getSessionInfoForOwner(owner, metadata.sessionId)?.projectId).toBeUndefined();
     });
   });
 

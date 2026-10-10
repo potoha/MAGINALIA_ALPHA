@@ -15,6 +15,8 @@ interface MarkdownSession {
   readonly owner: object;
   readonly filePath: string;
   readonly displayName: string;
+  /** Main-process-only Project association used to authorize Project assets during export. */
+  projectId?: string;
   savedText: string;
 }
 
@@ -23,6 +25,8 @@ export interface MarkdownSessionInfo {
   readonly sessionId: string;
   readonly displayName: string;
   readonly filePath: string;
+  /** Opaque owner-bound Project ID; never returned through renderer IPC. */
+  readonly projectId?: string;
 }
 
 interface ReadMarkdownSuccess {
@@ -124,7 +128,7 @@ export class MarkdownFileService {
   private owners = new Map<object, Map<string, MarkdownSession>>();
   private readonly saveQueues = new Map<string, Promise<SaveMarkdownResult>>();
 
-  public async openForOwner(owner: object, filePath: string): Promise<OpenMarkdownResult> {
+  public async openForOwner(owner: object, filePath: string, projectId?: string): Promise<OpenMarkdownResult> {
     if (!isMarkdownPath(filePath)) return INVALID_EXTENSION;
 
     const readResult = await readMarkdown(filePath);
@@ -140,6 +144,11 @@ export class MarkdownFileService {
     // DocumentSession's unsaved text or creating duplicate save baselines.
     const existing = ownerSessions.get(filePath);
     if (existing !== undefined) {
+      // A generic file open may precede a Project navigation. Upgrade that
+      // main-process session with the Project ID supplied only after
+      // ProjectService has resolved the file through the owner's workspace.
+      // Never replace an existing association with another Project ID.
+      if (existing.projectId === undefined && projectId !== undefined) existing.projectId = projectId;
       return {
         kind: "opened",
         sessionId: existing.sessionId,
@@ -153,6 +162,7 @@ export class MarkdownFileService {
       owner,
       filePath,
       displayName: path.basename(filePath),
+      ...(projectId === undefined ? {} : { projectId }),
       savedText: readResult.text
     };
     ownerSessions.set(filePath, session);
@@ -191,7 +201,8 @@ export class MarkdownFileService {
     return Object.freeze({
       sessionId: session.sessionId,
       displayName: session.displayName,
-      filePath: session.filePath
+      filePath: session.filePath,
+      ...(session.projectId === undefined ? {} : { projectId: session.projectId })
     });
   }
 
