@@ -193,6 +193,7 @@ import { FirstRunCoordinator } from "./first-run-coordinator";
 import { FirstRunJournalStore } from "./first-run-setup";
 import { runFirstRunRestoreSmoke, runFirstRunSmoke } from "./first-run-smoke";
 import { resolvePackagedRuntimePaths } from "./packaged-runtime-paths";
+import { ensureNdlocrConfiguration } from "./ndlocr-runtime-configuration";
 import { OPEN_BUNDLED_MANUAL_CHANNEL } from "./manual-ipc";
 import {
   FIRST_RUN_PROGRESS_CHANNEL,
@@ -2298,6 +2299,17 @@ const autosaveShutdown = new AutosaveShutdownCoordinator({
 app.on("before-quit", (event) => autosaveShutdown.beforeQuit(event));
 
 void app.whenReady().then(async () => {
+  if (app.isPackaged) {
+    const configuration = await ensureNdlocrConfiguration(
+      getDesktopConfigurationPaths().ndlocrConfigPath,
+      process.resourcesPath,
+    );
+    if (configuration.status === "conflict" || configuration.status === "invalid") {
+      console.warn("MAGINALIA_NDLOCR_CONFIGURATION_REQUIRES_ATTENTION", configuration.message);
+    } else if (configuration.status === "migrated") {
+      console.info("MAGINALIA_NDLOCR_LEGACY_CONFIGURATION_MIGRATED", configuration.backupPath);
+    }
+  }
   try {
     firstRunOnLaunch = await shouldOpenFirstRunSetup();
   } catch (error: unknown) {

@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,10 +25,15 @@ from marginalia_reviewer.db import Workspace
 from marginalia_reviewer.importer import BundleImporter, BundleValidationError, ImportLimits
 from marginalia_reviewer.ocr import (
     NDLOCR_LITE_COMMIT,
-    NDLOCR_LITE_WINDOWS_SHA256,
+    NDLOCR_LITE_MANIFEST_EXECUTABLE,
+    NDLOCR_LITE_REPOSITORY,
+    NDLOCR_LITE_TAG,
+    NDLOCR_LITE_VERSION,
+    NDLOCR_MANAGED_BY,
     NdlocrLiteAdapter,
     OcrConfigurationError,
 )
+import marginalia_reviewer.ocr as ocr_module
 from marginalia_reviewer.publisher import GitHubContentsClient, PublishConflict, RemoteContent, build_publication, publication_diff
 import marginalia_reviewer.publisher as publisher_module
 import marginalia_reviewer.app as app_module
@@ -47,8 +53,54 @@ def jpeg_fixture(width: int = 100, height: int = 200) -> bytes:
 JPEG_FIXTURE = jpeg_fixture()
 
 
-def executable_sha256() -> str:
-    return hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
+def make_ocr_config(
+    tmp_path: Path,
+    *,
+    manifest_overrides: dict[str, object] | None = None,
+    config_overrides: dict[str, object] | None = None,
+    command_executable: Path | None = None,
+) -> tuple[Path, Path, Path, str]:
+    runtime_root = tmp_path / "OCR 配布 runtime"
+    executable = runtime_root / NDLOCR_LITE_MANIFEST_EXECUTABLE
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_bytes(b"test ndlocr runtime executable")
+    executable_digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    manifest: dict[str, object] = {
+        "schemaVersion": 1,
+        "engine": "NDLOCR-Lite",
+        "version": NDLOCR_LITE_VERSION,
+        "source": {"repository": NDLOCR_LITE_REPOSITORY, "tag": NDLOCR_LITE_TAG, "commit": NDLOCR_LITE_COMMIT},
+        "files": [{
+            "path": NDLOCR_LITE_MANIFEST_EXECUTABLE,
+            "size": executable.stat().st_size,
+            "sha256": executable_digest,
+        }],
+    }
+    if manifest_overrides:
+        manifest.update(manifest_overrides)
+    manifest_path = runtime_root / "ndlocr-runtime-manifest.json"
+    manifest_bytes = json.dumps(manifest, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    manifest_path.write_bytes(manifest_bytes)
+    command_path = command_executable or executable
+    config: dict[str, object] = {
+        "schemaVersion": 1,
+        "managedBy": NDLOCR_MANAGED_BY,
+        "engine": "NDLOCR-Lite",
+        "version": NDLOCR_LITE_VERSION,
+        "commit": NDLOCR_LITE_COMMIT,
+        "distributionSha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "manifestPath": str(manifest_path),
+        "executableSha256": executable_digest,
+        "command": [
+            str(command_path), "--sourceimg", "{input}", "--output", "{outputDir}", "--json-only", "--device", "cpu",
+        ],
+    }
+    if config_overrides:
+        config.update(config_overrides)
+    config_path = tmp_path / "設定" / "ndlocr.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    return config_path, executable, manifest_path, executable_digest
 
 
 def test_cli_keeps_ocr_unconfigured_when_not_explicitly_configured(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -378,56 +430,214 @@ def test_app_host_origin_csrf_and_review_endpoint(tmp_path: Path) -> None:
     assert client.put(f"/api/pages/{page['id']}/regions", headers=headers, json=regions).status_code == 200
 
 
-def test_ocr_pin_and_raw_provenance(tmp_path: Path) -> None:
-    script = tmp_path / "fake_ocr.py"
-    script.write_text(
-        "import json,sys\njson.dump({'width':100,'height':200,'regions':[{'text':'ok','boundingBox':{'x':10,'y':20,'width':40,'height':60}}],'other':42},open(sys.argv[2],'w',encoding='utf-8'))\n",
-        encoding="utf-8",
+def test_ocr_131_manifest_pin_and_raw_provenance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config, executable, manifest_path, executable_digest = make_ocr_config(tmp_path)
+    input_path = tmp_path / "日本語 資料.jpg"
+    input_path.write_bytes(JPEG_FIXTURE)
+    raw = {
+        "contents": [[{
+            "text": "春はあけぼの",
+            "confidence": 0.87,
+            "boundingBox": [[10, 20], [10, 80], [50, 20], [50, 80]],
+            "isVertical": "true",
+        }]],
+        "imginfo": {"img_width": 100, "img_height": 200},
+        "other": 42,
+    }
+    observed: dict[str, object] = {}
+
+    def fake_run(command: list[str], **options: object) -> SimpleNamespace:
+        observed.update(options)
+        observed["command"] = command
+        input_path = Path(command[command.index("--sourceimg") + 1])
+        output_dir = Path(command[command.index("--output") + 1])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"{input_path.stem}.json"
+        output_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(ocr_module.subprocess, "run", fake_run)
+    regions, provenance = NdlocrLiteAdapter(config, timeout_seconds=321).recognize(
+        input_path, 100, 200, PAGE_ID
     )
-    config = tmp_path / "ocr.json"
-    config.write_text(json.dumps({"engine": "NDLOCR-Lite", "version": "1.2.3", "commit": NDLOCR_LITE_COMMIT, "distributionSha256": NDLOCR_LITE_WINDOWS_SHA256, "executableSha256": executable_sha256(), "command": [sys.executable, str(script), "{input}", "{output}"]}), encoding="utf-8")
-    regions, provenance = NdlocrLiteAdapter(config).recognize(tmp_path / "image.jpg", 100, 200, PAGE_ID)
-    assert regions[0]["left"] == pytest.approx(.1)
-    assert regions[0]["bottom"] == pytest.approx(.4)
-    assert provenance["version"] == "1.2.3"
-    assert provenance["executableSha256"] == executable_sha256()
+
+    assert regions == [{
+        "id": f"ndl:{PAGE_ID}:0", "left": .1, "top": .1, "right": .5, "bottom": .4,
+        "kind": "LINE", "text": "春はあけぼの",
+    }]
+    assert provenance["version"] == "1.3.1"
+    assert provenance["commit"] == NDLOCR_LITE_COMMIT
+    assert provenance["distributionSha256"] == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    assert provenance["executableSha256"] == executable_digest
     assert provenance["raw"]["other"] == 42
-    config.write_text(json.dumps({"engine": "NDLOCR-Lite", "version": "1.2.4", "commit": NDLOCR_LITE_COMMIT, "distributionSha256": NDLOCR_LITE_WINDOWS_SHA256, "command": ["x", "{input}", "{output}"]}), encoding="utf-8")
-    with pytest.raises(OcrConfigurationError, match="1.2.3"):
-        NdlocrLiteAdapter(config)
+    assert Path(observed["command"][0]) == executable  # type: ignore[index]
+    assert observed["timeout"] == 321
+    assert observed["shell"] is False
+    assert observed["capture_output"] is True
 
 
-def test_ocr_missing_configuration_reports_the_attempted_path(tmp_path: Path) -> None:
-    missing = tmp_path / "設定" / "ndlocr.json"
-    with pytest.raises(OcrConfigurationError, match=re.escape(str(missing))):
-        NdlocrLiteAdapter(missing)
+def test_ocr_accepts_official_131_json_and_output_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config, _, _, _ = make_ocr_config(tmp_path)
+    raw = {
+        "contents": [[{
+            "text": "縦書き",
+            "boundingBox": [[10, 20], [10, 80], [50, 20], [50, 80]],
+            "isVertical": "true",
+        }]],
+        "imginfo": {"img_width": 100, "img_height": 200},
+    }
 
+    def fake_run(command: list[str], **_options: object) -> SimpleNamespace:
+        output_dir = Path(command[command.index("--output") + 1])
+        (output_dir / "image.json").write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
 
-def test_ocr_accepts_official_123_json_and_output_directory(tmp_path: Path) -> None:
-    script = tmp_path / "fake_official.py"
-    script.write_text(
-        "import json,sys,pathlib\n"
-        "raw={'contents':[[{'text':'縦書き','boundingBox':[[10,20],[10,80],[50,20],[50,80]],'isVertical':'true'}]],'imginfo':{'img_width':100,'img_height':200}}\n"
-        "json.dump(raw,open(pathlib.Path(sys.argv[2])/'image.json','w',encoding='utf-8'))\n",
-        encoding="utf-8",
-    )
-    config = tmp_path / "official.json"
-    config.write_text(
-        json.dumps({
-            "engine": "NDLOCR-Lite", "version": "1.2.3", "commit": NDLOCR_LITE_COMMIT,
-            "distributionSha256": NDLOCR_LITE_WINDOWS_SHA256,
-            "executableSha256": executable_sha256(),
-            "command": [sys.executable, str(script), "{input}", "{outputDir}"],
-        }),
-        encoding="utf-8",
-    )
-
-    regions, _ = NdlocrLiteAdapter(config).recognize(tmp_path / "image.jpg", 100, 200, PAGE_ID)
+    monkeypatch.setattr(ocr_module.subprocess, "run", fake_run)
+    adapter = NdlocrLiteAdapter(config)
+    regions, _ = adapter.recognize(tmp_path / "image.jpg", 100, 200, PAGE_ID)
 
     assert regions == [{
         "id": f"ndl:{PAGE_ID}:0", "left": .1, "top": .1, "right": .5, "bottom": .4,
         "kind": "LINE", "text": "縦書き",
     }]
+
+
+def test_ocr_rejects_obsolete_configuration_without_disclosing_path(tmp_path: Path) -> None:
+    config, _, _, _ = make_ocr_config(tmp_path, config_overrides={"version": "1.2.3"})
+    with pytest.raises(OcrConfigurationError, match="1.3.1"):
+        NdlocrLiteAdapter(config)
+
+
+def test_historical_ocr_provenance_remains_readable_after_adapter_upgrade(tmp_path: Path) -> None:
+    workspace, service = importer(tmp_path)
+    bundle = tmp_path / "history.zip"
+    make_zip(bundle)
+    service.import_zip(bundle)
+    historical = {
+        "engine": "NDLOCR-Lite",
+        "version": "1.2.3",
+        "commit": "c3cc7676e7f4613c6b5d51bfae7ca764098424d2",
+        "distributionSha256": "f9e615ca1bba70c48fee156e685631cc2ef413f5c18c06fcbb9a949382519668",
+        "executableSha256": "a" * 64,
+        "raw": {"legacy": True},
+    }
+    page_id = workspace.list_pages()[0]["id"]
+    assert workspace.transition(page_id, {"PENDING"}, "RUNNING")
+    workspace.save_ocr(page_id, [], historical)
+
+    restarted_workspace = Workspace(tmp_path / "reviewer.sqlite3")
+    restarted_workspace.initialize()
+    page = restarted_workspace.get_page(page_id)
+
+    assert page is not None
+    assert page["ocr_provenance"] == historical
+
+
+def test_ocr_missing_configuration_does_not_disclose_path(tmp_path: Path) -> None:
+    missing = tmp_path / "設定" / "ndlocr.json"
+    with pytest.raises(OcrConfigurationError) as error:
+        NdlocrLiteAdapter(missing)
+    assert str(missing) not in str(error.value)
+
+
+def test_missing_optional_ocr_keeps_reviewer_usable_and_returns_japanese_guidance(tmp_path: Path) -> None:
+    app = create_app(Settings(workspace=tmp_path / "workspace"))
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/health").status_code == 200
+        assert client.get("/api/pages").status_code == 200
+        token = client.get("/api/session").json()["csrfToken"]
+        headers = {"X-CSRF-Token": token}
+        bundle = tmp_path / "book.zip"
+        make_zip(bundle)
+        with bundle.open("rb") as source:
+            response = client.post("/api/import", headers=headers, files={"bundle": ("book.zip", source)})
+        assert response.status_code == 201, response.text
+        page_id = client.get("/api/pages").json()[0]["id"]
+
+        response = client.post(f"/api/pages/{page_id}/ocr", headers=headers)
+        page_after = client.get(f"/api/pages/{page_id}").json()
+
+    assert response.status_code == 503
+    assert page_after["status"] == "PENDING"
+    detail = response.json()["detail"]
+    assert "このPCでは文字認識を利用できません" in detail
+    assert "画像を見ながら引用本文を入力できます" in detail
+    assert not any(term in detail for term in ("MARGINALIA_NDLOCR_CONFIG", "ndlocr.json", "Traceback", "Python"))
+    assert "error?.status===503" in app_module.INDEX_HTML
+    assert "文字認識を利用できません。画像を見ながら引用本文を入力できます。" in app_module.INDEX_HTML
+
+
+def test_invalid_optional_ocr_configuration_is_reported_without_blocking_reviewer(tmp_path: Path) -> None:
+    config = tmp_path / "user data" / "ndlocr.json"
+    config.parent.mkdir(parents=True)
+    config.write_text("{broken", encoding="utf-8")
+    app = create_app(Settings(workspace=tmp_path / "workspace", ndlocr_config=config))
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/health").status_code == 200
+        token = client.get("/api/session").json()["csrfToken"]
+        headers = {"X-CSRF-Token": token}
+        bundle = tmp_path / "book.zip"
+        make_zip(bundle)
+        with bundle.open("rb") as source:
+            response = client.post("/api/import", headers=headers, files={"bundle": ("book.zip", source)})
+        assert response.status_code == 201, response.text
+        page_id = client.get("/api/pages").json()[0]["id"]
+
+        response = client.post(f"/api/pages/{page_id}/ocr", headers=headers)
+        page_after = client.get(f"/api/pages/{page_id}").json()
+
+    assert response.status_code == 503
+    assert "このPCでは文字認識を利用できません" in response.json()["detail"]
+    assert page_after["status"] == "FAILED"
+    assert page_after["error_summary"] == "OCR optional component is unavailable"
+
+
+@pytest.mark.parametrize(
+    ("manifest_overrides", "config_overrides", "error_match"),
+    [
+        ({"version": "1.2.3"}, {}, "配布元またはバージョン"),
+        ({"source": {"repository": "https://example.invalid", "tag": "1.3.1", "commit": NDLOCR_LITE_COMMIT}}, {}, "配布元またはバージョン"),
+        ({}, {"schemaVersion": 2}, "設定バージョン"),
+        ({}, {"managedBy": "other"}, "MAGINALIAが作成"),
+    ],
+)
+def test_ocr_rejects_wrong_source_or_managed_configuration(
+    tmp_path: Path,
+    manifest_overrides: dict[str, object],
+    config_overrides: dict[str, object],
+    error_match: str,
+) -> None:
+    config, _, _, _ = make_ocr_config(
+        tmp_path, manifest_overrides=manifest_overrides, config_overrides=config_overrides
+    )
+    with pytest.raises(OcrConfigurationError, match=error_match):
+        NdlocrLiteAdapter(config)
+
+
+def test_ocr_rejects_manifest_digest_and_executable_mismatches(tmp_path: Path) -> None:
+    config, executable, manifest_path, _ = make_ocr_config(tmp_path)
+    manifest_path.write_bytes(manifest_path.read_bytes() + b" ")
+    with pytest.raises(OcrConfigurationError, match="配布情報が一致"):
+        NdlocrLiteAdapter(config)
+
+    config, executable, _, _ = make_ocr_config(tmp_path / "second")
+    executable.write_bytes(b"replaced executable")
+    with pytest.raises(OcrConfigurationError, match="サイズが配布情報と一致"):
+        NdlocrLiteAdapter(config)
+
+
+def test_ocr_rejects_executable_outside_manifest_directory(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.exe"
+    outside.write_bytes(b"outside")
+    config, _, _, _ = make_ocr_config(tmp_path / "runtime", command_executable=outside)
+    with pytest.raises(OcrConfigurationError, match="配布フォルダー外"):
+        NdlocrLiteAdapter(config)
+
+
+def test_ocr_rejects_manifest_executable_hash_mismatch(tmp_path: Path) -> None:
+    config, _, _, _ = make_ocr_config(tmp_path, config_overrides={"executableSha256": "0" * 64})
+    with pytest.raises(OcrConfigurationError, match="配布一覧と一致"):
+        NdlocrLiteAdapter(config)
 
 
 def test_ocr_clips_small_official_detector_boundary_overshoot() -> None:
@@ -445,14 +655,9 @@ def test_ocr_clips_small_official_detector_boundary_overshoot() -> None:
 
 
 def test_ocr_rejects_executable_hash_mismatch(tmp_path: Path) -> None:
-    config = tmp_path / "wrong-hash.json"
-    config.write_text(json.dumps({
-        "engine": "NDLOCR-Lite", "version": "1.2.3", "commit": NDLOCR_LITE_COMMIT,
-        "distributionSha256": NDLOCR_LITE_WINDOWS_SHA256,
-        "executableSha256": "0" * 64,
-        "command": [sys.executable, "{input}", "{output}"],
-    }), encoding="utf-8")
-    with pytest.raises(OcrConfigurationError, match="executable SHA-256"):
+    config, executable, _, _ = make_ocr_config(tmp_path)
+    executable.write_bytes(b"X" * executable.stat().st_size)
+    with pytest.raises(OcrConfigurationError, match="実行ファイルが配布情報と一致"):
         NdlocrLiteAdapter(config)
 
 

@@ -14,6 +14,7 @@ describe("packaged runtime resource paths", () => {
     expect(paths.pandocExecutable).toBe(path.join(root, "pandoc", "pandoc.exe"));
     expect(paths.tutorialRoot).toBe(path.join(root, "tutorial-sample"));
     expect(paths.manualPdfPath).toBe(path.join(root, "manual", "マニュアル.pdf"));
+    expect(paths.ndlocrRuntimeContract).toBe(path.join(root, "ndlocr-runtime-contract.json"));
   });
 
   it("rejects relative resources roots instead of falling back to the source checkout", () => {

@@ -32,7 +32,7 @@ from .importer import (
     UnsupportedCapturePackageVersion,
     is_magicap_filename,
 )
-from .ocr import NdlocrLiteAdapter
+from .ocr import NdlocrLiteAdapter, OcrConfigurationError
 from .publisher import (
     GitHubContentsClient,
     GitHubCredentials,
@@ -314,7 +314,10 @@ def create_app(
     @app.post("/api/pages/{page_id}/ocr")
     def run_ocr(page_id: str) -> dict[str, str]:
         if settings.ndlocr_config is None:
-            raise HTTPException(503, "MARGINALIA_NDLOCR_CONFIG is not configured")
+            raise HTTPException(
+                503,
+                "このPCでは文字認識を利用できません。画像を見ながら引用本文を入力できます。文字認識を使うには、MAGINALIAの修復または再インストールを行ってください。",
+            )
         with ocr_lock:
             result = page_or_404(page_id)
             if not workspace.transition(page_id, {"PENDING", "FAILED", "NEEDS_REVIEW"}, "RUNNING"):
@@ -337,6 +340,12 @@ def create_app(
                     if annotation.get("selected_region") is not None
                 }
                 workspace.save_ocr(page_id, regions, provenance, capture_ocr)
+            except OcrConfigurationError as exc:
+                workspace.fail_ocr(page_id, "OCR optional component is unavailable")
+                raise HTTPException(
+                    503,
+                    "このPCでは文字認識を利用できません。画像を見ながら引用本文を入力できます。文字認識を使うには、MAGINALIAの修復または再インストールを行ってください。",
+                ) from exc
             except Exception as exc:
                 workspace.fail_ocr(page_id, str(exc))
                 raise HTTPException(502, str(exc)) from exc

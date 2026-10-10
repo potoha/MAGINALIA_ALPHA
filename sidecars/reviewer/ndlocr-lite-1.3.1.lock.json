@@ -1,0 +1,59 @@
+{
+  "repository": "https://github.com/ndl-lab/ndlocr-lite",
+  "tag": "1.3.1",
+  "sourceCommit": "6feccb29e33c2467ea48894e66502a7788ae2b2d",
+  "sourceUrl": "https://github.com/ndl-lab/ndlocr-lite/tree/6feccb29e33c2467ea48894e66502a7788ae2b2d",
+  "sourcePackageMetadataVersion": "1.3.0",
+  "releaseWorkflowVersionStamp": "1.3.1",
+  "sourceRequirementsSha256": "9cb00fbfc4c98bb48eb6145cae92eebf41d442cc7b8ec2fa486ffb0a47220cbd",
+  "dependencyLicenses": [
+    { "name": "colorama", "version": "0.4.6", "license": "BSD-3-Clause" },
+    { "name": "networkx", "version": "3.3", "license": "BSD-3-Clause" },
+    { "name": "ordered-set", "version": "4.1.0", "license": "MIT" },
+    { "name": "pyinstaller-hooks-contrib", "version": "2026.8", "license": "GPL-2.0-or-later for standard hooks; Apache-2.0 for runtime hooks" },
+    { "name": "pyparsing", "version": "3.1.2", "license": "MIT" }
+  ],
+  "additionalLicenseFiles": [
+    {
+      "name": "ordered-set",
+      "version": "4.1.0",
+      "repositoryPath": "sidecars/reviewer/ndlocr-runtime/licenses/dependencies/ordered-set-MIT-LICENSE.txt",
+      "filename": "MIT-LICENSE.txt",
+      "sourceUrl": "https://files.pythonhosted.org/packages/4c/ca/bfac8bc689799bcca4157e0e0ced07e70ce125193fc2e166d2e685b7e2fe/ordered-set-4.1.0.tar.gz",
+      "sourceArchiveSha256": "694a8e44c87657c59292ede72891eb91d34131f6531463aab3009191c77364a8",
+      "sourcePath": "ordered-set-4.1.0/MIT-LICENSE",
+      "sha256": "0cf8f55f36dc1306b3fe89bf29e29a0c742f279f038d149244319e593ab16ca4"
+    }
+  ],
+  "build": {
+    "python": "3.11.* x64",
+    "onnxruntime": "1.26.0",
+    "pyinstaller": "6.22.3",
+    "mode": "onedir",
+    "device": "cpu"
+  },
+  "verifiedUpstreamInputs": [
+    { "path": "src/model/deim-s-1024x1024.onnx", "bytes": 40256763, "sha256": "c156ce0c4e704bc3bf7e4016d0a87b949cffa8b3724f4b4cc696b8284c3c7373" },
+    { "path": "src/model/parseq-ndl-24x256-30-tiny-189epoch-tegaki3-r8data-202604.onnx", "bytes": 36457393, "sha256": "9e651bae4c1a4d5254da1127e86e82e21ef62d5339b37e62d4a3d3d30831772d" },
+    { "path": "src/model/parseq-ndl-24x384-50-tiny-300epoch-tegaki3-r8data-202604.onnx", "bytes": 37808553, "sha256": "49cea9db4552f19eb05c8ee202fcf74714977749b2f4c9376b127fde41b07a99" },
+    { "path": "src/model/parseq-ndl-24x768-100-tiny-153epoch-tegaki3-r8data-202604.onnx", "bytes": 42588187, "sha256": "06462b0dbd5b0b8508545c8c3d485cf20dbf4ffa652fe145e69c9e7457080602" },
+    { "path": "src/config/ndl.yaml", "bytes": 320, "sha256": "9209f72c8f317d61ee98ab74ecc4cb4934e5fc51168b755ebbac1f9e8de2df48" },
+    { "path": "src/config/NDLmoji.yaml", "bytes": 42438, "sha256": "9804d2e9a9d98f038963f9453aa57c42fc189c0c48998662ff9ff3d67a9d2c1f" },
+    { "path": "LICENCE", "bytes": 19047, "sha256": "cacf92caf395179042f1080ea0c9be9769f4234a498ce71f931e0f395d90db5b" },
+    { "path": "LICENCE_DEPENDENCEIES", "bytes": 62984, "sha256": "a9d3c0c4af8466b9f6ba40e5d8d260393a83b2ecde1827de257acd40d6993a1e" },
+    { "path": "README.md", "bytes": 11318, "sha256": "93b9d55c70c6224d4459c81bfafaece04c47fe6233f5298dd46550d831b00810" },
+    { "path": "requirements.txt", "bytes": 429, "sha256": "9cb00fbfc4c98bb48eb6145cae92eebf41d442cc7b8ec2fa486ffb0a47220cbd" }
+  ],
+  "dinoV3License": {
+    "repository": "https://github.com/facebookresearch/dinov3",
+    "commit": "6876159a11b4df116f30f667f8c9888617df0751",
+    "path": "LICENSE.md",
+    "sha256": "25d122eb8f5b880fd23c736fb6ea8018ee45c12237e00b8a86d14c653904999e"
+  },
+  "smokeImage": {
+    "path": "resource/tategaki2026-04-24-094138.png",
+    "bytes": 398319,
+    "sha256": "de23150f486655691b8e85f211f760c95610a2e12a4cdcec4e92c7a657d1b62a"
+  },
+  "note": "Upstream pyproject metadata remains 1.3.0 at the release tag. The official release workflow stamps version 1.3.1 with src/set_version.py before building; this package repeats that official stamp and reports runtime version 1.3.1."
+}
