@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
-import { findBrandAssetPath } from "./brand-assets";
+import { findApplicationIconPath, findBrandAssetPath } from "./brand-assets";
 import {
   brandProgressUpdateScript,
   createBrandProgressState,
@@ -1433,9 +1433,7 @@ function readBrandPngDataUrl(...fileNames: string[]): string | null {
 }
 
 function applicationIconPath(): string | null {
-  return process.platform === "win32"
-    ? resolveBrandAsset("maginalia.ico", "iconnottran.png", "icon.png")
-    : resolveBrandAsset("icon.png", "iconnottran.png");
+  return findApplicationIconPath(process.platform, brandAssetRoots());
 }
 
 function updateStartupProgress(message: string, progress: number | null): void {
@@ -2321,7 +2319,7 @@ void app.whenReady().then(async () => {
     updateStartupProgress("MAGINALIA desktop α1 を起動しています", 0.08);
     startStartupProgressWindow(140);
     if (process.platform === "darwin") {
-      const dockIcon = resolveBrandAsset("icon.png", "iconnottran.png");
+      const dockIcon = resolveBrandAsset("icon.v2.png");
       if (dockIcon !== null) app.dock?.setIcon(dockIcon);
     }
   }

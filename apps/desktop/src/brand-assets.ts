@@ -19,3 +19,12 @@ export function findBrandAssetPath(
   }
   return null;
 }
+
+export function findApplicationIconPath(
+  platform: string,
+  roots: readonly string[],
+  fileExists: BrandAssetExists = existsSync,
+): string | null {
+  const fileName = platform === "win32" ? "maginalia.ico" : "icon.v2.png";
+  return findBrandAssetPath(fileName, roots, fileExists);
+}

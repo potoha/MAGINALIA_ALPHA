@@ -31,6 +31,8 @@
     "perMachine": false,
     "allowElevation": true,
     "allowToChangeInstallationDirectory": false,
+    "installerIcon": "packaging/.stage/app/dist/branding/maginalia.ico",
+    "uninstallerIcon": "packaging/.stage/app/dist/branding/maginalia.ico",
     "createStartMenuShortcut": true,
     "createDesktopShortcut": false,
     "shortcutName": "MAGINALIA desktop α1",

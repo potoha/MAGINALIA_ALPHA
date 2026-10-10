@@ -1,4 +1,4 @@
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,8 +9,13 @@ const desktopRoot = path.resolve(scriptDirectory, "..");
 const repositoryRoot = path.resolve(desktopRoot, "../..");
 const sourceRoot = path.join(repositoryRoot, "assets");
 const outputRoot = path.join(desktopRoot, "dist", "branding");
-const sourceNames = ["header.png", "icon.png", "iconnottran.png", "splash.png"];
+const applicationIconSource = path.join(sourceRoot, "icon.v2.png");
+const sourceNames = ["header.png", "icon.png", "icon.v2.png", "iconnottran.png", "splash.png"];
 
+await rm(outputRoot, { recursive: true, force: true });
+if (!existsSync(applicationIconSource)) {
+  throw new Error(`Required application icon source is missing: ${applicationIconSource}`);
+}
 await mkdir(outputRoot, { recursive: true });
 
 for (const name of sourceNames) {
@@ -32,13 +37,8 @@ if (existsSync(headerPath)) {
   }
 }
 
-const iconSource = ["iconnottran.png", "icon.png"]
-  .map((name) => path.join(sourceRoot, name))
-  .find(existsSync);
-if (iconSource !== undefined) {
-  const icon = await createWindowsIcon(iconSource);
-  await writeFile(path.join(outputRoot, "maginalia.ico"), icon);
-}
+const icon = await createWindowsIcon(applicationIconSource);
+await writeFile(path.join(outputRoot, "maginalia.ico"), icon);
 
 process.stdout.write(`Brand assets prepared in ${outputRoot}\n`);
 
@@ -133,10 +133,15 @@ function median(values) {
 
 async function createWindowsIcon(sourcePath) {
   const sizes = [16, 24, 32, 48, 64, 128, 256];
-  const background = { r: 255, g: 253, b: 243, alpha: 1 };
+  const { data } = await sharp(sourcePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const background = {
+    r: data[0],
+    g: data[1],
+    b: data[2],
+    alpha: data[3] / 255,
+  };
   const pngImages = await Promise.all(sizes.map((size) => sharp(sourcePath)
     .resize(size, size, { fit: "contain", background })
-    .flatten({ background })
     .png()
     .toBuffer()));
 
