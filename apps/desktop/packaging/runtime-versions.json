@@ -2,6 +2,7 @@
   "electron": "44.3.0",
   "electronBuilder": "26.15.3",
   "reviewerPython": "3.11",
+  "ndlocrPython": "3.11",
   "pyinstaller": "6.22.3",
   "pandoc": {
     "version": "3.12.1",
