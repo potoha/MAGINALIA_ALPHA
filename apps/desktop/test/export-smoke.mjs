@@ -27,7 +27,18 @@ const smokeInitialA = initialA.replace(
   "| 日本語 | Latin | 全角！ | 研究 | 表 | 横幅 | 確認 | 完了 |",
   `| 日本語 | Latin | 全角！ | ![[assets/図版 資料.png]] | 表 | 横幅 | 確認 | ${wideTableCell} |`
 );
-const initialB = "\uFEFF# Export B\r\n\r\nB-only document.\r\n";
+const initialB = [
+  "\uFEFF# Export B",
+  "",
+  "B-only document.",
+  "",
+  "PNG image: ![PNG figure](assets/figure.png)",
+  "",
+  "JPEG image: ![[assets/写真 資料.jpg]]",
+  "",
+  "WebP image: ![[assets/図版 WebP.webp]]",
+  ""
+].join("\r\n");
 const initialChild = `---\r\ntitle: Child local title\r\n---\r\n# Child local title\r\nSynced child prose\r\n\r\n${quoteMarker}\r\n\r\n${syncedNestedMarker}\r\n\r\n## 参考文献\r\n\r\n${referenceStart}\r\n- stale child reference\r\n${referenceEnd}\r\n`;
 const initialNested = `# Nested local title\r\nNested synced prose\r\n\r\n${quoteMarker}\r\n`;
 
@@ -200,9 +211,17 @@ try {
   await writeFile(path.join(projectRoot, "b.md"), Buffer.from(initialB, "utf8"));
   await writeFile(path.join(projectRoot, "child.md"), Buffer.from(initialChild, "utf8"));
   await writeFile(path.join(projectRoot, "nested.md"), Buffer.from(initialNested, "utf8"));
-  // Valid signatures are enough for the bounded Project-media resolver; the
-  // smoke verifies renderer element creation rather than media playback.
-  await writeFile(path.join(projectRoot, "assets", "figure.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Jf5sAAAAASUVORK5CYII=", "base64"));
+  // Real image bytes exercise Chromium's PDF embedding and Pandoc's DOCX media
+  // materialization, including Japanese and spaced Project asset names.
+  await sharp({
+    create: { width: 800, height: 360, channels: 4, background: { r: 217, g: 226, b: 79, alpha: 1 } }
+  }).png().toFile(path.join(projectRoot, "assets", "figure.png"));
+  await sharp({
+    create: { width: 420, height: 600, channels: 3, background: { r: 198, g: 155, b: 134 } }
+  }).jpeg().toFile(path.join(projectRoot, "assets", "写真 資料.jpg"));
+  await sharp({
+    create: { width: 640, height: 400, channels: 4, background: { r: 82, g: 140, b: 117, alpha: 1 } }
+  }).webp().toFile(path.join(projectRoot, "assets", "図版 WebP.webp"));
   await sharp({
     create: { width: 1600, height: 320, channels: 3, background: { r: 198, g: 155, b: 134 } }
   }).png().toFile(path.join(projectRoot, "assets", "図版 資料.png"));

@@ -1,6 +1,7 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createExportHandlers,
@@ -11,6 +12,8 @@ import {
   type WriteExportRequest
 } from "./export-ipc";
 import { MarkdownFileService } from "./markdown-file-service";
+import { DocumentWorkspaceService } from "./document-workspace";
+import { ProjectAssetService } from "./project-assets";
 import { createExportPresentationSettings, type ExportPresentationSettings } from "./export-presentation-settings";
 
 const owner = {};
@@ -141,6 +144,7 @@ describe("resolved Markdown export IPC boundary", () => {
     const { root, source, service } = await fixture();
     const sessionId = await open(service, source);
     const output = path.join(root, "draft.resolved.md");
+    const exportedText = "# exported\n![[assets/図.png]]\n";
     const handlers = createExportHandlers({
       sessions: service,
       resolve: async () => resolution,
@@ -154,9 +158,9 @@ describe("resolved Markdown export IPC boundary", () => {
       exportId: prepared.exportId,
       documentId: sessionId,
       revision: prepared.revision,
-      text: "# exported\n"
+      text: exportedText
     })).resolves.toEqual({ kind: "exported", fileName: "draft.resolved.md" });
-    expect(await readFile(output, "utf8")).toBe("# exported\n");
+    expect(await readFile(output, "utf8")).toBe(exportedText);
     expect(await readFile(source, "utf8")).toBe("# disk\n");
   });
 
@@ -247,6 +251,58 @@ describe("resolved Markdown export IPC boundary", () => {
     expect(writeDocx).toHaveBeenCalledOnce();
     expect((await readFile(output)).subarray(0, 2).toString("ascii")).toBe("PK");
     expect(await readFile(source, "utf8")).toBe("# 日本語\n");
+  });
+
+  it("resolves a Project image through ProjectAssetService and gives only that snapshot to PDF output", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "maginalia-export-project-image-日本語-"));
+    temporaryRoots.push(root);
+    const projectRoot = path.join(root, "卒論 Project");
+    const assetsRoot = path.join(projectRoot, "assets");
+    await mkdir(assetsRoot, { recursive: true });
+    const source = path.join(projectRoot, "draft.md");
+    const sourceText = "# Draft\n";
+    await writeFile(source, sourceText, "utf8");
+    await sharp({ create: { width: 8, height: 5, channels: 4, background: "#d9e24f" } })
+      .png().toFile(path.join(assetsRoot, "図 1.png"));
+
+    const workspace = new DocumentWorkspaceService();
+    const openedProject = await workspace.openForOwner(owner, projectRoot);
+    expect(openedProject.kind).toBe("opened");
+    if (openedProject.kind !== "opened") return;
+    const markdown = new MarkdownFileService();
+    const session = await markdown.openForOwner(owner, source, openedProject.document.documentId);
+    expect(session.kind).toBe("opened");
+    if (session.kind !== "opened") return;
+    const output = path.join(root, "draft.resolved.pdf");
+    const writePdf = vi.fn(async (
+      outputPath: string,
+      _document: { readonly kind: string },
+      _settings: ExportPresentationSettings,
+      images: ReadonlyMap<string, { readonly mimeType: string; readonly dataUrl: string }>
+    ) => {
+      expect(images.get("assets/図 1.png")).toMatchObject({ mimeType: "image/png" });
+      expect(images.get("assets/図 1.png")?.dataUrl).toMatch(/^data:image\/png;base64,/u);
+      await writeFile(outputPath, Buffer.from("%PDF-1.7\nfixture", "ascii"));
+    });
+    const handlers = createExportHandlers({
+      sessions: markdown,
+      resolve: async () => resolution,
+      resolveProjectAsset: (requestOwner, projectId, relativePath) =>
+        new ProjectAssetService(workspace).resolveForOwner(requestOwner, projectId, relativePath),
+      showSaveDialog: async () => ({ canceled: false, filePath: output }),
+      writePdf
+    });
+    const prepared = await resolve(handlers, session.sessionId, "# Draft\n\n![[assets/図 1.png]]\n");
+    await expect(handlers.writeExport(event, {
+      exportId: prepared.exportId,
+      documentId: session.sessionId,
+      revision: prepared.revision,
+      text: "# Draft\n\n![[assets/図 1.png]]\n",
+      format: "pdf",
+      settings: createExportPresentationSettings()
+    })).resolves.toEqual({ kind: "exported", fileName: "draft.resolved.pdf" });
+    expect(writePdf).toHaveBeenCalledOnce();
+    expect(await readFile(source, "utf8")).toBe(sourceText);
   });
 
   it("keeps packaged DOCX failures understandable without exposing runtime details", async () => {

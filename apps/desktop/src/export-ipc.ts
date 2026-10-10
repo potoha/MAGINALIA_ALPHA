@@ -5,6 +5,12 @@ import { MAX_MARKDOWN_BYTES } from "./markdown-ipc";
 import type { MarkdownFileService, MarkdownSessionInfo } from "./markdown-file-service";
 import type { ReviewerResolutionResult } from "./reviewer-resolution";
 import { createExportDocumentModel, type ExportDocumentModel } from "./renderer/export-document-model";
+import type { ProjectAssetResult } from "./project-assets";
+import {
+  ExportImageError,
+  resolveExportImageAssets,
+  type ExportImageAssets
+} from "./export-project-images";
 import {
   DEFAULT_EXPORT_PRESENTATION_SETTINGS,
   isExportPresentationSettings,
@@ -117,13 +123,21 @@ export interface ExportHandlerDependencies {
   readonly writePdf?: (
     outputPath: string,
     document: ExportDocumentModel,
-    settings: ExportPresentationSettings
+    settings: ExportPresentationSettings,
+    images: ExportImageAssets
   ) => Promise<void>;
   readonly writeDocx?: (
     outputPath: string,
     document: ExportDocumentModel,
-    settings: ExportPresentationSettings
+    settings: ExportPresentationSettings,
+    images: ExportImageAssets
   ) => Promise<void>;
+  /** ProjectAssetService-backed resolver; never supplied by renderer IPC. */
+  readonly resolveProjectAsset?: (
+    owner: object,
+    projectId: string,
+    relativePath: string
+  ) => Promise<ProjectAssetResult>;
 }
 
 interface PendingExport {
@@ -430,7 +444,14 @@ export class ExportService {
             message: "PDFを書き出せませんでした。保存先を確認して、もう一度お試しください。"
           };
         }
-        await this.dependencies.writePdf(outputPath, createExportDocumentModel(request.text), settings);
+        const document = createExportDocumentModel(request.text);
+        const images = await resolveExportImageAssets(
+          owner,
+          session.projectId,
+          document,
+          this.dependencies.resolveProjectAsset
+        );
+        await this.dependencies.writePdf(outputPath, document, settings, images);
       } else if (format === "docx") {
         if (this.dependencies.writeDocx === undefined) {
           return {
@@ -439,15 +460,24 @@ export class ExportService {
             message: "DOCXを書き出せませんでした。保存先を確認して、もう一度お試しください。"
           };
         }
-        await this.dependencies.writeDocx(outputPath, createExportDocumentModel(request.text), settings);
+        const document = createExportDocumentModel(request.text);
+        const images = await resolveExportImageAssets(
+          owner,
+          session.projectId,
+          document,
+          this.dependencies.resolveProjectAsset
+        );
+        await this.dependencies.writeDocx(outputPath, document, settings, images);
       } else {
         await atomicWrite(outputPath, request.text);
       }
-    } catch {
+    } catch (error: unknown) {
       return {
         kind: "error",
         code: "write-failed",
-        message: format === "pdf"
+        message: error instanceof ExportImageError
+          ? error.message
+          : format === "pdf"
           ? "PDFを書き出せませんでした。保存先を確認して、もう一度お試しください。"
           : format === "docx"
             ? "DOCXを書き出せませんでした。保存先を確認して、もう一度お試しください。"

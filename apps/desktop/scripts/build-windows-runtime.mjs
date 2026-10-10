@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildNdlocrRuntime } from "./build-ndlocr-runtime.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDirectory, "..");
@@ -27,6 +28,7 @@ await mkdir(stagingRoot, { recursive: true });
 await mkdir(runtimeRoot, { recursive: true });
 
 await buildReviewer();
+await buildNdlocrRuntime({ repositoryRoot, packagingRoot, runtimeRoot, stagingRoot, versions });
 await installPandoc();
 await copyContractsAndTutorial();
 await writeFile(path.join(runtimeRoot, "runtime-build.json"), `${JSON.stringify({
@@ -34,6 +36,8 @@ await writeFile(path.join(runtimeRoot, "runtime-build.json"), `${JSON.stringify(
   builtAt: new Date().toISOString(),
   host: `${process.platform}-${process.arch}`,
   reviewerPython: versions.reviewerPython,
+  ndlocrPython: versions.ndlocrPython,
+  ndlocrLite: JSON.parse(await readFile(path.join(repositoryRoot, "sidecars", "reviewer", "ndlocr-lite-1.3.1.lock.json"), "utf8")),
   pyinstaller: versions.pyinstaller,
   pandoc: versions.pandoc,
 }, null, 2)}\n`, "utf8");

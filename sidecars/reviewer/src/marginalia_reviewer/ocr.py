@@ -14,9 +14,12 @@ from PIL import Image
 
 from .config import load_json_object
 
-NDLOCR_LITE_VERSION = "1.2.3"
-NDLOCR_LITE_COMMIT = "c3cc7676e7f4613c6b5d51bfae7ca764098424d2"
-NDLOCR_LITE_WINDOWS_SHA256 = "f9e615ca1bba70c48fee156e685631cc2ef413f5c18c06fcbb9a949382519668"
+NDLOCR_LITE_VERSION = "1.3.1"
+NDLOCR_LITE_TAG = "1.3.1"
+NDLOCR_LITE_COMMIT = "6feccb29e33c2467ea48894e66502a7788ae2b2d"
+NDLOCR_LITE_REPOSITORY = "https://github.com/ndl-lab/ndlocr-lite"
+NDLOCR_LITE_MANIFEST_EXECUTABLE = "ndlocr-lite/ndlocr-lite.exe"
+NDLOCR_MANAGED_BY = "MAGINALIA Desktop"
 
 
 class OcrConfigurationError(ValueError):
@@ -61,42 +64,119 @@ class NdlocrLiteAdapter:
         self.timeout_seconds = timeout_seconds
         try:
             config = load_json_object(config_path)
-        except FileNotFoundError as exc:
-            raise OcrConfigurationError(f"NDLOCR configuration not found:\n{config_path}") from exc
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise OcrConfigurationError("NDLOCR-Lite の設定を読み取れません。") from exc
+        if config.get("schemaVersion") != 1 or isinstance(config.get("schemaVersion"), bool):
+            raise OcrConfigurationError("NDLOCR-Lite の設定バージョンが正しくありません。")
+        if config.get("managedBy") != NDLOCR_MANAGED_BY:
+            raise OcrConfigurationError("NDLOCR-Lite の設定はMAGINALIAが作成したものではありません。")
         if config.get("engine") != "NDLOCR-Lite" or config.get("version") != NDLOCR_LITE_VERSION:
             raise OcrConfigurationError(
-                f"NDLOCR-Lite config must pin engine=NDLOCR-Lite and version={NDLOCR_LITE_VERSION}"
+                f"NDLOCR-Lite の設定はバージョン {NDLOCR_LITE_VERSION} に対応していません。"
             )
         if config.get("commit") != NDLOCR_LITE_COMMIT:
-            raise OcrConfigurationError(f"NDLOCR-Lite config must pin commit={NDLOCR_LITE_COMMIT}")
-        if config.get("distributionSha256") != NDLOCR_LITE_WINDOWS_SHA256:
-            raise OcrConfigurationError(
-                "NDLOCR-Lite config must pin the official Windows 1.2.3 distribution SHA-256"
-            )
+            raise OcrConfigurationError("NDLOCR-Lite の配布元を確認できません。")
+        manifest_path_value = config.get("manifestPath")
+        distribution_sha256 = config.get("distributionSha256")
+        if not isinstance(manifest_path_value, str) or not manifest_path_value:
+            raise OcrConfigurationError("NDLOCR-Lite の配布情報を確認できません。")
+        manifest_path = Path(manifest_path_value)
+        if not manifest_path.is_absolute():
+            raise OcrConfigurationError("NDLOCR-Lite の配布情報を確認できません。")
+        if not isinstance(distribution_sha256, str) or re.fullmatch(r"[0-9a-fA-F]{64}", distribution_sha256) is None:
+            raise OcrConfigurationError("NDLOCR-Lite の配布情報を確認できません。")
+        try:
+            manifest_path = manifest_path.resolve(strict=True)
+            if manifest_path.stat().st_size > 16 * 1024 * 1024:
+                raise OcrConfigurationError("NDLOCR-Lite の配布情報が大きすぎます。")
+            manifest_bytes = manifest_path.read_bytes()
+        except (OSError, RuntimeError, ValueError) as exc:
+            if isinstance(exc, OcrConfigurationError):
+                raise
+            raise OcrConfigurationError("NDLOCR-Lite が見つからないか、配布情報を読み取れません。") from exc
+        manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+        if manifest_digest != distribution_sha256.casefold():
+            raise OcrConfigurationError("NDLOCR-Lite の配布情報が一致しません。")
+        try:
+            manifest = json.loads(manifest_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise OcrConfigurationError("NDLOCR-Lite の配布情報を読み取れません。") from exc
+        if not isinstance(manifest, dict):
+            raise OcrConfigurationError("NDLOCR-Lite の配布情報が正しくありません。")
+        source = manifest.get("source")
+        if (
+            manifest.get("schemaVersion") != 1
+            or isinstance(manifest.get("schemaVersion"), bool)
+            or manifest.get("engine") != "NDLOCR-Lite"
+            or manifest.get("version") != NDLOCR_LITE_VERSION
+            or not isinstance(source, dict)
+            or source.get("repository") != NDLOCR_LITE_REPOSITORY
+            or source.get("tag") != NDLOCR_LITE_TAG
+            or source.get("commit") != NDLOCR_LITE_COMMIT
+        ):
+            raise OcrConfigurationError("NDLOCR-Lite の配布元またはバージョンを確認できません。")
         command = config.get("command")
         if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
-            raise OcrConfigurationError("NDLOCR-Lite config.command must be a non-empty string array")
-        if not any("{input}" in item for item in command) or not any(
-            "{output}" in item or "{outputDir}" in item for item in command
+            raise OcrConfigurationError("NDLOCR-Lite の起動設定が正しくありません。")
+        if command[1:] not in (
+            ["--sourceimg", "{input}", "--output", "{outputDir}", "--json-only", "--device", "cpu"],
+            ["--sourceimg", "{input}", "--output", "{output}", "--json-only", "--device", "cpu"],
         ):
-            raise OcrConfigurationError(
-                "NDLOCR-Lite command must contain {input} and either {output} or {outputDir}"
-            )
-        executable = Path(command[0])
-        if not executable.is_absolute() or not executable.is_file():
-            raise OcrConfigurationError("NDLOCR-Lite command executable must be an existing absolute path")
+            raise OcrConfigurationError("NDLOCR-Lite の起動設定が正しくありません。")
+        executable_value = Path(command[0])
+        if not executable_value.is_absolute():
+            raise OcrConfigurationError("NDLOCR-Lite の起動先が正しくありません。")
+        try:
+            executable = executable_value.resolve(strict=True)
+            relative_executable = executable.relative_to(manifest_path.parent).as_posix()
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise OcrConfigurationError("NDLOCR-Lite の起動先が配布フォルダー外です。") from exc
+        if relative_executable != NDLOCR_LITE_MANIFEST_EXECUTABLE or not executable.is_file():
+            raise OcrConfigurationError("NDLOCR-Lite の起動先が配布フォルダー内の実行ファイルではありません。")
+        files = manifest.get("files")
+        if not isinstance(files, list):
+            raise OcrConfigurationError("NDLOCR-Lite の配布ファイル一覧が正しくありません。")
+        executable_entries = [
+            entry for entry in files
+            if isinstance(entry, dict) and entry.get("path") == NDLOCR_LITE_MANIFEST_EXECUTABLE
+        ]
+        if len(executable_entries) != 1:
+            raise OcrConfigurationError("NDLOCR-Lite の実行ファイルが配布一覧にありません。")
+        executable_entry = executable_entries[0]
+        manifest_executable_sha256 = executable_entry.get("sha256")
+        manifest_executable_size = executable_entry.get("size")
+        if (
+            not isinstance(manifest_executable_sha256, str)
+            or re.fullmatch(r"[0-9a-fA-F]{64}", manifest_executable_sha256) is None
+            or isinstance(manifest_executable_size, bool)
+            or not isinstance(manifest_executable_size, int)
+            or manifest_executable_size < 0
+        ):
+            raise OcrConfigurationError("NDLOCR-Lite の実行ファイル情報が正しくありません。")
+        try:
+            actual_executable_size = executable.stat().st_size
+        except OSError as exc:
+            raise OcrConfigurationError("NDLOCR-Lite の実行ファイルを確認できません。") from exc
+        if actual_executable_size != manifest_executable_size:
+            raise OcrConfigurationError("NDLOCR-Lite の実行ファイルのサイズが配布情報と一致しません。")
         executable_sha256 = config.get("executableSha256")
         if not isinstance(executable_sha256, str) or re.fullmatch(r"[0-9a-fA-F]{64}", executable_sha256) is None:
-            raise OcrConfigurationError("NDLOCR-Lite config.executableSha256 must be a SHA-256 hex digest")
+            raise OcrConfigurationError("NDLOCR-Lite の実行ファイル情報が正しくありません。")
+        if executable_sha256.casefold() != manifest_executable_sha256.casefold():
+            raise OcrConfigurationError("NDLOCR-Lite の実行ファイル情報が配布一覧と一致しません。")
         digest = hashlib.sha256()
-        with executable.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
+        try:
+            with executable.open("rb") as source_file:
+                for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError as exc:
+            raise OcrConfigurationError("NDLOCR-Lite の実行ファイルを読み取れません。") from exc
         actual_executable_sha256 = digest.hexdigest()
         if actual_executable_sha256 != executable_sha256.casefold():
-            raise OcrConfigurationError("NDLOCR-Lite command executable SHA-256 does not match configuration")
+            raise OcrConfigurationError("NDLOCR-Lite の実行ファイルが配布情報と一致しません。")
         self.command = command
         self.executable_sha256 = actual_executable_sha256
+        self.distribution_sha256 = manifest_digest
 
     def recognize(
         self, image_path: Path, expected_width: int, expected_height: int, page_id: str
@@ -159,7 +239,7 @@ class NdlocrLiteAdapter:
             "engine": "NDLOCR-Lite",
             "version": NDLOCR_LITE_VERSION,
             "commit": NDLOCR_LITE_COMMIT,
-            "distributionSha256": NDLOCR_LITE_WINDOWS_SHA256,
+            "distributionSha256": self.distribution_sha256,
             "executableSha256": self.executable_sha256,
             "executedAt": datetime.now(UTC).isoformat(timespec="seconds"),
             "raw": raw,

@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -99,6 +99,33 @@ describe("FileProjectPathStore local settings", () => {
 });
 
 describe("Project service", () => {
+  it("retains the owner-validated Project ID only in the main-process Markdown session", async () => {
+    await withTempDirectory(async (directory) => {
+      const root = path.join(directory, "Project");
+      const source = path.join(root, "draft.md");
+      await mkdir(root);
+      await writeFile(source, "# Draft\n", "utf8");
+      const owner = {};
+      const markdown = new MarkdownFileService();
+      const projectService = new ProjectService(new DocumentWorkspaceService(), markdown, new MemoryProjectPathStore());
+
+      const project = opened(await projectService.openForOwner(owner, root));
+      const draft = project.files.find((file) => file.displayName === "draft.md");
+      expect(draft).toBeDefined();
+      if (draft === undefined) return;
+      const session = await projectService.openFileForOwner(owner, project.project.projectId, draft.fileId);
+      expect(session.kind).toBe("opened");
+      if (session.kind !== "opened") return;
+
+      expect(markdown.getSessionInfoForOwner(owner, session.sessionId)).toMatchObject({
+        projectId: project.project.projectId,
+        filePath: await realpath(source)
+      });
+      expect(JSON.stringify(session)).not.toContain(project.project.projectId);
+      expect(JSON.stringify(session)).not.toContain(source);
+    });
+  });
+
   it("opens markerless authored data in identity recovery without creating a Project identity", async () => {
     await withTempDirectory(async (directory) => {
       const root = path.join(directory, "日本語", "卒論");

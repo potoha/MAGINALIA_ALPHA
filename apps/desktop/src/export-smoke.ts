@@ -536,6 +536,9 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
   assert(exportedB.exportMessage.includes("export-2.resolved.md"), "second export did not use the fixture output");
   const outputB = await readFile(path.join(root, "export-2.resolved.md"), "utf8");
   assertIncludes(outputB, "B-only document", "second document content");
+  assertIncludes(outputB, "![PNG figure](assets/figure.png)", "single-file Markdown PNG reference");
+  assertIncludes(outputB, "![[assets/写真 資料.jpg]]", "single-file Markdown Japanese JPEG reference");
+  assertIncludes(outputB, "![[assets/図版 WebP.webp]]", "single-file Markdown WebP reference");
   for (const headerText of Object.values(chosenSettings.header)) {
     assert(!outputB.includes(headerText), "presentation header settings leaked into resolved Markdown output");
   }
@@ -559,6 +562,8 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
     assert(exportedPdf.exportPdfEnabled, "PDF export was not available for the active document");
     const pdf = await readFile(path.join(root, "export-3.resolved.pdf"));
     assert(pdf.length > 4 && pdf.subarray(0, 4).toString("ascii") === "%PDF", "PDF export did not create a real PDF artifact");
+    const pdfImageObjects = pdf.toString("latin1").match(/\/Subtype\s*\/Image\b/gu) ?? [];
+    assert(pdfImageObjects.length >= 3, `PDF did not embed all three Project images (${pdfImageObjects.length} image objects)`);
     assert(await readFile(secondPath, "utf8") === initialSecond, "PDF export changed its authoring file");
   }
 
@@ -579,6 +584,7 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
   const stylesXml = strFromU8(docxParts["word/styles.xml"]!);
   const relationshipsXml = strFromU8(docxParts["word/_rels/document.xml.rels"]!);
   const headerXml = strFromU8(docxParts["word/header1.xml"]!);
+  const mediaParts = Object.keys(docxParts).filter((name) => name.startsWith("word/media/"));
   assert(documentXml.includes(`w:w="${Math.round(364 * 1440 / 25.4)}"`), "DOCX did not use the selected JIS B4 landscape width");
   assert(documentXml.includes(`w:h="${Math.round(257 * 1440 / 25.4)}"`), "DOCX did not use the selected JIS B4 landscape height");
   assert(documentXml.includes('w:orient="landscape"'), "DOCX did not use the selected landscape orientation");
@@ -586,6 +592,9 @@ export async function runExportSmoke(window: BrowserWindow, fixtureRoot: string)
   assert(headerXml.includes("左側ヘッダー") && headerXml.includes("中央ヘッダー") && headerXml.includes("右側ヘッダー"), "DOCX did not receive all selected header slots");
   assert(docxParts["word/footer1.xml"] === undefined, "DOCX included a footer despite page numbers being disabled");
   assert(!relationshipsXml.includes("relationships/footer"), "DOCX retained a page-number footer relationship");
+  assert(mediaParts.length === 3, `DOCX did not embed all three Project images (${mediaParts.length} media parts)`);
+  assert((documentXml.match(/<w:drawing\b/gu) ?? []).length === 3, "DOCX did not place all three images in document order");
+  assert((relationshipsXml.match(/relationships\/image/gu) ?? []).length === 3, "DOCX did not link all three embedded images");
   assert(await readFile(secondPath, "utf8") === initialSecond, "DOCX export changed its authoring file");
 }
 

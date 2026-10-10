@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
-import { findBrandAssetPath } from "./brand-assets";
+import { findApplicationIconPath, findBrandAssetPath } from "./brand-assets";
 import {
   brandProgressUpdateScript,
   createBrandProgressState,
@@ -193,6 +193,7 @@ import { FirstRunCoordinator } from "./first-run-coordinator";
 import { FirstRunJournalStore } from "./first-run-setup";
 import { runFirstRunRestoreSmoke, runFirstRunSmoke } from "./first-run-smoke";
 import { resolvePackagedRuntimePaths } from "./packaged-runtime-paths";
+import { ensureNdlocrConfiguration } from "./ndlocr-runtime-configuration";
 import { OPEN_BUNDLED_MANUAL_CHANNEL } from "./manual-ipc";
 import {
   FIRST_RUN_PROGRESS_CHANNEL,
@@ -765,12 +766,14 @@ const exportHandlers = createExportHandlers({
       ? dialog.showSaveDialog(options)
       : dialog.showSaveDialog(ownerWindow, options);
   },
-  writePdf: (outputPath, document, settings) => app.isPackaged || process.env.MAGINALIA_SMOKE_ELECTRON_PDF === "1"
-    ? writePdfWithElectron(outputPath, document, settings, createIsolatedPdfWindow)
-    : writePdfWithVivliostyle(outputPath, document, settings),
-  writeDocx: (outputPath, document, settings) => app.isPackaged
-    ? writeDocxWithPandoc(outputPath, document, settings, resolvePackagedRuntimePaths(process.resourcesPath).pandocExecutable)
-    : writeDocxWithPandoc(outputPath, document, settings)
+  resolveProjectAsset: (owner, projectId, relativePath) =>
+    projectAssetService.resolveForOwner(owner, projectId, relativePath),
+  writePdf: (outputPath, document, settings, images) => app.isPackaged || process.env.MAGINALIA_SMOKE_ELECTRON_PDF === "1"
+    ? writePdfWithElectron(outputPath, document, settings, createIsolatedPdfWindow, undefined, images)
+    : writePdfWithVivliostyle(outputPath, document, settings, undefined, {}, images),
+  writeDocx: (outputPath, document, settings, images) => app.isPackaged
+    ? writeDocxWithPandoc(outputPath, document, settings, resolvePackagedRuntimePaths(process.resourcesPath).pandocExecutable, images)
+    : writeDocxWithPandoc(outputPath, document, settings, undefined, images)
 });
 const repositoryHandlers = createRepositoryHandlers({
   pickParentFolder: () => repositorySmoke.requested
@@ -1430,9 +1433,7 @@ function readBrandPngDataUrl(...fileNames: string[]): string | null {
 }
 
 function applicationIconPath(): string | null {
-  return process.platform === "win32"
-    ? resolveBrandAsset("maginalia.ico", "iconnottran.png", "icon.png")
-    : resolveBrandAsset("icon.png", "iconnottran.png");
+  return findApplicationIconPath(process.platform, brandAssetRoots());
 }
 
 function updateStartupProgress(message: string, progress: number | null): void {
@@ -2296,6 +2297,17 @@ const autosaveShutdown = new AutosaveShutdownCoordinator({
 app.on("before-quit", (event) => autosaveShutdown.beforeQuit(event));
 
 void app.whenReady().then(async () => {
+  if (app.isPackaged) {
+    const configuration = await ensureNdlocrConfiguration(
+      getDesktopConfigurationPaths().ndlocrConfigPath,
+      process.resourcesPath,
+    );
+    if (configuration.status === "conflict" || configuration.status === "invalid") {
+      console.warn("MAGINALIA_NDLOCR_CONFIGURATION_REQUIRES_ATTENTION", configuration.message);
+    } else if (configuration.status === "migrated") {
+      console.info("MAGINALIA_NDLOCR_LEGACY_CONFIGURATION_MIGRATED", configuration.backupPath);
+    }
+  }
   try {
     firstRunOnLaunch = await shouldOpenFirstRunSetup();
   } catch (error: unknown) {
@@ -2307,7 +2319,7 @@ void app.whenReady().then(async () => {
     updateStartupProgress("MAGINALIA desktop α1 を起動しています", 0.08);
     startStartupProgressWindow(140);
     if (process.platform === "darwin") {
-      const dockIcon = resolveBrandAsset("icon.png", "iconnottran.png");
+      const dockIcon = resolveBrandAsset("icon.v2.png");
       if (dockIcon !== null) app.dock?.setIcon(dockIcon);
     }
   }

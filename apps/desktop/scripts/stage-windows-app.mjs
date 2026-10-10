@@ -63,6 +63,8 @@ async function writeThirdPartyNotices() {
   }
   await collectNpmNotices(path.join(stageRoot, "node_modules"), path.join(noticesRoot, "node"));
   await collectPythonNotices(path.join(repositoryRoot, "sidecars", "reviewer", ".venv", "Lib", "site-packages"), path.join(noticesRoot, "python"));
+  await collectPythonNotices(path.join(repositoryRoot, "sidecars", "reviewer", "ndlocr-runtime", ".venv", "Lib", "site-packages"), path.join(noticesRoot, "python-ndlocr"));
+  await cp(path.join(runtimeRoot, "ndlocr", "licenses"), path.join(noticesRoot, "NDLOCR-Lite-1.3.1"), { recursive: true });
   const runtimeVersions = JSON.parse(await readFile(path.join(packagingRoot, "runtime-versions.json"), "utf8"));
   const pyinstallerNoticeDirectory = path.join(noticesRoot, "python", `PyInstaller-${runtimeVersions.pyinstaller}`);
   await mkdir(pyinstallerNoticeDirectory, { recursive: true });

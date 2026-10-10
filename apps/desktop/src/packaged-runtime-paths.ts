@@ -8,6 +8,7 @@ export interface PackagedRuntimePaths {
   readonly tutorialRoot: string;
   readonly noticesDirectory: string;
   readonly manualPdfPath: string;
+  readonly ndlocrRuntimeContract: string;
 }
 
 export function resolvePackagedRuntimePaths(resourcesPath: string): PackagedRuntimePaths {
@@ -19,5 +20,6 @@ export function resolvePackagedRuntimePaths(resourcesPath: string): PackagedRunt
     tutorialRoot: path.join(resourcesPath, "tutorial-sample"),
     noticesDirectory: path.join(resourcesPath, "THIRD-PARTY-NOTICES"),
     manualPdfPath: path.join(resourcesPath, "manual", "マニュアル.pdf"),
+    ndlocrRuntimeContract: path.join(resourcesPath, "ndlocr-runtime-contract.json"),
   });
 }
