@@ -16,6 +16,7 @@
     { "from": "packaging/runtime/reviewer", "to": "reviewer" },
     { "from": "packaging/runtime/contracts", "to": "contracts" },
     { "from": "packaging/runtime/pandoc", "to": "pandoc" },
+    { "from": "packaging/runtime/ndlocr-runtime-contract.json", "to": "ndlocr-runtime-contract.json" },
     { "from": "packaging/runtime/tutorial-sample", "to": "tutorial-sample" },
     { "from": "packaging/manual", "to": "manual", "filter": ["マニュアル.pdf"] },
     { "from": "packaging/runtime/THIRD-PARTY-NOTICES", "to": "THIRD-PARTY-NOTICES" }
@@ -30,6 +31,8 @@
     "perMachine": false,
     "allowElevation": true,
     "allowToChangeInstallationDirectory": false,
+    "installerIcon": "packaging/.stage/app/dist/branding/maginalia.ico",
+    "uninstallerIcon": "packaging/.stage/app/dist/branding/maginalia.ico",
     "createStartMenuShortcut": true,
     "createDesktopShortcut": false,
     "shortcutName": "MAGINALIA desktop α1",

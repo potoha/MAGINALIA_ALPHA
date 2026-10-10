@@ -13,36 +13,15 @@ uv run marginalia-review --no-browser
 
 The server listens only on `127.0.0.1` and defaults to <http://127.0.0.1:8765/>. Use `--workspace PATH` to choose the SQLite/import directory and `--port PORT` to change the port. Interrupted `RUNNING` OCR rows are reset to `PENDING` when the application starts.
 
-## NDLOCR-Lite 1.2.3
+## NDLOCR-Lite 1.3.1
 
-Install NDLOCR-Lite **1.2.3** using its upstream Windows instructions. This project does not silently install or upgrade the OCR engine. Create a JSON configuration that runs the canonical JPEG through the official JSON-only CLI:
+The Windows Desktop package uses the official NDLOCR-Lite 1.3.1 source at commit `6feccb29e33c2467ea48894e66502a7788ae2b2d` to build an isolated CPU command-line runtime. The upstream tag's Python package metadata says 1.3.0; its release workflow stamps 1.3.1 before building, and the MAGINALIA runtime repeats that stamp. The pinned source inputs, model/config hashes, Python dependency lock, and license-source coordinates are recorded in `ndlocr-lite-1.3.1.lock.json` and `ndlocr-runtime/uv.lock`.
 
-```json
-{
-  "engine": "NDLOCR-Lite",
-  "version": "1.2.3",
-  "commit": "c3cc7676e7f4613c6b5d51bfae7ca764098424d2",
-  "distributionSha256": "f9e615ca1bba70c48fee156e685631cc2ef413f5c18c06fcbb9a949382519668",
-  "executableSha256": "SHA-256 of the executable at command[0]",
-  "command": ["C:\\path\\to\\ndlocr-lite.exe", "--sourceimg", "{input}", "--output", "{outputDir}", "--json-only"]
-}
-```
+NDLOCR-Lite is an optional installer component. MAGINALIA Core and non-OCR Reviewer functions remain available if it is not selected. The packaged Desktop verifies the runtime manifest and executable before generating its managed `ndlocr.json` in Electron's application-data directory. It does not create the file when the optional payload is absent, and it preserves configuration files not marked as MAGINALIA-managed. One narrow upgrade exception applies: the exact documented 1.2.3 configuration (official version, commit, archive hash, and default CLI arguments) is backed up byte-for-byte beside the settings file before it is replaced with the managed 1.3.1 configuration. Custom commands, extra settings, malformed files, and other configurations remain untouched and require attention. The OCR process is launched by absolute executable path with shell execution disabled; its executable and distribution-manifest hashes are checked before use.
 
-The authoritative release coordinates are recorded in `ndlocr-lite-1.2.3.lock.json`. Before extraction, verify the downloaded Windows archive:
+The managed configuration records the absolute `manifestPath`, its SHA-256 as `distributionSha256`, the pinned source commit/version, the executable SHA-256, and the native CLI arguments `--sourceimg {input} --output {outputDir} --json-only --device cpu`. NDLOCR-Lite writes `<input-name>.json` inside that output directory; the adapter accepts that file only when exactly one JSON result is present. The adapter accepts the upstream 1.3.1 `contents` / `imginfo` structure, validates image dimensions and region geometry, and records the complete raw result and version provenance for new OCR results. Previously saved OCR provenance is not rewritten.
 
-```powershell
-(Get-FileHash .\ndlocr_lite_v1.2.3_windows.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-```
-
-It must equal the lock file value. Python dependencies for the reviewer itself are fixed by `uv.lock`.
-
-After installation, calculate the configured executable hash and copy it to `executableSha256`:
-
-```powershell
-(Get-FileHash C:\path\to\ndlocr-lite.exe -Algorithm SHA256).Hash.ToLowerInvariant()
-```
-
-Start with `--ndlocr-config .\ndlocr.json`, or set `MARGINALIA_NDLOCR_CONFIG`. The official 1.2.3 `contents` / `imginfo` JSON is supported directly; `{outputDir}` is the temporary output directory. `{output}` remains available for a wrapper that writes one exact JSON file. Dimensions are checked against the imported page before pixel boxes are normalized. The complete raw JSON is retained in SQLite together with the engine version, release commit, distribution SHA-256, and execution timestamp.
+For development-only direct Reviewer runs, `--ndlocr-config PATH` or `MARGINALIA_NDLOCR_CONFIG` can select an explicit configuration. A missing configuration only disables OCR; it does not prevent non-OCR Reviewer operations. The installed application generates configuration automatically when its verified optional runtime is present.
 
 The review screen overlays read-only mobile OCR boxes in blue, editable NDL OCR boxes in green, and original annotation strokes in red. Select an NDL box to drag it or resize its lower-right handle, then correct its text in the **Selected NDL OCR text** field; **Add NDL region**, **Delete selected**, and **Save regions** persist the edited normalized boxes and text to SQLite.
 

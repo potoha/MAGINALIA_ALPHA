@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { commitStagedArtifact } from "./export-artifact-transaction";
 import { parseMarkdownInlines, type MarkdownInline } from "./renderer/markdown-inline";
+import { assertExportImagesResolved, type ExportImageAssets } from "./export-project-images";
 import { isMarkdownFenceClosing, openingMarkdownFence, parseMarkdownHeading } from "./renderer/markdown-fence";
 import { parseMarkdownListItem } from "./renderer/markdown-structure";
 import type { ExportDocumentBlock, ExportDocumentModel, ExportDocumentTable } from "./renderer/export-document-model";
@@ -35,7 +36,7 @@ function cssString(value: string): string {
   return `"${value.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"').replace(/[\r\n]/gu, " ").replace(/</gu, "\\3c ")}"`;
 }
 
-function renderInlines(nodes: readonly MarkdownInline[]): string {
+function renderInlines(nodes: readonly MarkdownInline[], images: ExportImageAssets): string {
   return nodes.map((node): string => {
     if (node.kind === "text") {
       if (/!\[\[|!\[[^\]]*\]\(/u.test(node.text)) throw new Error("PDF export cannot resolve Project media in this document.");
@@ -45,41 +46,45 @@ function renderInlines(nodes: readonly MarkdownInline[]): string {
       return html(node.text);
     }
     if (node.kind === "code") return `<code>${html(node.text)}</code>`;
-    if (node.kind === "strong") return `<strong>${renderInlines(node.children)}</strong>`;
-    if (node.kind === "emphasis") return `<em>${renderInlines(node.children)}</em>`;
-    if (node.kind === "link") return `<a href="${html(node.href)}">${renderInlines(node.label)}</a>`;
-    if (node.kind === "internal-link") return renderInlines(node.label);
-    if (node.kind === "local-media") throw new Error("PDF export cannot resolve Project media in this document.");
+    if (node.kind === "strong") return `<strong>${renderInlines(node.children, images)}</strong>`;
+    if (node.kind === "emphasis") return `<em>${renderInlines(node.children, images)}</em>`;
+    if (node.kind === "link") return `<a href="${html(node.href)}">${renderInlines(node.label, images)}</a>`;
+    if (node.kind === "internal-link") return renderInlines(node.label, images);
+    if (node.kind === "local-media") {
+      const image = images.get(node.target);
+      if (image === undefined) throw new Error(`Project内の画像「${node.target}」を確認できないため、書き出せませんでした。`);
+      return `<img src="${html(image.dataUrl)}" alt="${html(node.alt)}">`;
+    }
     throw new Error("PDF export contains an unresolved quotation marker.");
   }).join("");
 }
 
-function inline(value: string): string {
-  return renderInlines(parseMarkdownInlines(value));
+function inline(value: string, images: ExportImageAssets): string {
+  return renderInlines(parseMarkdownInlines(value), images);
 }
 
-function tableHtml(table: ExportDocumentTable | undefined): string {
+function tableHtml(table: ExportDocumentTable | undefined, images: ExportImageAssets): string {
   // Tables are parsed once while constructing ExportDocumentModel. The PDF
   // adapter consumes that typed projection and must not parse table grammar.
   if (table === undefined) throw new Error("PDF export received a table block without its Export Document Model projection.");
   const row = (cells: readonly string[], tag: "th" | "td"): string =>
-    `<tr>${cells.map((cell) => `<${tag}>${inline(cell)}</${tag}>`).join("")}</tr>`;
+    `<tr>${cells.map((cell) => `<${tag}>${inline(cell, images)}</${tag}>`).join("")}</tr>`;
   return `<table><thead>${row(table.header, "th")}</thead><tbody>${table.rows.map((cells) => row(cells, "td")).join("")}</tbody></table>`;
 }
 
-function blockHtml(block: ExportDocumentBlock): string {
+function blockHtml(block: ExportDocumentBlock, images: ExportImageAssets): string {
   if (block.kind === "metadata" || block.kind === "raw") return "";
   if (block.kind === "heading") {
     const line = block.markdown.replace(/\r?\n$/u, "");
     const heading = parseMarkdownHeading(line);
-    return heading === null ? `<p>${inline(line)}</p>` : `<h${heading.level}>${inline(heading.content)}</h${heading.level}>`;
+    return heading === null ? `<p>${inline(line, images)}</p>` : `<h${heading.level}>${inline(heading.content, images)}</h${heading.level}>`;
   }
   if (block.kind === "paragraph") {
-    return `<p class="body-paragraph">${inline(block.markdown.replace(/\r?\n$/u, "").replace(/\r?\n/gu, "\n"))}</p>`;
+    return `<p class="body-paragraph">${inline(block.markdown.replace(/\r?\n$/u, "").replace(/\r?\n/gu, "\n"), images)}</p>`;
   }
   if (block.kind === "blockquote") {
     const text = block.markdown.split(/\r?\n/gu).filter((line) => line.length > 0).map((line) => line.replace(/^>\s?/u, "")).join("\n");
-    return `<blockquote>${inline(text)}</blockquote>`;
+    return `<blockquote>${inline(text, images)}</blockquote>`;
   }
   if (block.kind === "code") {
     const lines = block.markdown.split(/\r?\n/gu);
@@ -90,12 +95,12 @@ function blockHtml(block: ExportDocumentBlock): string {
     return `<pre><code>${html(content.join("\n"))}</code></pre>`;
   }
   if (block.kind === "table") {
-    return tableHtml(block.table);
+    return tableHtml(block.table, images);
   }
   const lines = block.markdown.split(/\r?\n/gu).filter((line) => line.length > 0);
   const items = lines.map((line) => {
     const item = parseMarkdownListItem(line);
-    return item === null ? `<li>${inline(line)}</li>` : `<li>${inline(item.content)}</li>`;
+    return item === null ? `<li>${inline(line, images)}</li>` : `<li>${inline(item.content, images)}</li>`;
   }).join("");
   return `<${block.ordered ? "ol" : "ul"}>${items}</${block.ordered ? "ol" : "ul"}>`;
 }
@@ -142,7 +147,12 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message:
 }
 
 /** Convert the format-neutral model into Vivliostyle input HTML. */
-export function renderExportDocumentHtml(model: ExportDocumentModel, settings: ExportPresentationSettings): string {
+export function renderExportDocumentHtml(
+  model: ExportDocumentModel,
+  settings: ExportPresentationSettings,
+  images: ExportImageAssets = new Map()
+): string {
+  assertExportImagesResolved(model, images);
   const header = settings.header;
   const headerCss = [
     `@top-left { content: ${cssString(header.left)}; }`,
@@ -150,7 +160,10 @@ export function renderExportDocumentHtml(model: ExportDocumentModel, settings: E
     `@top-right { content: ${cssString(header.right)}; }`,
     settings.pageNumber ? `@bottom-center { content: counter(page); }` : ""
   ].join("\n");
-  const body = model.blocks.map(blockHtml).join("\n");
+  const body = model.blocks.map((block) => blockHtml(block, images)).join("\n");
+  const [shortHeight, longHeight] = PAGE_DIMENSIONS[settings.paperSize];
+  const pageHeight = settings.orientation === "portrait" ? longHeight : shortHeight;
+  const printableImageHeight = Math.max(50, pageHeight - 38);
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><style>
 @page { size: ${pageSize(settings)}; margin: 18mm 16mm 20mm; ${headerCss} }
 html { font-family: sans-serif; }
@@ -162,7 +175,7 @@ pre { white-space: pre-wrap; font-family: monospace; background: #f5f5f5; paddin
 table { border-collapse: collapse; width: 100%; }
 th, td { border: 1px solid #888; padding: 0.25em 0.5em; vertical-align: top; }
 th { background: #eee; }
-img { max-width: 100%; }
+img { max-width: 100%; max-height: ${printableImageHeight}mm; width: auto; height: auto; object-fit: contain; vertical-align: middle; break-inside: avoid; }
 </style></head><body>${body}</body></html>`;
 }
 
@@ -173,18 +186,19 @@ export async function writePdfWithElectron(
   settings: ExportPresentationSettings,
   createWindow: () => ElectronPdfWindow,
   timeoutMs = 120_000,
+  images: ExportImageAssets = new Map(),
 ): Promise<void> {
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), "maginalia-electron-pdf-日本語-"));
   const htmlPath = path.join(temporaryRoot, "resolved.html");
   const stagedPdfPath = path.join(temporaryRoot, "resolved.pdf");
   let window: ElectronPdfWindow | undefined;
   try {
-    await writeFile(htmlPath, renderExportDocumentHtml(model, settings), "utf8");
+    await writeFile(htmlPath, renderExportDocumentHtml(model, settings, images), "utf8");
     window = createWindow();
     await withTimeout(window.loadFile(htmlPath), timeoutMs, "PDFの準備に時間がかかっています。もう一度お試しください。");
     if (window.isDestroyed()) throw new Error("The PDF rendering window closed before the document loaded.");
     await withTimeout(
-      window.webContents.executeJavaScript("document.fonts.ready.then(() => true)"),
+      window.webContents.executeJavaScript("Promise.all([document.fonts.ready, ...Array.from(document.images, image => image.decode())]).then(() => true)"),
       timeoutMs,
       "PDFの文字を準備できませんでした。もう一度お試しください。",
     );
@@ -278,7 +292,8 @@ export async function writePdfWithVivliostyle(
   model: ExportDocumentModel,
   settings: ExportPresentationSettings,
   executable = process.env.MAGINALIA_VIVLIOSTYLE_BIN ?? "vivliostyle",
-  envOverride: NodeJS.ProcessEnv = {}
+  envOverride: NodeJS.ProcessEnv = {},
+  images: ExportImageAssets = new Map()
 ): Promise<void> {
   // The installed app directory may be read-only; keep all Vivliostyle
   // intermediate artifacts in the operating system's writable temp root.
@@ -293,7 +308,7 @@ export async function writePdfWithVivliostyle(
   const inputPath = path.join(inputDirectory, "resolved.html");
   const stagedPdfPath = path.join(stagingDirectory, "resolved.pdf");
   try {
-    await writeFile(inputPath, renderExportDocumentHtml(model, settings), "utf8");
+    await writeFile(inputPath, renderExportDocumentHtml(model, settings, images), "utf8");
     const relativeInputPath = path.relative(inputDirectory, inputPath);
     const relativeStagedPdfPath = path.relative(inputDirectory, stagedPdfPath);
     const commandArgs = /(?:^|[\\/])npx(?:\.cmd)?$/iu.test(executable)

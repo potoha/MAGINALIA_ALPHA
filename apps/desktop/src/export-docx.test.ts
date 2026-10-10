@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import sharp from "sharp";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createExportPresentationSettings } from "./export-presentation-settings";
@@ -207,6 +208,51 @@ describe("Pandoc DOCX adapter", () => {
       expect(await readFile(output, "utf8")).toBe("previous DOCX artifact");
     }
   });
+
+  pandocIt("embeds Project PNG, JPEG, and WebP images in a portable DOCX", async () => {
+    const { directory, output } = await fixture();
+    const imageDirectory = path.join(directory, "画像 inputs");
+    await mkdir(imageDirectory, { recursive: true });
+    const pngPath = path.join(imageDirectory, "figure.png");
+    const jpegPath = path.join(imageDirectory, "写真.jpg");
+    const webpPath = path.join(imageDirectory, "図版 資料.webp");
+    await sharp({ create: { width: 1000, height: 400, channels: 4, background: "#d9e24f" } }).png().toFile(pngPath);
+    await sharp({ create: { width: 320, height: 220, channels: 3, background: "#c69b86" } }).jpeg().toFile(jpegPath);
+    await sharp({ create: { width: 640, height: 480, channels: 4, background: "#528c75" } }).webp().toFile(webpPath);
+    const toDataUrl = async (filePath: string, mimeType: string): Promise<string> =>
+      `data:${mimeType};base64,${(await readFile(filePath)).toString("base64")}`;
+    const images = new Map([
+      ["assets/figure.png", { mimeType: "image/png" as const, dataUrl: await toDataUrl(pngPath, "image/png") }],
+      ["assets/写真.jpg", { mimeType: "image/jpeg" as const, dataUrl: await toDataUrl(jpegPath, "image/jpeg") }],
+      ["assets/図版 資料.webp", { mimeType: "image/webp" as const, dataUrl: await toDataUrl(webpPath, "image/webp") }]
+    ]);
+    const source = [
+      "# 画像付き研究メモ",
+      "",
+      "PNGの前後 text ![図と説明](assets/figure.png) の後。",
+      "",
+      "![[assets/写真.jpg]]",
+      "",
+      "![[assets/図版 資料.webp]]",
+      ""
+    ].join("\n");
+    const before = source;
+
+    await writeDocxWithPandoc(output, model(source), createExportPresentationSettings({}), pandoc!, images);
+    await validateDocxArtifactFile(output);
+    const parts = unzipSync(await readFile(output));
+    const mediaNames = Object.keys(parts).filter((name) => name.startsWith("word/media/"));
+    const document = strFromU8(parts["word/document.xml"]!);
+    const relationships = strFromU8(parts["word/_rels/document.xml.rels"]!);
+    expect(mediaNames).toHaveLength(3);
+    expect(mediaNames.some((name) => name.endsWith(".png"))).toBe(true);
+    expect(mediaNames.some((name) => name.endsWith(".jpg") || name.endsWith(".jpeg"))).toBe(true);
+    expect(document).toContain("w:drawing");
+    expect(document).toContain("図と説明");
+    expect(relationships.match(/relationships\/image/gu)?.length).toBe(3);
+    expect(Object.keys(parts).join("\n")).not.toContain("画像 inputs");
+    expect(source).toBe(before);
+  }, 120_000);
 
   it("validates the DOCX artifact format rather than accepting arbitrary ZIP files", async () => {
     const { output } = await fixture();

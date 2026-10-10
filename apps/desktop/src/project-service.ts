@@ -482,7 +482,7 @@ export class ProjectService {
   ): Promise<OpenMarkdownResult | DocumentWorkspaceFailure> {
     const resolved = await this.workspace.resolveProjectManuscriptPath(owner, projectId, fileId);
     if (resolved.kind !== "resolved") return resolved;
-    return this.markdown.openForOwner(owner, resolved.canonicalPath);
+    return this.markdown.openForOwner(owner, resolved.canonicalPath, projectId);
   }
 
   /** Literal, current-Project-only Markdown search. No paths cross this API. */
@@ -566,7 +566,7 @@ export class ProjectService {
   ): Promise<OpenMarkdownResult | DocumentWorkspaceFailure> {
     const resolved = await this.workspace.resolveProjectManuscriptPath(owner, projectId, fileId);
     if (resolved.kind !== "resolved") return resolved;
-    return this.markdown.openForOwner(owner, resolved.canonicalPath);
+    return this.markdown.openForOwner(owner, resolved.canonicalPath, projectId);
   }
 
   public async createFileForOwner(
