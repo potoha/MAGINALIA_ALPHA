@@ -1,66 +1,78 @@
-# MAGINALIA desktop α1 — Before Kaldi
+# MAGINALIA desktop α1 "Before Kaldi"
 
 [日本語 README](README.md)
 
-**MAGINALIA** is a local-first research and writing workspace for the humanities.
-This repository is the active implementation line for the independent **Electron + Monaco** desktop application.
+**MAGINALIA is a desktop editor for reading, quoting, and writing in Japanese.**
 
-> **Status:** α1 in development. Windows installer acceptance on the target machine is pending.
+It helps students, researchers, and writers organize quotations from books and other sources, develop notes and drafts, and work toward reports, essays, and creative writing. **MAGINALIA is designed primarily for Japanese-language reading, research, and writing.**
 
-MAGINALIA is built for students, researchers, and writers who should be able to collect sources and quotations, write, render, and preserve their work without needing Git, terminals, or a general-purpose programming IDE.
+Research data is generally stored on the user's own computer. The goal is to make these workflows accessible without requiring knowledge of Git, terminals, or general-purpose programming IDEs.
 
-## What exists now
+> **Release status:** Public release of α1 "Before Kaldi" (version 0.1.0) for Windows x64 is being prepared. This is alpha software: bugs and changes to behavior or interfaces are possible. Some interface labels remain in English.
 
-The current α1 development build contains the working substrate for:
+## Download and links
 
-- Workdesk / Project navigation and Registry browsing
-- multi-document Markdown tabs
-- Monaco-based editing
-- required local autosave and local persistence
-- Shelf search and structured quotation insertion
-- Reviewer approval into the canonical Private Shelf
-- generic Source references beyond ISBN-only books
-- automatic reference resolution
-- rich Markdown rendering, including vertical-writing support
-- resolved Markdown, PDF, and DOCX export
-- local Git-backed History for Projects, Workdesks, and the Private Shelf
-- a shared command surface and Command Palette
-- a small filesystem-based Mod host and first-party Mod experiments
-- host-independent Format, Repository, Source, and Writing core packages
+- **Windows download:** Public release pending. A link to GitHub Releases in the official distribution repository will be added when it is available.
+- **Official website:** Under construction
+- **User manual:** A Japanese PDF manual is bundled with the installer. A repository copy is available [here](assets/マニュアル.pdf).
+- **MAGINALIA Capture:** Coming soon. It is a separate product and is not part of the currently distributed Desktop α1.
+- **Official Discord:** [MAGINALIA Community](https://discord.gg/RbDJ8DtF7b)
+- **Creator's X (formerly Twitter):** [@Shishow_of_PO](https://x.com/Shishow_of_PO)
 
-This repository is the α1 development source. Windows installer, first-run setup, and target-environment acceptance are in progress. Interfaces, Mod APIs, UX, and storage workflows may change.
+End users do not need to download this source repository or set up a development environment.
 
-## Core principles
+## Features
 
-1. **Local first.** Ordinary local files remain usable even when a network service is unavailable.
-2. **Portable research data.** Markdown, YAML, JSON, images, and Git-backed history are durable formats. Electron and Monaco are implementation details.
-3. **Autosave is baseline safety.** Editing persists locally without requiring a manual Save ritual. Autosave is separate from Git history or remote synchronization.
-4. **Humanities UX first.** Normal UI describes research and writing work rather than exposing implementation jargon unnecessarily.
-5. **Simple outside, explicit inside.** External services and specialist tools live behind bounded adapters and replaceable capabilities.
-6. **AI is optional.** MAGINALIA must remain useful without an AI provider.
-7. **Mods are capabilities, not ambient privilege.** Project content is data, not executable code.
+- **Workdesk / Project:** Organize documents and source materials by research project or creative work.
+- **Markdown editor:** Open multiple documents in tabs, edit them, and switch to Preview. Vertical Japanese text display is supported.
+- **Private Shelf:** Keep bibliographic information and quotations on your computer, search them, and use them in documents.
+- **Reviewer:** Review quotations and annotations before storing them in the Private Shelf.
+- **References and Synced Blocks:** Check quotation sources and reference content from other documents.
+- **Export:** Export to Markdown, PDF, or DOCX. PDF and DOCX exports can include PNG, JPEG, and WebP images from a Project.
+- **Optional OCR:** NDLOCR-Lite 1.3.1 can be selected during installation for local image-to-text recognition. The core application works without this component.
+- **Local saving and history:** Changes are saved automatically, and the application provides local Git-backed history.
 
-## Repository layout
+MAGINALIA does not require cloud synchronization for local writing. GitHub account connection and remote synchronization are not provided as normal-user features in α1.
+
+## Installation and precautions
+
+**Supported platform:** Windows x64. Installers for other operating systems are not provided with this release.
+
+After the public release, download `MAGINALIA-desktop-0.1.0-Setup.exe` from the official distribution page and follow the installation prompts. NDLOCR-Lite is optional and is unchecked by default.
+
+**The installer is not digitally code-signed.** Windows Defender SmartScreen or other Windows security controls may display warnings or restrict execution. Check the distribution source and published SHA-256 checksum, and run the installer only if you trust its origin. A SHA-256 checksum helps detect mismatched or modified files but does not authenticate the publisher.
+
+This is alpha software. Back up important documents and quotation data regularly. Workdesk, Projects, and the Private Shelf are designed to remain separate from the installed application and to be preserved on uninstall, but you should still back them up before reinstalling or removing MAGINALIA.
+
+Markdown export produces a single `.md` file. Referenced images are not bundled, so image files and paths need to be managed separately when transferring the file to another computer.
+
+## For developers and contributors
+
+`MAGINALIA_ALPHA` is the **development source repository** for the independent Electron + Monaco desktop application. It is not the public installer download location. Internal APIs, interfaces, and development-only features may change.
+
+MAGINALIA follows a local-first approach, keeping ordinary files as the authoritative research data. Markdown, YAML, JSON, images, and Git-backed history are intended to remain portable instead of locking users' work into an opaque application-specific database. An AI service is not required.
+
+### Repository layout
 
 ```text
 MAGINALIA_ALPHA/
-├─ apps/desktop/            # Electron desktop application
-├─ packages/format/         # portable format contracts
+├─ apps/desktop/          # Electron desktop application
+├─ packages/format/       # Portable data-format contracts
 ├─ packages/repository-core/
 ├─ packages/source-core/
 ├─ packages/writing-core/
-├─ spec/                    # authoritative portable format schemas
-├─ sidecars/reviewer/       # Python / FastAPI Reviewer
-├─ mods/                    # first-party / development Mods
-├─ docs/                    # maintained implementation and contract guidance
-├─ memory/                  # retrieval-oriented development context
+├─ sidecars/reviewer/     # Quotation and annotation Reviewer
+├─ mods/                  # Experimental Mods
+├─ spec/                  # Data-format schemas
+├─ docs/                  # Implementation and contract documentation
+├─ memory/                # Development context
 ├─ package.json
 └─ package-lock.json
 ```
 
-## Development
+### Development
 
-This is an npm workspace.
+This repository is an npm workspace. Basic development commands:
 
 ```bash
 npm ci
@@ -70,49 +82,18 @@ npm test
 npm start
 ```
 
-Useful smoke suites include:
+Additional verification includes `npm run smoke`, `npm run smoke:writing`, `npm run smoke:workspace`, `npm run smoke:shelf`, and `npm run smoke:export`. Refer to package manifests and `package-lock.json` for exact dependency versions.
 
-```bash
-npm run smoke
-npm run smoke:writing
-npm run smoke:workspace
-npm run smoke:quotation
-npm run smoke:repository
-npm run smoke:shelf
-npm run smoke:export
-```
+Before making architectural or implementation changes, read [AGENTS.md](AGENTS.md) and consult the relevant parts of the [MAGINALIA_IDE Decision Log](https://github.com/potoha/MAGINALIA_IDE/blob/main/plan/09_DECISION_LOG.md) and [alpha development plan](https://github.com/potoha/MAGINALIA_IDE/blob/main/plan/27_ALPHA_CLOSE_SLICE_SEQUENCE.md). These links may point to private repositories intended for project contributors.
 
-For exact dependency versions, use `package-lock.json` and package manifests as the source of truth.
+Historical implementation and design sources include `potoha/MAGINALIA_IDE`, `potoha/MY_marginallia`, and `potoha/Uttate-writer`. `potoha/toybox` is read-only from this project. None of these is the current α1 implementation target.
 
-## Read before changing architecture
+**Safety boundary:** Local Git-backed history is distinct from synchronization with GitHub or another remote service. Product features for authentication, remote fetch/push, and remote restoration remain frozen in α1. Development-time Git operations are separate.
 
-- [`AGENTS.md`](AGENTS.md) — repository workflow, invariants, and source authority
-- [MAGINALIA_IDE Decision Log](https://github.com/potoha/MAGINALIA_IDE/blob/main/plan/09_DECISION_LOG.md) — canonical cross-product decisions
-- [MAGINALIA_IDE Alpha Close Sequence](https://github.com/potoha/MAGINALIA_IDE/blob/main/plan/27_ALPHA_CLOSE_SLICE_SEQUENCE.md) — canonical alpha-close planning
+## License
 
-Canonical cross-product decisions, ADRs, and planning live in `potoha/MAGINALIA_IDE`. Package manifests and `package-lock.json` are the dependency authority. When old implementation and an accepted decision disagree, the accepted decision wins.
+Code in this repository owned by **beyond the Word. / MAGINALIA PROJECT** is covered by the [MIT License](LICENSE) unless a file or component states otherwise.
 
-## Salvage sources
+The **MAGINALIA** name, logo, wordmark, and other brand elements are not licensed under the MIT License. See [NOTICE](NOTICE). Third-party libraries and components, including NDLOCR-Lite, remain subject to their respective licenses.
 
-`MAGINALIA_ALPHA` is the implementation target. Older repositories are evidence and salvage sources, not places to add new Before Kaldi implementation unless explicitly instructed.
-
-- `potoha/MAGINALIA_IDE` — canonical decisions, contracts, Writing Core and Repository Core history
-- `potoha/MY_marginallia` — Quote Capture / Reviewer implementation and contracts
-- `potoha/Uttate-writer` — MAGINALIA Input legacy implementation
-- `potoha/toybox` — historical design context; read-only from the MAGINALIA Workspace project
-
-## Current safety boundary
-
-Production Git/GitHub authentication, discovery, fetch, push, provisioning, and restore are frozen by D032. Local Git-backed History remains supported. Local autosave and persistence continue independently of the remote-sync gate.
-
-The absence of cloud connectivity must not make local writing unavailable, and credentials must never be stored in portable research repositories.
-
-## License / distribution
-
-MAGINALIA_ALPHA code owned by **beyond the Word. / MAGINALIA PROJECT** is released under the [MIT License](LICENSE), unless a file or component states otherwise.
-
-The **MAGINALIA** name, wordmark, logo, visual identity, and other project/product branding are not granted by the MIT License. See [NOTICE](NOTICE).
-
-Third-party components remain under their respective licenses. User-created manuscripts, notes, quotations, images, Project data, and other research content are not relicensed merely by being created or processed with MAGINALIA.
-
-This repository is not a public installer download. Acceptance of Windows installation, upgrade, and uninstall behavior remains pending.
+Manuscripts, notes, quotations, and other user-created content do not automatically become subject to MAGINALIA's software license merely because they were created, edited, or processed using the application.
