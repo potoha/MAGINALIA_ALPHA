@@ -54,6 +54,27 @@ describe("KeybindingService", () => {
     expect(reloaded.resetAllBindings()).toBe(false);
   });
 
+  it("retains overrides and reports them when reset-all persistence fails", () => {
+    let failWrites = false;
+    let saved: string | null = null;
+    const storage = {
+      getItem: () => saved,
+      setItem: (_key: string, value: string) => {
+        if (failWrites) throw new Error("storage is unavailable");
+        saved = value;
+      }
+    };
+    const registry = new CommandRegistry();
+    register(registry, "maginalia.document.save");
+    const service = new KeybindingService(registry, { platform: "windows", storage });
+
+    expect(service.setBinding("maginalia.document.save", "Mod+Alt+Q").kind).toBe("updated");
+    failWrites = true;
+    expect(service.resetAllBindings()).toBe(false);
+    expect(service.hasUserOverrides()).toBe(true);
+    expect(service.getBinding("maginalia.document.save")).toBe("Mod+Alt+Q");
+  });
+
   it("detects conflicts across disabled contexts and supports explicit replace or cancel", () => {
     const registry = new CommandRegistry();
     register(registry, "maginalia.test.first", "editor.hasSelection");
@@ -98,6 +119,7 @@ describe("KeybindingService", () => {
     expect(service.getDefaultBinding("maginalia.test.noDefault")).toBeNull();
     expect(service.setBinding("maginalia.test.noDefault", "Mod+Alt+K").kind).toBe("updated");
     expect(service.setBinding("maginalia.test.noDefault", "K")).toEqual({ kind: "rejected", reason: "reserved-keybinding" });
+    expect(service.setBinding("maginalia.test.noDefault", "Shift+K")).toEqual({ kind: "rejected", reason: "reserved-keybinding" });
     expect(service.setBinding("maginalia.test.noDefault", "ArrowDown")).toEqual({ kind: "rejected", reason: "reserved-keybinding" });
     expect(service.setBinding("maginalia.test.noDefault", "Mod+I").kind).toBe("updated");
     expect(service.setBinding("maginalia.test.noDefault", "Meta+Q")).toEqual({ kind: "rejected", reason: "reserved-keybinding" });
@@ -166,6 +188,31 @@ describe("keybinding parsing and platform formatting", () => {
     expect(parseKeyboardEvent({ key: "Dead", altKey: true }, "linux")).toBeNull();
     expect(parseKeyboardEvent({ key: "Shift", shiftKey: true }, "windows")).toBeNull();
     expect(parseKeyboardEvent({ key: "+", shiftKey: true }, "windows")).toBe("Shift+Plus");
+    expect(parseKeyboardEvent({ key: "@", ctrlKey: true, altKey: true, getModifierState: (key) => key === "AltGraph" }, "windows")).toBeNull();
+    expect(parseKeyboardEvent({ key: "@", ctrlKey: true, altKey: true, getModifierState: () => false }, "windows")).toBe("Mod+Alt+@");
+  });
+
+  it("treats named punctuation and Unicode characters as printable assignments", () => {
+    const registry = new CommandRegistry();
+    register(registry, "maginalia.test.noDefault");
+    const service = new KeybindingService(registry, { platform: "windows", storage: null });
+    const printableKeys = [
+      [",", "Comma"], [".", "Period"], ["/", "Slash"], ["\\", "Backslash"], [";", "Semicolon"],
+      ["'", "Quote"], ["[", "BracketLeft"], ["]", "BracketRight"], ["-", "Minus"], ["=", "Equal"],
+      ["`", "Backquote"], ["+", "Plus"], [" ", "Space"], ["あ", "あ"], ["e\u0301", "e\u0301"], ["🦊", "🦊"]
+    ] as const;
+
+    for (const [eventKey, canonicalKey] of printableKeys) {
+      expect(parseKeyboardEvent({ key: eventKey }, "windows")).toBe(canonicalKey);
+      expect(service.setBinding("maginalia.test.noDefault", canonicalKey)).toEqual({ kind: "rejected", reason: "reserved-keybinding" });
+      expect(service.setBinding("maginalia.test.noDefault", `Shift+${canonicalKey}`)).toEqual({ kind: "rejected", reason: "reserved-keybinding" });
+      const withPrimaryModifier = service.setBinding("maginalia.test.noDefault", `Mod+${canonicalKey}`);
+      if (canonicalKey === "Space") {
+        expect(withPrimaryModifier).toEqual({ kind: "rejected", reason: "reserved-keybinding" });
+      } else {
+        expect(withPrimaryModifier.kind).toBe("updated");
+      }
+    }
   });
 
   it("keeps alternate Windows Monaco redo out of app routing, including after remap or unbind", () => {

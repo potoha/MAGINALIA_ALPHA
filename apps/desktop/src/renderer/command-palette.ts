@@ -4,6 +4,7 @@ import type { CommandDescriptor, CommandRegistry } from "./command-registry";
 export interface CommandPaletteOptions {
   readonly registry: CommandRegistry;
   readonly getContext: () => CommandContext;
+  readonly getShortcut?: (commandId: string) => string | null;
   readonly onError?: (message: string) => void;
 }
 
@@ -71,7 +72,15 @@ export class CommandPalette {
       item.setAttribute("aria-selected", String(index === this.selected));
       item.className = "command-palette-item";
       item.dataset.commandId = command.id;
-      item.textContent = command.category ? `${command.category}: ${command.title}` : command.title;
+      const label = document.createElement("span");
+      label.textContent = command.category ? `${command.category}: ${command.title}` : command.title;
+      item.append(label);
+      const shortcut = this.options.getShortcut?.(command.id);
+      if (shortcut) {
+        const key = document.createElement("kbd");
+        key.textContent = shortcut;
+        item.append(key);
+      }
       item.title = command.id;
       item.addEventListener("mousedown", (event) => { event.preventDefault(); void this.run(command); });
       this.results.append(item);

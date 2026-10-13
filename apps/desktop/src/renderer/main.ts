@@ -41,8 +41,8 @@ import {
   type ComposedSyncedBlock,
   type SyncedBlockResolveResult
 } from "./synced-block";
-import { createLocalStorageRendererPreferenceStore } from "./renderer-preferences";
-import { createExportPresentationSettings, EXPORT_PAPER_SIZES } from "../export-presentation-settings";
+import { createLocalStorageRendererPreferenceStore, type WritingDirection } from "./renderer-preferences";
+import { createExportPresentationSettings, DEFAULT_EXPORT_PRESENTATION_SETTINGS, EXPORT_PAPER_SIZES } from "../export-presentation-settings";
 import { resolvePreviewMedia } from "./project-media";
 import { resolvePreviewInternalLinks } from "./preview-links";
 import { importDroppedImageIntoDocument } from "./dropped-image";
@@ -50,6 +50,10 @@ import { stripDerivedReferenceList } from "./reference-list";
 import { ContextKeyService } from "./command-context";
 import { CommandRegistry } from "./command-registry";
 import { CommandPalette } from "./command-palette";
+import { SettingsCenter } from "./settings-center";
+import { SettingsRegistry } from "./settings-registry";
+import { formatKeybinding, KeybindingService, parseKeyboardEvent, toPlatformKeybinding } from "./keybinding-service";
+import { APPLICATION_MENU_COMMAND_IDS, type ApplicationMenuCommandState } from "../application-menu-contract";
 import { registerCoreCommands } from "./core-commands";
 import { registerWorkbenchCommands } from "./workbench-commands";
 import { ContextMenuRegistry } from "./context-menu-registry";
@@ -364,6 +368,14 @@ app.innerHTML = `
                   </label>
                 </div>
               </details>
+            </section>
+            <section class="menu-section" aria-labelledby="menu-settings-heading">
+              <h3 id="menu-settings-heading">設定</h3>
+              <div class="document-controls">
+                <button id="open-settings" type="button">設定</button>
+                <button id="open-shortcut-settings" type="button">ショートカット設定</button>
+                <button id="open-cheat-sheet" type="button">ショートカット一覧</button>
+              </div>
             </section>
             <section class="menu-section" aria-labelledby="menu-workbench-heading">
               <h3 id="menu-workbench-heading">Workbench</h3>
@@ -1077,6 +1089,7 @@ function activeWorkdeskRootDocumentId(): string | null {
   return activeWorkdesk?.workdesk.documentId ?? activeWorkdeskRecovery?.workdesk.documentId ?? null;
 }
 const rendererPreferences = createLocalStorageRendererPreferenceStore();
+const settingsRegistry = new SettingsRegistry();
 let currentExportPresentationSettings = rendererPreferences.load().exportPresentationSettings;
 function restoreExportSettingsControls(): void {
   exportPaperSizeInput.value = currentExportPresentationSettings.paperSize;
@@ -1101,6 +1114,7 @@ function saveExportSettingsFromControls(): void {
       pageNumber: exportPageNumberInput.checked
     });
     rendererPreferences.save({ ...rendererPreferences.load(), exportPresentationSettings: currentExportPresentationSettings });
+    settingsRegistry.refresh();
   } catch {
     // Invalid transient control state cannot alter the last valid settings.
   }
@@ -1384,6 +1398,8 @@ verticalDirectionButton.addEventListener("click", () => void executeCommand("mag
 // into Monaco.  Later toolbar/menu contributions use this same registry.
 const commandContext = new ContextKeyService();
 const commandRegistry = new CommandRegistry();
+let openMarkdownAction: () => void | Promise<void> = () => undefined;
+let refreshNativeApplicationMenu: () => void = () => undefined;
 function executeCommand(id: string): Promise<void> {
   return commandRegistry.execute(id, commandContext.snapshot()).then((result) => {
     if (result.kind === "failed") {
@@ -1392,6 +1408,13 @@ function executeCommand(id: string): Promise<void> {
     }
   });
 }
+commandRegistry.register({
+  id: "maginalia.document.open",
+  title: "ドキュメントを開く",
+  description: "現在のワークスペースでドキュメントを開きます。",
+  category: "ドキュメント",
+  keywords: ["open", "document", "markdown", "file", "開く", "ドキュメント"]
+}, () => openMarkdownAction());
 const updateCommandContext = (): void => {
   const current = controller.getDocumentState();
   const selection = controller.getSelection();
@@ -1484,6 +1507,7 @@ registerCoreCommands(commandRegistry, {
   setPreviewDirection: (direction) => {
     previewController.setDirection(direction);
     updateCommandContext();
+    settingsRegistry.refresh();
   },
   refreshReferences: () => referencesController?.refresh(),
   exportMarkdown: () => exportController?.exportMarkdown(),
@@ -1491,6 +1515,108 @@ registerCoreCommands(commandRegistry, {
   exportDocx: () => exportController?.exportDocx(),
   saveDocument: () => controller.save(),
   contextKeys: commandContext
+});
+
+settingsRegistry.register({
+  id: "maginalia.renderer.default-writing-direction",
+  title: "文字方向",
+  description: "ドキュメント表示に使う横書きまたは縦書きを選びます。",
+  category: "表示",
+  type: "enum",
+  options: ["horizontal", "vertical"] as const,
+  defaultValue: "horizontal",
+  scope: "user",
+  owner: "maginalia.core.renderer"
+}, {
+  getValue: () => rendererPreferences.load().defaultWritingDirection,
+  setValue: (value: string) => {
+    const direction: WritingDirection = value === "vertical" ? "vertical" : "horizontal";
+    previewController.setDirection(direction);
+    updateCommandContext();
+    settingsRegistry.refresh();
+  }
+});
+
+function updateExportPresentationSettings(patch: NonNullable<Parameters<typeof createExportPresentationSettings>[0]>): void {
+  currentExportPresentationSettings = createExportPresentationSettings({
+    ...currentExportPresentationSettings,
+    ...patch,
+    header: { ...currentExportPresentationSettings.header, ...patch.header }
+  });
+  rendererPreferences.save({ ...rendererPreferences.load(), exportPresentationSettings: currentExportPresentationSettings });
+  restoreExportSettingsControls();
+}
+
+settingsRegistry.register({
+  id: "maginalia.export.paper-size",
+  title: "用紙サイズ",
+  description: "書き出し時に使う用紙サイズを選びます。",
+  category: "書き出し",
+  type: "enum",
+  options: EXPORT_PAPER_SIZES,
+  defaultValue: DEFAULT_EXPORT_PRESENTATION_SETTINGS.paperSize,
+  scope: "user",
+  owner: "maginalia.core.export"
+}, {
+  getValue: () => currentExportPresentationSettings.paperSize,
+  setValue: (value: string) => updateExportPresentationSettings({ paperSize: value })
+});
+settingsRegistry.register({
+  id: "maginalia.export.orientation",
+  title: "ページの向き",
+  description: "書き出し時の縦向きまたは横向きを選びます。",
+  category: "書き出し",
+  type: "enum",
+  options: ["portrait", "landscape"] as const,
+  defaultValue: DEFAULT_EXPORT_PRESENTATION_SETTINGS.orientation,
+  scope: "user",
+  owner: "maginalia.core.export"
+}, {
+  getValue: () => currentExportPresentationSettings.orientation,
+  setValue: (value: string) => updateExportPresentationSettings({ orientation: value })
+});
+settingsRegistry.register({
+  id: "maginalia.export.paragraph-indent",
+  title: "段落の字下げ",
+  description: "書き出す段落の先頭を字下げします。",
+  category: "書き出し",
+  type: "boolean",
+  defaultValue: DEFAULT_EXPORT_PRESENTATION_SETTINGS.paragraphIndent,
+  scope: "user",
+  owner: "maginalia.core.export"
+}, {
+  getValue: () => currentExportPresentationSettings.paragraphIndent,
+  setValue: (value: boolean) => updateExportPresentationSettings({ paragraphIndent: value })
+});
+for (const side of ["left", "center", "right"] as const) {
+  settingsRegistry.register({
+    id: `maginalia.export.header-${side}`,
+    title: `ヘッダー ${side === "left" ? "左" : side === "right" ? "右" : "中央"}`,
+    description: `書き出しヘッダーの${side === "left" ? "左" : side === "right" ? "右" : "中央"}に表示する文字列です。`,
+    category: "書き出し",
+    type: "string",
+    defaultValue: DEFAULT_EXPORT_PRESENTATION_SETTINGS.header[side],
+    scope: "user",
+    owner: "maginalia.core.export"
+  }, {
+    getValue: () => currentExportPresentationSettings.header[side],
+    setValue: (value: string) => updateExportPresentationSettings({
+      header: { ...currentExportPresentationSettings.header, [side]: value }
+    })
+  });
+}
+settingsRegistry.register({
+  id: "maginalia.export.page-number",
+  title: "ページ番号",
+  description: "書き出しフッターの中央にページ番号を表示します。",
+  category: "書き出し",
+  type: "boolean",
+  defaultValue: DEFAULT_EXPORT_PRESENTATION_SETTINGS.pageNumber,
+  scope: "user",
+  owner: "maginalia.core.export"
+}, {
+  getValue: () => currentExportPresentationSettings.pageNumber,
+  setValue: (value: boolean) => updateExportPresentationSettings({ pageNumber: value })
 });
 commandRegistry.register({
   id: "maginalia.document.applyProperties",
@@ -2027,9 +2153,99 @@ commandRegistry.register({
   keywords: ["image", "asset", "file"],
   when: "editor.hasDocument"
 }, () => chooseImageForImport());
+let settingsCenter: SettingsCenter | null = null;
+for (const { id, title, description, keywords, tab } of [
+  {
+    id: "maginalia.settings.open",
+    title: "設定",
+    description: "表示と書き出しの設定を開きます。",
+    keywords: ["settings", "preferences", "configuration", "設定"],
+    tab: "settings" as const
+  },
+  {
+    id: "maginalia.settings.shortcuts",
+    title: "ショートカット設定",
+    description: "登録済みコマンドのショートカットを編集します。",
+    keywords: ["keyboard", "shortcut", "keybinding", "settings", "キーボード", "ショートカット"],
+    tab: "shortcuts" as const
+  },
+  {
+    id: "maginalia.help.cheatSheet",
+    title: "ショートカット一覧",
+    description: "現在利用できるコマンドとショートカットを表示します。",
+    keywords: ["help", "cheat sheet", "shortcut", "keyboard", "一覧", "ショートカット"],
+    tab: "cheatsheet" as const
+  }
+] as const) {
+  commandRegistry.register({ id, title, description, category: "設定", keywords }, () => settingsCenter?.open(tab));
+}
+const keybindingService = new KeybindingService(commandRegistry);
+const settingsCommandsAllowedWhileModal = new Set([
+  "maginalia.settings.open",
+  "maginalia.settings.shortcuts",
+  "maginalia.help.cheatSheet"
+]);
+settingsCenter = new SettingsCenter({
+  settings: settingsRegistry,
+  commands: commandRegistry,
+  keybindings: keybindingService,
+  getContext: () => commandContext.snapshot(),
+  onOpenStateChanged: () => refreshNativeApplicationMenu(),
+  onError: (message) => {
+    documentStatus.dataset.state = "error";
+    documentStatus.textContent = `ショートカットを更新できませんでした: ${message}`;
+  }
+});
+for (const [selector, commandId] of [
+  ["#open-settings", "maginalia.settings.open"],
+  ["#open-shortcut-settings", "maginalia.settings.shortcuts"],
+  ["#open-cheat-sheet", "maginalia.help.cheatSheet"]
+] as const) {
+  requiredElement<HTMLButtonElement>(selector).addEventListener("click", () => void executeCommand(commandId));
+}
+
+let nativeMenuRefreshPending = false;
+let lastNativeMenuSnapshot = "";
+const refreshNativeMenuSoon = (): void => {
+  if (nativeMenuRefreshPending) return;
+  nativeMenuRefreshPending = true;
+  queueMicrotask(() => {
+    nativeMenuRefreshPending = false;
+    const context = commandContext.snapshot();
+    const enabledCommands = new Set(commandRegistry.list(context).map((command) => command.id));
+    const modalOpen = settingsCenter?.isOpen() ?? false;
+    const snapshot: ApplicationMenuCommandState[] = APPLICATION_MENU_COMMAND_IDS.map((id) => {
+      const allowedDuringModal = !modalOpen || settingsCommandsAllowedWhileModal.has(id);
+      const keybinding = keybindingService.getBinding(id);
+      const shortcut = keybinding === null ? null : toPlatformKeybinding(keybinding);
+      return {
+        id,
+        enabled: enabledCommands.has(id) && allowedDuringModal,
+        ...(shortcut === null ? {} : { shortcut })
+      };
+    });
+    const serialized = JSON.stringify(snapshot);
+    if (serialized === lastNativeMenuSnapshot) return;
+    lastNativeMenuSnapshot = serialized;
+    void window.maginalia.updateApplicationMenu(snapshot).catch(() => undefined);
+  });
+};
+refreshNativeApplicationMenu = refreshNativeMenuSoon;
+commandRegistry.onDidChange(refreshNativeMenuSoon);
+keybindingService.onDidChange(refreshNativeMenuSoon);
+window.maginalia.onApplicationCommand((commandId) => {
+  if (settingsCenter?.isOpen() && !settingsCommandsAllowedWhileModal.has(commandId)) return;
+  void executeCommand(commandId);
+});
+refreshNativeMenuSoon();
+
 commandPalette = new CommandPalette({
   registry: commandRegistry,
   getContext: () => commandContext.snapshot(),
+  getShortcut: (commandId) => {
+    const binding = keybindingService.getBinding(commandId);
+    return binding === null ? null : formatKeybinding(binding);
+  },
   onError: (message) => {
     documentStatus.dataset.state = "error";
     documentStatus.textContent = `Command failed: ${message}`;
@@ -2121,6 +2337,8 @@ bindWorkbenchContextMenu(previewContainer);
 commandContext.onDidChange(() => {
   utilityBar.refresh();
   contextMenuSurface.refresh();
+  settingsCenter?.refresh();
+  refreshNativeApplicationMenu();
 });
 updateCommandContext();
 
@@ -4193,13 +4411,12 @@ if (!writingSmokeMode) {
 }
 
 if (writingSmokeMode) {
-  openButton.addEventListener("click", () => {
-    void controller.open().then(() => updateSmokeTextForSmoke?.());
-  });
+  openMarkdownAction = async () => {
+    await controller.open();
+    updateSmokeTextForSmoke?.();
+  };
 } else if (workspaceController) {
-  openButton.addEventListener("click", () => {
-    void workspaceController?.openDocument();
-  });
+  openMarkdownAction = () => workspaceController?.openDocument();
 } else if (projectController) {
   const clearWorkdeskAfterProjectReplacement = (previousProjectId: string | undefined): void => {
     const project = projectController?.getState().project;
@@ -4228,9 +4445,7 @@ if (writingSmokeMode) {
     setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
     openStandaloneProject();
   });
-  openButton.addEventListener("click", () => {
-    void commandRegistry.execute("maginalia.project.open", commandContext.snapshot());
-  });
+  openMarkdownAction = () => executeCommand("maginalia.project.open");
   openProjectButton.addEventListener("click", () => {
     void commandRegistry.execute("maginalia.project.open", commandContext.snapshot());
   });
@@ -4260,6 +4475,8 @@ if (writingSmokeMode) {
     void commandRegistry.execute("maginalia.help.openManual", commandContext.snapshot());
   });
 }
+
+openButton.addEventListener("click", () => void executeCommand("maginalia.document.open"));
 
 newFileTitle.addEventListener("input", () => {
   if (!selectedProjectDocumentType) return;
@@ -4315,46 +4532,41 @@ newFileForm.addEventListener("submit", (event) => {
 saveButton.addEventListener("click", () => void executeCommand("maginalia.document.save"));
 
 window.addEventListener("keydown", (event) => {
-  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "b"
-    && previewController.getMode() === "preview") {
-    event.preventDefault();
-    void executeCommand("maginalia.editor.toggleBold");
-    return;
-  }
-  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "p") {
-    event.preventDefault();
-    void executeCommand("maginalia.workbench.showCommandPalette");
-    return;
-  }
-  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && /^[0-6]$/u.test(event.key)) {
-    event.preventDefault();
-    const id = event.key === "0"
-      ? "maginalia.editor.setParagraph"
-      : `maginalia.editor.setHeading${event.key}`;
-    void executeCommand(id);
-    return;
-  }
-  if ((event.ctrlKey || event.metaKey) && event.shiftKey) {
-    const commandByKey: Record<string, Parameters<WorkbenchCore["execute"]>[0]> = {
-      a: "maginalia.view.toggleActivityBar",
-      p: "maginalia.view.togglePrimarySidebar",
-      s: "maginalia.view.toggleSecondarySidebar",
-      e: "maginalia.view.toggleEditorOnly"
-    };
-    const command = commandByKey[event.key.toLowerCase()];
-    if (command) {
-      event.preventDefault();
-      void executeCommand(command);
-      return;
-    }
-  }
+  if (event.defaultPrevented || event.isComposing) return;
+  const target = event.target instanceof Element ? event.target : null;
+  if (target !== null && target.closest("dialog, .command-palette") !== null) return;
+  const inMonaco = target !== null && target.closest(".monaco-editor") !== null;
+  const inPreview = target !== null && previewContainer.contains(target);
+  const inEditorSurface = inMonaco || inPreview;
+  if (!inEditorSurface && target !== null && target.closest("input, textarea, select, [contenteditable='true']") !== null) return;
+
   if (event.key === "Escape" && workbench.isEditorOnly()) {
     event.preventDefault();
+    event.stopImmediatePropagation();
     void executeCommand("maginalia.view.toggleEditorOnly");
     return;
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+
+  const binding = parseKeyboardEvent(event);
+  if (binding === null) return;
+  const context = commandContext.snapshot();
+  const entry = keybindingService.listBindings(context, true).find((candidate) => candidate.keybinding === binding);
+  if (entry !== undefined) {
+    if (!entry.enabled) {
+      if (inEditorSurface) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+      return;
+    }
+    const command = keybindingService.getCommandForKeybinding(binding, context);
     event.preventDefault();
-    void executeCommand("maginalia.document.save");
+    event.stopImmediatePropagation();
+    if (command !== null) void executeCommand(command.id);
+    return;
+  }
+  if (inEditorSurface && keybindingService.getShadowedDefaultBindings().includes(binding)) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
   }
 }, { capture: true });

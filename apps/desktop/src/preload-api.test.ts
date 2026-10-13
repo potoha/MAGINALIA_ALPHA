@@ -58,6 +58,7 @@ import {
 } from "./preload-api";
 import { GET_FIRST_RUN_STATUS_CHANNEL, RUN_FIRST_RUN_SETUP_CHANNEL } from "./first-run-ipc";
 import { OPEN_BUNDLED_MANUAL_CHANNEL } from "./manual-ipc";
+import { APPLICATION_MENU_COMMAND_CHANNEL, UPDATE_APPLICATION_MENU_CHANNEL } from "./application-menu-contract";
 
 describe("preload boundary", () => {
   it("exposes only the narrow semantic methods", async () => {
@@ -71,6 +72,8 @@ describe("preload boundary", () => {
       "getFirstRunStatus",
       "runFirstRunSetup",
       "onFirstRunProgress",
+      "updateApplicationMenu",
+      "onApplicationCommand",
       "openBundledManual",
       "openMarkdown",
       "saveMarkdown",
@@ -449,5 +452,36 @@ describe("preload boundary", () => {
         args: [{ repositoryId: "44444444-4444-4444-8444-444444444444" }]
       }
     ]);
+  });
+
+  it("validates menu snapshots and native command events at the preload boundary", async () => {
+    const calls: Array<{ channel: string; args: unknown[] }> = [];
+    const commandEvents: Array<{ channel: string; listener: (value: unknown) => void }> = [];
+    const api = createMarkdownPreloadApi(
+      async (channel, ...args) => {
+        calls.push({ channel, args: [...args] });
+        return channel === UPDATE_APPLICATION_MENU_CHANNEL;
+      },
+      (channel, listener) => {
+        commandEvents.push({ channel, listener });
+        return () => undefined;
+      }
+    );
+
+    const snapshot = [{ id: "maginalia.document.save", enabled: true, shortcut: "Ctrl+S" }] as const;
+    await api.updateApplicationMenu(snapshot);
+    const received: string[] = [];
+    api.onApplicationCommand((commandId) => received.push(commandId));
+    expect(calls).toEqual([{ channel: UPDATE_APPLICATION_MENU_CHANNEL, args: [snapshot] }]);
+    expect(commandEvents).toHaveLength(1);
+    expect(commandEvents[0]?.channel).toBe(APPLICATION_MENU_COMMAND_CHANNEL);
+    commandEvents[0]?.listener("maginalia.document.save");
+    commandEvents[0]?.listener("dev.example.injected");
+    expect(received).toEqual(["maginalia.document.save"]);
+
+    await expect(api.updateApplicationMenu([{ id: "dev.example.injected", enabled: true }] as never))
+      .rejects.toThrow("snapshot is invalid");
+    await expect(api.updateApplicationMenu([{ id: "maginalia.document.save", enabled: true, shortcut: "Ctrl+Unknown" }] as never))
+      .rejects.toThrow("snapshot is invalid");
   });
 });

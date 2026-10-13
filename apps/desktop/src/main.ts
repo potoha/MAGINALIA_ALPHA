@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  Menu,
   WebContentsView,
   dialog,
   ipcMain,
@@ -192,6 +193,13 @@ import { establishApplicationIdentity, MAGINALIA_APPLICATION_NAME } from "./appl
 import { FirstRunCoordinator } from "./first-run-coordinator";
 import { FirstRunJournalStore } from "./first-run-setup";
 import { runFirstRunRestoreSmoke, runFirstRunSmoke } from "./first-run-smoke";
+import { runSettingsSmoke } from "./settings-smoke";
+import {
+  createApplicationMenuTemplate,
+  createApplicationMenuUpdateHandler,
+  dispatchApplicationMenuCommand,
+  UPDATE_APPLICATION_MENU_CHANNEL
+} from "./application-menu";
 import { resolvePackagedRuntimePaths } from "./packaged-runtime-paths";
 import { ensureNdlocrConfiguration } from "./ndlocr-runtime-configuration";
 import { OPEN_BUNDLED_MANUAL_CHANNEL } from "./manual-ipc";
@@ -218,6 +226,8 @@ const quickSmokeMode = process.argv.includes("--smoke");
 const brandProgressSmoke = process.argv.includes("--brand-progress-smoke");
 const firstRunSmoke = process.argv.includes("--first-run-smoke");
 const firstRunRestoreSmoke = process.argv.includes("--first-run-restore-smoke");
+const settingsSmokeRequested = process.argv.includes("--smoke-settings") || process.argv.includes("--smoke-settings-restore");
+const settingsSmokeRestore = process.argv.includes("--smoke-settings-restore");
 const writingSmoke = parseWritingSmokeMode(process.argv);
 const workspaceSmoke = parseWorkspaceSmokeMode(process.argv);
 const quotationSmoke = parseQuotationSmokeMode(process.argv);
@@ -238,6 +248,7 @@ let hSmokeWorkdeskRoot: string | null = hSmoke.acceptance ? hSmoke.rootPath ?? n
 let hSmokeProjectRoot: string | null = hSmoke.acceptance ? hSmoke.projectRootPath ?? null : null;
 const hSmokeProjectRoots: string[] = [];
 const smokeMode = quickSmokeMode
+  || settingsSmokeRequested
   || writingSmoke.requested
   || workspaceSmoke.requested
   || quotationSmoke.requested
@@ -837,6 +848,17 @@ type PendingModCapability = {
 const pendingModCapabilities = new Map<string, PendingModCapability>();
 let modCapabilitySequence = 0;
 
+function installNativeApplicationMenu(snapshot: Parameters<typeof createApplicationMenuTemplate>[0]): void {
+  const template = createApplicationMenuTemplate(snapshot, (commandId) => {
+    dispatchApplicationMenuCommand(commandId, (channel, validatedCommandId) => {
+      const window = mainWindow;
+      if (window === null || window.isDestroyed() || window.webContents.isDestroyed()) return;
+      window.webContents.send(channel, validatedCommandId);
+    });
+  }, process.platform);
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 function resolveModCapability(requestId: string, response: ModCapabilityResponse): boolean {
   const pending = pendingModCapabilities.get(requestId);
   if (pending === undefined) return false;
@@ -890,6 +912,7 @@ const modHost = new ModHost({
 let modHostReady: Promise<unknown> | undefined;
 
 let writingSmokeFinished = false;
+let settingsSmokeFinished = false;
 let workspaceSmokeFinished = false;
 let projectSmokeFinished = false;
 let quotationSmokeFinished = false;
@@ -929,6 +952,21 @@ function completeWritingSmoke(): void {
   writingSmokeFinished = true;
   console.log("MAGINALIA_ELECTRON_WRITING_SMOKE_OK");
   app.quit();
+}
+
+function failSettingsSmoke(error: unknown): void {
+  if (settingsSmokeFinished) return;
+  settingsSmokeFinished = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`MAGINALIA_SETTINGS_SMOKE_FAILED ${message}`);
+  app.exit(1);
+}
+
+function completeSettingsSmoke(): void {
+  if (settingsSmokeFinished) return;
+  settingsSmokeFinished = true;
+  console.log("MAGINALIA_SETTINGS_SMOKE_OK");
+  app.exit(0);
 }
 
 function failWorkspaceSmoke(error: unknown): void {
@@ -1231,6 +1269,10 @@ async function logWorkdeskPersistenceDiagnostic(action: "open" | "restore", resu
 }
 
 function registerMarkdownIpc(): void {
+  ipcMain.handle(UPDATE_APPLICATION_MENU_CHANNEL, createApplicationMenuUpdateHandler(
+    () => mainWindow === null || mainWindow.isDestroyed() ? null : mainWindow.webContents,
+    installNativeApplicationMenu
+  ));
   ipcMain.handle(OPEN_BUNDLED_MANUAL_CHANNEL, async (event) => {
     if (event.sender !== mainWindow?.webContents) return { kind: "error" as const };
     const manualPath = app.isPackaged
@@ -1338,6 +1380,7 @@ function registerMarkdownIpc(): void {
 }
 
 function unregisterMarkdownIpc(): void {
+  ipcMain.removeHandler(UPDATE_APPLICATION_MENU_CHANNEL);
   ipcMain.removeHandler(OPEN_BUNDLED_MANUAL_CHANNEL);
   ipcMain.removeHandler(GET_FIRST_RUN_STATUS_CHANNEL);
   ipcMain.removeHandler(RUN_FIRST_RUN_SETUP_CHANNEL);
@@ -1590,6 +1633,8 @@ function failMainRendererLoad(window: BrowserWindow, error: unknown): void {
   if (brandProgressSmoke) {
     console.error("MAGINALIA_BRAND_RENDERER_LOAD_FAILED", error);
     app.exit(1);
+  } else if (settingsSmokeRequested) {
+    failSettingsSmoke(error);
   } else if (writingSmoke.requested) {
     failWritingSmoke(error);
   } else if (workspaceSmoke.requested) {
@@ -1767,6 +1812,29 @@ function createMainWindow(): BrowserWindow {
       });
       window.webContents.on("render-process-gone", (_event, details) => {
         failWorkdeskPersistenceSmoke(new Error(`Renderer process exited: ${details.reason}`));
+      });
+    }
+  } else if (settingsSmokeRequested) {
+    if (!writingSmoke.requested || !writingSmoke.filePath) {
+      failSettingsSmoke(new Error("The Settings smoke requires the writing smoke fixture path."));
+    } else {
+      window.webContents.once("did-finish-load", () => {
+        void runSettingsSmoke(window, settingsSmokeRestore).then(
+          () => completeSettingsSmoke(),
+          (error: unknown) => failSettingsSmoke(error)
+        );
+      });
+      window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame) failSettingsSmoke(new Error(`Renderer load failed (${errorCode}): ${errorDescription}`));
+      });
+      window.webContents.on("preload-error", (_event, preloadPath, error) => {
+        failSettingsSmoke(new Error(`Preload failed (${preloadPath}): ${error.message}`));
+      });
+      window.webContents.on("render-process-gone", (_event, details) => {
+        failSettingsSmoke(new Error(`Renderer process exited: ${details.reason}`));
+      });
+      window.webContents.on("unresponsive", () => {
+        failSettingsSmoke(new Error("Renderer became unresponsive."));
       });
     }
   } else if (writingSmoke.requested) {
@@ -2195,7 +2263,10 @@ function createMainWindow(): BrowserWindow {
   );
 
   window.on("closed", () => {
-    if (writingSmoke.requested && !writingSmokeFinished) {
+    if (settingsSmokeRequested && !settingsSmokeFinished) {
+      failSettingsSmoke(new Error("Settings smoke window closed before completion."));
+    }
+    if (writingSmoke.requested && !settingsSmokeRequested && !writingSmokeFinished) {
       failWritingSmoke(new Error("Writing smoke window closed before completion."));
     }
     if (workspaceSmoke.requested && !workspaceSmokeFinished) {
@@ -2330,6 +2401,7 @@ void app.whenReady().then(async () => {
     console.error("MAGINALIA_PROJECT_PATH_SETTINGS_NOT_INITIALIZED");
   }
   if (!smokeMode || brandProgressSmoke) updateStartupProgress("Workdesk の保存情報を確認しています", 0.28);
+  installNativeApplicationMenu([]);
   registerMarkdownIpc();
   if (!smokeMode || brandProgressSmoke) updateStartupProgress("作業環境を準備しています", 0.52);
   modHostReady = modHost.start().catch((error: unknown) => {

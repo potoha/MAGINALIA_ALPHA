@@ -11,6 +11,7 @@ export interface KeybindingEvent {
   readonly altKey?: boolean;
   readonly shiftKey?: boolean;
   readonly isComposing?: boolean;
+  readonly getModifierState?: (key: string) => boolean;
 }
 
 export interface KeybindingEntry {
@@ -53,6 +54,9 @@ const MODIFIERS = new Set<string>(MODIFIER_ORDER);
 const NAVIGATION_KEYS = new Set([
   "ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp", "Backspace", "Delete", "End", "Enter", "Escape",
   "Home", "Insert", "PageDown", "PageUp", "Space", "Tab"
+]);
+const PRINTABLE_PUNCTUATION_KEYS = new Set([
+  "Backquote", "Backslash", "BracketLeft", "BracketRight", "Comma", "Equal", "Minus", "Period", "Plus", "Quote", "Semicolon", "Slash"
 ]);
 
 /** Defaults are immutable application metadata; user overrides are stored separately. */
@@ -123,7 +127,7 @@ const KEY_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   "+": "Plus"
 });
 
-const SHARED_RESERVED_KEYBINDINGS = ["Mod+A", "Mod+C", "Mod+F", "Mod+V", "Mod+X", "Mod+Alt+Delete", "Alt+F4"] as const;
+const SHARED_RESERVED_KEYBINDINGS = ["Mod+A", "Mod+C", "Mod+F", "Mod+Space", "Mod+V", "Mod+X", "Mod+Alt+Delete", "Alt+F4"] as const;
 const WINDOWS_RESERVED_KEYBINDINGS = [
   "Alt+Tab", "Meta+A", "Meta+D", "Meta+E", "Meta+I", "Meta+L", "Meta+Q", "Meta+R", "Meta+S", "Meta+Space", "Meta+Tab", "Meta+V", "Meta+W", "Meta+X", "Meta+Z",
   "Meta+ArrowDown", "Meta+ArrowLeft", "Meta+ArrowRight", "Meta+ArrowUp", "Meta+Shift+S"
@@ -147,6 +151,7 @@ function defaultStorage(): KeybindingStorage | undefined {
 }
 
 function canonicalKey(raw: string): string | null {
+  if (raw === " ") return "Space";
   const trimmed = raw.trim();
   if (trimmed.length === 0) return null;
   const lower = trimmed.toLocaleLowerCase();
@@ -162,8 +167,8 @@ function canonicalKey(raw: string): string | null {
   };
   if (specialKeys[lower] !== undefined) return specialKeys[lower];
 
-  // Keep Unicode letter keys usable when a keyboard layout reports a printable key directly.
-  if (Array.from(trimmed).length === 1 && !/\p{C}/u.test(trimmed)) return trimmed.toLocaleUpperCase();
+  // Keep Unicode printable keys, including combining sequences, usable when a layout reports them directly.
+  if (/^\P{C}(?:\p{M}|\uFE0F)*$/u.test(trimmed)) return trimmed;
   return null;
 }
 
@@ -202,7 +207,7 @@ export function normalizeKeybinding(value: string, platform: KeybindingPlatform 
 
 /** Convert a recorder event to a canonical chord; composition and modifier-only events are ignored. */
 export function parseKeyboardEvent(event: KeybindingEvent, platform: KeybindingPlatform = detectPlatform()): string | null {
-  if (event.isComposing || ["Process", "Dead", "Unidentified"].includes(event.key)) return null;
+  if (event.isComposing || event.getModifierState?.("AltGraph") === true || ["Process", "Dead", "Unidentified"].includes(event.key)) return null;
   const key = canonicalKey(event.key);
   if (key === null || MODIFIERS.has(key)) return null;
 
@@ -234,14 +239,16 @@ export function toPlatformKeybinding(value: string, platform: KeybindingPlatform
 }
 
 function isPrintableKey(key: string): boolean {
-  return Array.from(key).length === 1 || key === "Space";
+  if (key === "Space" || PRINTABLE_PUNCTUATION_KEYS.has(key) || /^[a-z0-9]$/iu.test(key)) return true;
+  if (NAVIGATION_KEYS.has(key) || /^f(?:[1-9]|1[0-9]|2[0-4])$/iu.test(key)) return false;
+  return /^\P{C}(?:\p{M}|\uFE0F)*$/u.test(key);
 }
 
 function isSafeUserBinding(binding: string, platform: KeybindingPlatform, commandId: string, defaults: Readonly<Record<string, string>>): boolean {
   const parts = binding.split("+");
   const key = parts[parts.length - 1];
-  const hasModifier = parts.length > 1;
-  if (!hasModifier && (isPrintableKey(key) || NAVIGATION_KEYS.has(key))) return false;
+  const hasCommandModifier = parts.slice(0, -1).some((part) => part !== "Shift");
+  if (!hasCommandModifier && (isPrintableKey(key) || NAVIGATION_KEYS.has(key))) return false;
   const platformReserved = platform === "mac" ? MAC_RESERVED_KEYBINDINGS : platform === "windows" ? WINDOWS_RESERVED_KEYBINDINGS : LINUX_RESERVED_KEYBINDINGS;
   if (SHARED_RESERVED_KEYBINDINGS.includes(binding as typeof SHARED_RESERVED_KEYBINDINGS[number])
     || platformReserved.includes(binding as never)) {
@@ -276,6 +283,11 @@ export class KeybindingService {
     if (command === null || command.visibility === "internal") return null;
     if (this.overrides.has(commandId)) return this.overrides.get(commandId) ?? null;
     return this.getDefaultBinding(commandId);
+  }
+
+  /** True when at least one persisted user override is still active in memory. */
+  public hasUserOverrides(): boolean {
+    return this.overrides.size > 0;
   }
 
   public getDefaultBinding(commandId: string): string | null {
