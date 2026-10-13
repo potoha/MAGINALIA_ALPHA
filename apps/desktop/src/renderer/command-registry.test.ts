@@ -30,6 +30,52 @@ describe("CommandRegistry", () => {
     expect(registry.get("maginalia.editor.bold")?.description).toBe("Bold");
   });
 
+  it("keeps internal commands executable while hiding them from public discovery by default", async () => {
+    const registry = new CommandRegistry();
+    const handler = vi.fn();
+    registry.register({ id: "maginalia.internal.reconcile", title: "Reconcile", visibility: "internal" }, handler);
+
+    expect(registry.get("maginalia.internal.reconcile")?.visibility).toBe("internal");
+    expect(registry.list({}).map(({ id }) => id)).toEqual([]);
+    expect(registry.discover("reconcile", {})).toEqual([]);
+    expect(registry.list({}, false, true).map(({ id }) => id)).toEqual(["maginalia.internal.reconcile"]);
+    expect(registry.discover("reconcile", {}, true).map(({ id }) => id)).toEqual(["maginalia.internal.reconcile"]);
+    expect(await registry.execute("maginalia.internal.reconcile", {})).toEqual({ kind: "executed" });
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it("rejects unknown command visibility values", () => {
+    const registry = new CommandRegistry();
+    expect(() => registry.register({
+      id: "maginalia.command.invalidVisibility",
+      title: "Invalid visibility",
+      visibility: "private" as never
+    }, () => undefined)).toThrow("Invalid command descriptor");
+  });
+
+  it("keeps a stale registration disposer from removing a replacement command", () => {
+    const registry = new CommandRegistry();
+    const oldDispose = registry.register({ id: "maginalia.example.lifecycle", title: "Old" }, () => undefined);
+    registry.unregister("maginalia.example.lifecycle");
+    const replacementDispose = registry.register({ id: "maginalia.example.lifecycle", title: "Replacement" }, () => undefined);
+
+    oldDispose();
+    expect(registry.get("maginalia.example.lifecycle")?.title).toBe("Replacement");
+    replacementDispose();
+    expect(registry.get("maginalia.example.lifecycle")).toBeNull();
+  });
+
+  it("snapshots and freezes caller-owned keywords", () => {
+    const registry = new CommandRegistry();
+    const keywords = ["portable"];
+    registry.register({ id: "maginalia.example.immutable", title: "Immutable", keywords }, () => undefined);
+    keywords.push("mutated");
+
+    const registered = registry.get("maginalia.example.immutable");
+    expect(registered?.keywords).toEqual(["portable"]);
+    expect(Object.isFrozen(registered?.keywords)).toBe(true);
+  });
+
   it("isolates failing commands from other commands", async () => {
     const registry = new CommandRegistry();
     registry.register({ id: "dev.example.fail", title: "Broken Mod" }, () => { throw new Error("nope"); }, "mod");
