@@ -42,6 +42,7 @@
 ### NOT VERIFIED
 
 - The full Desktop test suite was not rerun for this remediation. A previous run recorded one tutorial-sample CRLF/LF assertion failure reproduced on the untouched base; it remains historical baseline debt and is not re-evaluated here.
+- GitHub Actions: no PR-triggered workflow runs were returned for the current PR head at handoff time; remote CI status is not verified.
 - Physical Windows user acceptance and Electron behavior on macOS/Linux remain unverified.
 - The linked advisory Figma file contains Settings and shortcut-related states but no Command Palette frame; a direct Figma-to-palette visual comparison was unavailable.
 - Final Product Owner acceptance remains pending.
