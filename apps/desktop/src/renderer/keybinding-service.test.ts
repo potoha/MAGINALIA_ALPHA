@@ -23,6 +23,41 @@ function register(registry: CommandRegistry, id: string, when?: string, visibili
 }
 
 describe("KeybindingService", () => {
+  it("preserves Ctrl+Shift+P for commands and routes Ctrl+P to file Quick Open", () => {
+    const registry = new CommandRegistry();
+    register(registry, "maginalia.workbench.showCommandPalette");
+    register(registry, "maginalia.workbench.showQuickOpen", "project.active");
+    const service = new KeybindingService(registry, { platform: "windows", storage: null });
+    const context = { "project.active": true };
+
+    expect(service.getCommandForKeybinding("Mod+Shift+P", context)?.id).toBe("maginalia.workbench.showCommandPalette");
+    expect(service.getCommandForKeybinding("Mod+P", context)?.id).toBe("maginalia.workbench.showQuickOpen");
+    expect(service.getCommandForKeybinding("Mod+P", { "project.active": false })).toBeNull();
+    expect(service.setBinding("maginalia.workbench.showQuickOpen", "Mod+Alt+P").kind).toBe("updated");
+    expect(service.getCommandForKeybinding("Mod+P", context)).toBeNull();
+    expect(service.getCommandForKeybinding("Mod+Alt+P", context)?.id).toBe("maginalia.workbench.showQuickOpen");
+    expect(service.getShadowedDefaultBindings()).toContain("Mod+P");
+  });
+
+  it("routes default and customized native Find and Replace shortcuts through registered commands", () => {
+    const registry = new CommandRegistry();
+    register(registry, "maginalia.editor.findInDocument", "editor.hasDocument && view.id == edit");
+    register(registry, "maginalia.editor.replaceInDocument", "editor.hasDocument && view.id == edit");
+    const storage = new MemoryStorage();
+    const service = new KeybindingService(registry, { platform: "windows", storage });
+    const editContext = { "editor.hasDocument": true, "view.id": "edit" };
+    const previewContext = { "editor.hasDocument": true, "view.id": "preview" };
+
+    expect(service.getCommandForKeybinding("Mod+F", editContext)?.id).toBe("maginalia.editor.findInDocument");
+    expect(service.getCommandForKeybinding("Mod+H", editContext)?.id).toBe("maginalia.editor.replaceInDocument");
+    expect(service.getCommandForKeybinding("Mod+F", previewContext)).toBeNull();
+
+    expect(service.setBinding("maginalia.editor.findInDocument", "Mod+Alt+F").kind).toBe("updated");
+    expect(service.getCommandForKeybinding("Mod+F", editContext)).toBeNull();
+    expect(service.getCommandForKeybinding("Mod+Alt+F", editContext)?.id).toBe("maginalia.editor.findInDocument");
+    expect(service.getShadowedDefaultBindings()).toContain("Mod+F");
+  });
+
   it("keeps defaults immutable and persists user overrides and explicit unbinds", () => {
     const registry = new CommandRegistry();
     register(registry, "maginalia.document.save");
@@ -215,6 +250,8 @@ describe("keybinding parsing and platform formatting", () => {
     expect(normalizeKeybinding("Control + Shift + p", "windows")).toBe("Mod+Shift+P");
     expect(normalizeKeybinding("Command + Shift + p", "mac")).toBe("Mod+Shift+P");
     expect(DEFAULT_KEYBINDINGS["maginalia.workbench.showCommandPalette"]).toBe("Mod+Shift+P");
+    expect(DEFAULT_KEYBINDINGS["maginalia.editor.findInDocument"]).toBe("Mod+F");
+    expect(DEFAULT_KEYBINDINGS["maginalia.editor.replaceInDocument"]).toBe("Mod+H");
     expect(DEFAULT_KEYBINDINGS["maginalia.view.togglePrimarySidebar"]).toBe("Mod+Shift+B");
     expect(getPlatformDefaultKeybindings("windows")["maginalia.editor.redo"]).toBe("Mod+Y");
     expect(getPlatformDefaultKeybindings("mac")["maginalia.editor.redo"]).toBe("Mod+Shift+Z");

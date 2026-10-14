@@ -27,7 +27,15 @@ export const COMMAND_CONTEXT_KEYS = [
   "properties.stale",
   "renderer.orientation",
   "document.type",
+  "document.hasMainView",
   "view.id",
+  "project.creationActive",
+  "mods.available",
+  "repository.available",
+  "repository.idle",
+  "repository.activationAvailable",
+  "repository.historyAvailable",
+  "repository.historySelected",
   // Current Project/Workdesk document scope, without exposing a filesystem path.
   "project.active",
   // Portable parent navigation state; still a scalar, never a path or a

@@ -63,6 +63,9 @@ const PRINTABLE_PUNCTUATION_KEYS = new Set([
 export const DEFAULT_KEYBINDINGS: Readonly<Record<string, string>> = Object.freeze({
   "maginalia.document.save": "Mod+S",
   "maginalia.workbench.showCommandPalette": "Mod+Shift+P",
+  "maginalia.workbench.showQuickOpen": "Mod+P",
+  "maginalia.editor.findInDocument": "Mod+F",
+  "maginalia.editor.replaceInDocument": "Mod+H",
   "maginalia.view.togglePrimarySidebar": "Mod+Shift+B",
   "maginalia.view.toggleSecondarySidebar": "Mod+Shift+S",
   "maginalia.view.toggleActivityBar": "Mod+Shift+A",

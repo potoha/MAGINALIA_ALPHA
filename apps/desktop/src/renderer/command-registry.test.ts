@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CommandRegistry } from "./command-registry";
+import { CommandRegistry, searchCommandText } from "./command-registry";
 
 describe("CommandRegistry", () => {
   it("registers, discovers, executes and unregisters commands", async () => {
@@ -12,6 +12,46 @@ describe("CommandRegistry", () => {
     expect(handler).toHaveBeenCalledOnce();
     dispose();
     expect(await registry.execute("maginalia.editor.bold", {})).toEqual({ kind: "missing" });
+  });
+
+  it("ranks title matches above metadata matches and returns title highlight ranges", () => {
+    const registry = new CommandRegistry();
+    registry.register({ id: "maginalia.editor.toggleBold", title: "Toggle Bold", category: "Editor" }, () => undefined);
+    registry.register({
+      id: "maginalia.settings.boldOptions",
+      title: "Formatting Options",
+      description: "Toggle bold appearance in the editor"
+    }, () => undefined);
+
+    const results = registry.search("toggle bold", {});
+    expect(results.map(({ descriptor }) => descriptor.id)).toEqual([
+      "maginalia.editor.toggleBold",
+      "maginalia.settings.boldOptions"
+    ]);
+    expect(results[0]?.titleMatches).toEqual([{ start: 0, end: 6 }, { start: 7, end: 11 }]);
+    expect(results[1]?.descriptionMatches).toEqual([{ start: 0, end: 6 }, { start: 7, end: 11 }]);
+    expect(registry.search("toggle absent", {})).toEqual([]);
+  });
+
+  it("returns category highlight ranges when category text is the visible match", () => {
+    const registry = new CommandRegistry();
+    registry.register({ id: "maginalia.project.search", title: "Open List", category: "Project" }, () => undefined);
+
+    expect(registry.search("project", {})[0]?.categoryMatches).toEqual([{ start: 0, end: 7 }]);
+  });
+
+  it("returns UTF-16-safe match ranges for Japanese and supplementary Unicode text", () => {
+    const registry = new CommandRegistry();
+    registry.register({ id: "maginalia.example.unicode", title: "𠀀 文書を開く" }, () => undefined);
+
+    expect(registry.search("𠀀", {})[0]?.titleMatches).toEqual([{ start: 0, end: 2 }]);
+    expect(registry.search("文書", {})[0]?.titleMatches).toEqual([{ start: 3, end: 5 }]);
+  });
+
+  it("uses the same fuzzy ranking and UTF-16 highlight ranges for dynamic navigation names", () => {
+    expect(searchCommandText("卒業論文", "卒論")).toMatchObject({ matches: [{ start: 0, end: 1 }, { start: 2, end: 3 }] });
+    expect(searchCommandText("Quick Open", "qop")?.matches).toEqual([{ start: 0, end: 1 }, { start: 6, end: 8 }]);
+    expect(searchCommandText("卒業論文", "不存在")).toBeNull();
   });
 
   it("rejects duplicate ids and does not run disabled commands", async () => {

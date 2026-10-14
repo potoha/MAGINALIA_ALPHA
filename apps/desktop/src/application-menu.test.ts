@@ -25,6 +25,10 @@ describe("native application menu contract", () => {
     expect(APPLICATION_MENU_COMMAND_IDS).toContain("maginalia.settings.shortcuts");
     expect(APPLICATION_MENU_COMMAND_IDS).toContain("maginalia.help.cheatSheet");
     expect(APPLICATION_MENU_COMMAND_IDS).toContain("maginalia.document.open");
+    expect(APPLICATION_MENU_COMMAND_IDS).toContain("maginalia.workbench.showQuickOpen");
+    expect(APPLICATION_MENU_COMMAND_IDS).toContain("maginalia.editor.findInDocument");
+    expect(APPLICATION_MENU_COMMAND_IDS).toContain("maginalia.editor.replaceInDocument");
+    expect(APPLICATION_MENU_COMMAND_IDS).toContain("maginalia.document.closeView");
   });
 
   it("bounds renderer state to unique allowlisted commands and safe accelerators", () => {
