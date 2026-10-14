@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CommandRegistry } from "./command-registry";
 import {
   DEFAULT_KEYBINDINGS,
@@ -15,6 +15,8 @@ class MemoryStorage {
   public getItem(key: string): string | null { return this.values.get(key) ?? null; }
   public setItem(key: string, value: string): void { this.values.set(key, value); }
 }
+
+afterEach(() => vi.unstubAllGlobals());
 
 function register(registry: CommandRegistry, id: string, when?: string, visibility?: "public" | "internal"): void {
   registry.register({ id, title: id, ...(when === undefined ? {} : { when }), ...(visibility === undefined ? {} : { visibility }) }, () => undefined);
@@ -73,6 +75,53 @@ describe("KeybindingService", () => {
     expect(service.resetAllBindings()).toBe(false);
     expect(service.hasUserOverrides()).toBe(true);
     expect(service.getBinding("maginalia.document.save")).toBe("Mod+Alt+Q");
+  });
+
+  it("rejects failed keybinding writes and resets without changing effective bindings", () => {
+    let failWrites = false;
+    let saved: string | null = null;
+    const storage = {
+      getItem: () => saved,
+      setItem: (_key: string, value: string) => {
+        if (failWrites) throw new Error("storage is unavailable");
+        saved = value;
+      }
+    };
+    const registry = new CommandRegistry();
+    register(registry, "maginalia.document.save");
+    const service = new KeybindingService(registry, { platform: "windows", storage });
+
+    expect(service.setBinding("maginalia.document.save", "Mod+Alt+S").kind).toBe("updated");
+    failWrites = true;
+    expect(service.setBinding("maginalia.document.save", "Mod+Alt+Q")).toEqual({
+      kind: "rejected", reason: "storage-unavailable"
+    });
+    expect(service.getBinding("maginalia.document.save")).toBe("Mod+Alt+S");
+    expect(service.resetBinding("maginalia.document.save")).toEqual({
+      kind: "rejected", reason: "storage-unavailable"
+    });
+    expect(service.getBinding("maginalia.document.save")).toBe("Mod+Alt+S");
+    expect(service.resetAllBindings()).toBe(false);
+    expect(service.hasUserOverrides()).toBe(true);
+    expect(service.getBinding("maginalia.document.save")).toBe("Mod+Alt+S");
+  });
+
+  it("does not claim shortcut overrides persist when the localStorage getter is unavailable", () => {
+    vi.stubGlobal("localStorage", undefined);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get: () => { throw new Error("localStorage is unavailable"); }
+    });
+    const registry = new CommandRegistry();
+    register(registry, "maginalia.document.save");
+    const service = new KeybindingService(registry, { platform: "windows" });
+
+    expect(service.setBinding("maginalia.document.save", "Mod+Alt+Q")).toEqual({
+      kind: "rejected", reason: "storage-unavailable"
+    });
+    expect(service.getBinding("maginalia.document.save")).toBe("Mod+S");
+    expect(service.getCommandForKeybinding("Mod+S", {})?.id).toBe("maginalia.document.save");
+    expect(service.hasUserOverrides()).toBe(false);
   });
 
   it("detects conflicts across disabled contexts and supports explicit replace or cancel", () => {

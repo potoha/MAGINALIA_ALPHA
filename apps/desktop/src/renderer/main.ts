@@ -53,6 +53,7 @@ import { CommandPalette } from "./command-palette";
 import { SettingsCenter } from "./settings-center";
 import { SettingsRegistry } from "./settings-registry";
 import { formatKeybinding, KeybindingService, parseKeyboardEvent, toPlatformKeybinding } from "./keybinding-service";
+import { decideNativeInputKeybinding } from "./native-input-keybinding";
 import { APPLICATION_MENU_COMMAND_IDS, type ApplicationMenuCommandState } from "../application-menu-contract";
 import { registerCoreCommands } from "./core-commands";
 import { registerWorkbenchCommands } from "./workbench-commands";
@@ -1531,19 +1532,22 @@ settingsRegistry.register({
   getValue: () => rendererPreferences.load().defaultWritingDirection,
   setValue: (value: string) => {
     const direction: WritingDirection = value === "vertical" ? "vertical" : "horizontal";
-    previewController.setDirection(direction);
+    previewController.setDirection(direction, true);
     updateCommandContext();
     settingsRegistry.refresh();
   }
 });
 
 function updateExportPresentationSettings(patch: NonNullable<Parameters<typeof createExportPresentationSettings>[0]>): void {
-  currentExportPresentationSettings = createExportPresentationSettings({
+  const nextSettings = createExportPresentationSettings({
     ...currentExportPresentationSettings,
     ...patch,
     header: { ...currentExportPresentationSettings.header, ...patch.header }
   });
-  rendererPreferences.save({ ...rendererPreferences.load(), exportPresentationSettings: currentExportPresentationSettings });
+  if (rendererPreferences.save({ ...rendererPreferences.load(), exportPresentationSettings: nextSettings }) === false) {
+    throw new Error("設定を保存できませんでした。保存先の空き容量とアクセス権を確認してください。");
+  }
+  currentExportPresentationSettings = nextSettings;
   restoreExportSettingsControls();
 }
 
@@ -4538,9 +4542,10 @@ window.addEventListener("keydown", (event) => {
   const inMonaco = target !== null && target.closest(".monaco-editor") !== null;
   const inPreview = target !== null && previewContainer.contains(target);
   const inEditorSurface = inMonaco || inPreview;
-  if (!inEditorSurface && target !== null && target.closest("input, textarea, select, [contenteditable='true']") !== null) return;
+  const inNativeInput = !inEditorSurface && target !== null
+    && target.closest("input, textarea, select, [contenteditable='true']") !== null;
 
-  if (event.key === "Escape" && workbench.isEditorOnly()) {
+  if (!inNativeInput && event.key === "Escape" && workbench.isEditorOnly()) {
     event.preventDefault();
     event.stopImmediatePropagation();
     void executeCommand("maginalia.view.toggleEditorOnly");
@@ -4551,6 +4556,27 @@ window.addEventListener("keydown", (event) => {
   if (binding === null) return;
   const context = commandContext.snapshot();
   const entry = keybindingService.listBindings(context, true).find((candidate) => candidate.keybinding === binding);
+  if (inNativeInput) {
+    const saveDefault = keybindingService.getDefaultBinding("maginalia.document.save");
+    const shadowedSaveDefault = binding === saveDefault && keybindingService.getShadowedDefaultBindings().includes(binding);
+    const nativeUndoRedoChord = [
+      keybindingService.getDefaultBinding("maginalia.editor.undo"),
+      keybindingService.getDefaultBinding("maginalia.editor.redo"),
+      "Mod+Shift+Z"
+    ].includes(binding);
+    const decision = decideNativeInputKeybinding(
+      entry?.commandId ?? null,
+      entry?.enabled ?? false,
+      shadowedSaveDefault,
+      nativeUndoRedoChord
+    );
+    if (decision === "block") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (decision === "native") return;
+  }
   if (entry !== undefined) {
     if (!entry.enabled) {
       if (inEditorSurface) {

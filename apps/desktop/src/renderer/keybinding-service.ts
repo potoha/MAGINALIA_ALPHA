@@ -263,6 +263,7 @@ export class KeybindingService {
   private readonly platform: KeybindingPlatform;
   private readonly defaults: Readonly<Record<string, string>>;
   private readonly storage: KeybindingStorage | undefined;
+  private readonly allowInMemoryOnly: boolean;
   private readonly overrides: Map<string, string | null>;
   private readonly listeners = new Set<() => void>();
   private readonly registrySubscription: () => void;
@@ -273,6 +274,7 @@ export class KeybindingService {
   ) {
     this.platform = options.platform ?? detectPlatform();
     this.defaults = getPlatformDefaultKeybindings(this.platform);
+    this.allowInMemoryOnly = options.storage === null;
     this.storage = options.storage === undefined ? defaultStorage() : options.storage ?? undefined;
     this.overrides = this.readOverrides();
     this.registrySubscription = registry.onDidChange(() => this.notify());
@@ -435,7 +437,7 @@ export class KeybindingService {
   }
 
   private persist(overrides: ReadonlyMap<string, string | null>): boolean {
-    if (this.storage === undefined) return true;
+    if (this.storage === undefined) return this.allowInMemoryOnly;
     const sorted = Object.fromEntries([...overrides.entries()].sort(([left], [right]) => left.localeCompare(right)));
     const payload: PersistedKeybindingsV1 = { version: 1, overrides: sorted };
     try {
