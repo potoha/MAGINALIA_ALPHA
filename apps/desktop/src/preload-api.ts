@@ -185,6 +185,14 @@ import {
   type SearchProjectMarkdownRequest,
   type SearchProjectMarkdownResult
 } from "./project-search-ipc";
+import {
+  APPLICATION_MENU_COMMAND_CHANNEL,
+  UPDATE_APPLICATION_MENU_CHANNEL,
+  isApplicationMenuCommandId,
+  isApplicationMenuSnapshot,
+  type ApplicationMenuCommandId,
+  type ApplicationMenuCommandState
+} from "./application-menu-contract";
 
 export const OPEN_MARKDOWN_CHANNEL = "maginalia:open-markdown";
 export const SAVE_MARKDOWN_CHANNEL = "maginalia:save-markdown";
@@ -341,6 +349,7 @@ export type { ResolveProjectAssetRequest, ImportDroppedImageRequest, ProjectAsse
 
 export type EventUnsubscribe = () => void;
 export type AutosaveFlushCallback = (request: AutosaveFlushRequest) => boolean | Promise<boolean>;
+export type ApplicationMenuCommandCallback = (commandId: ApplicationMenuCommandId) => void;
 export type ModCapabilityCallback = (
   request: ModCapabilityRequestEvent,
 ) => ModCapabilityResponse | Promise<ModCapabilityResponse>;
@@ -349,6 +358,8 @@ export interface MarkdownPreloadApi {
   getFirstRunStatus?(): Promise<FirstRunStatus>;
   runFirstRunSetup?(choices: FirstRunChoices): Promise<FirstRunSetupResult>;
   onFirstRunProgress?(callback: (event: FirstRunProgressEvent) => void): EventUnsubscribe;
+  updateApplicationMenu?(snapshot: readonly ApplicationMenuCommandState[]): Promise<void>;
+  onApplicationCommand?(callback: ApplicationMenuCommandCallback): EventUnsubscribe;
   openBundledManual?(): Promise<OpenBundledManualResult>;
   openMarkdown(): Promise<OpenMarkdownResult>;
   saveMarkdown(request: SaveMarkdownRequest): Promise<SaveMarkdownResult>;
@@ -415,6 +426,8 @@ export type CompleteMarkdownPreloadApi = MarkdownPreloadApi & {
   getFirstRunStatus(): Promise<FirstRunStatus>;
   runFirstRunSetup(choices: FirstRunChoices): Promise<FirstRunSetupResult>;
   onFirstRunProgress(callback: (event: FirstRunProgressEvent) => void): EventUnsubscribe;
+  updateApplicationMenu(snapshot: readonly ApplicationMenuCommandState[]): Promise<void>;
+  onApplicationCommand(callback: ApplicationMenuCommandCallback): EventUnsubscribe;
   openBundledManual(): Promise<OpenBundledManualResult>;
   openDocument(): Promise<OpenDocumentResult>;
   openManuscript(request: OpenManuscriptRequest): Promise<OpenManuscriptResult>;
@@ -492,6 +505,17 @@ export function createMarkdownPreloadApi(
       if (typeof callback !== "function") throw new TypeError("The first-run progress callback is invalid.");
       return subscribe(FIRST_RUN_PROGRESS_CHANNEL, (value) => {
         if (isFirstRunProgressEvent(value)) callback(value);
+      });
+    },
+    updateApplicationMenu: async (snapshot) => {
+      if (!isApplicationMenuSnapshot(snapshot)) throw new TypeError("The application menu snapshot is invalid.");
+      const accepted = await invoke(UPDATE_APPLICATION_MENU_CHANNEL, snapshot);
+      if (accepted !== true) throw new Error("The application menu update was rejected.");
+    },
+    onApplicationCommand: (callback) => {
+      if (typeof callback !== "function") throw new TypeError("The application menu callback is invalid.");
+      return subscribe(APPLICATION_MENU_COMMAND_CHANNEL, (value) => {
+        if (isApplicationMenuCommandId(value)) callback(value);
       });
     },
     openBundledManual: () => invoke(OPEN_BUNDLED_MANUAL_CHANNEL) as Promise<OpenBundledManualResult>,

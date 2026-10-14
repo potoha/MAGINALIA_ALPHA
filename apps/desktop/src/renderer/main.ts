@@ -41,8 +41,8 @@ import {
   type ComposedSyncedBlock,
   type SyncedBlockResolveResult
 } from "./synced-block";
-import { createLocalStorageRendererPreferenceStore } from "./renderer-preferences";
-import { createExportPresentationSettings, EXPORT_PAPER_SIZES } from "../export-presentation-settings";
+import { createLocalStorageRendererPreferenceStore, type WritingDirection } from "./renderer-preferences";
+import { createExportPresentationSettings, DEFAULT_EXPORT_PRESENTATION_SETTINGS, EXPORT_PAPER_SIZES } from "../export-presentation-settings";
 import { resolvePreviewMedia } from "./project-media";
 import { resolvePreviewInternalLinks } from "./preview-links";
 import { importDroppedImageIntoDocument } from "./dropped-image";
@@ -50,6 +50,12 @@ import { stripDerivedReferenceList } from "./reference-list";
 import { ContextKeyService } from "./command-context";
 import { CommandRegistry } from "./command-registry";
 import { CommandPalette } from "./command-palette";
+import { searchCurrentProjectDocuments, searchRegisteredWorkdeskProjects } from "./quick-open-search";
+import { SettingsCenter } from "./settings-center";
+import { SettingsRegistry } from "./settings-registry";
+import { formatKeybinding, KeybindingService, parseKeyboardEvent, toPlatformKeybinding } from "./keybinding-service";
+import { decideNativeInputKeybinding } from "./native-input-keybinding";
+import { APPLICATION_MENU_COMMAND_IDS, type ApplicationMenuCommandState } from "../application-menu-contract";
 import { registerCoreCommands } from "./core-commands";
 import { registerWorkbenchCommands } from "./workbench-commands";
 import { ContextMenuRegistry } from "./context-menu-registry";
@@ -364,6 +370,14 @@ app.innerHTML = `
                   </label>
                 </div>
               </details>
+            </section>
+            <section class="menu-section" aria-labelledby="menu-settings-heading">
+              <h3 id="menu-settings-heading">設定</h3>
+              <div class="document-controls">
+                <button id="open-settings" type="button">設定</button>
+                <button id="open-shortcut-settings" type="button">ショートカット設定</button>
+                <button id="open-cheat-sheet" type="button">ショートカット一覧</button>
+              </div>
             </section>
             <section class="menu-section" aria-labelledby="menu-workbench-heading">
               <h3 id="menu-workbench-heading">Workbench</h3>
@@ -1071,12 +1085,14 @@ function reloadPropertiesPanel(): void {
 let projectController: ProjectNavigationController | undefined;
 type ActiveWorkdesk = Extract<WorkdeskOpenResult, { readonly kind: "opened" }>;
 let activeWorkdesk: ActiveWorkdesk | null = null;
+let activeWorkdeskProjectIdentityId: string | null = null;
 let activeWorkdeskRecovery: WorkdeskRecovered | null = null;
 let primaryWorkdeskAvailable = false;
 function activeWorkdeskRootDocumentId(): string | null {
   return activeWorkdesk?.workdesk.documentId ?? activeWorkdeskRecovery?.workdesk.documentId ?? null;
 }
 const rendererPreferences = createLocalStorageRendererPreferenceStore();
+const settingsRegistry = new SettingsRegistry();
 let currentExportPresentationSettings = rendererPreferences.load().exportPresentationSettings;
 function restoreExportSettingsControls(): void {
   exportPaperSizeInput.value = currentExportPresentationSettings.paperSize;
@@ -1101,6 +1117,7 @@ function saveExportSettingsFromControls(): void {
       pageNumber: exportPageNumberInput.checked
     });
     rendererPreferences.save({ ...rendererPreferences.load(), exportPresentationSettings: currentExportPresentationSettings });
+    settingsRegistry.refresh();
   } catch {
     // Invalid transient control state cannot alter the last valid settings.
   }
@@ -1384,12 +1401,80 @@ verticalDirectionButton.addEventListener("click", () => void executeCommand("mag
 // into Monaco.  Later toolbar/menu contributions use this same registry.
 const commandContext = new ContextKeyService();
 const commandRegistry = new CommandRegistry();
+let repositoryController: RepositoryController | undefined;
+let repositoryReadyForHistory = false;
+let modHostAvailable = false;
+let openMarkdownAction: () => void | Promise<void> = () => undefined;
+let refreshNativeApplicationMenu: () => void = () => undefined;
 function executeCommand(id: string): Promise<void> {
   return commandRegistry.execute(id, commandContext.snapshot()).then((result) => {
     if (result.kind === "failed") {
       documentStatus.dataset.state = "error";
       documentStatus.textContent = `Command failed: ${result.error.message}`;
     }
+  });
+}
+function requestProjectFileOpen(fileId: string): void {
+  const project = projectController?.getState().project;
+  if (!project || fileId.length === 0) return;
+  pendingQuickOpenFile = { projectId: project.projectId, fileId };
+  void executeCommand("maginalia.project.openFile");
+}
+commandRegistry.register({
+  id: "maginalia.document.open",
+  title: "ドキュメントを開く",
+  description: "現在のワークスペースでドキュメントを開きます。",
+  category: "ドキュメント",
+  keywords: ["open", "document", "markdown", "file", "開く", "ドキュメント"]
+}, () => openMarkdownAction());
+commandRegistry.register({
+  id: "maginalia.project.openFile",
+  title: "Open Project document",
+  description: "Open a named document in the active Project through Project navigation.",
+  category: "Project",
+  keywords: ["open", "document", "file", "project", "開く", "ファイル"],
+  when: "project.active"
+}, async () => {
+  const request = pendingQuickOpenFile;
+  pendingQuickOpenFile = null;
+  const navigation = projectController;
+  const state = navigation?.getState();
+  if (request === null || navigation === undefined || !state?.project || state.project.projectId !== request.projectId
+    || !state.files.some((file) => file.fileId === request.fileId)) {
+    throw new Error("The Project document is no longer available.");
+  }
+  await navigation.openFile(request.fileId);
+});
+commandRegistry.register({
+  id: "maginalia.document.closeView",
+  title: "アクティブなタブを閉じる",
+  description: "Close the active document tab, preserving unsaved work through the existing close safeguard.",
+  category: "Document",
+  keywords: ["close", "tab", "document", "閉じる", "タブ"],
+  when: "editor.hasDocument && document.hasMainView"
+}, async () => {
+  const current = controller.getDocumentState();
+  const requestedViewId = pendingDocumentCloseViewId;
+  pendingDocumentCloseViewId = null;
+  const view = requestedViewId === null
+    ? controller.getDocumentViews().find((candidate) => candidate.documentId === current?.documentId && candidate.region === "main")
+    : controller.getDocumentViews().find((candidate) => candidate.instanceId === requestedViewId);
+  if (!view || !(await closeDocumentTabView(view.instanceId))) throw new Error("The document tab remains open.");
+});
+for (const action of [
+  { id: "maginalia.editor.findInDocument", title: "本文内を検索", action: "find" as const, keywords: ["find", "search", "本文", "検索"] },
+  { id: "maginalia.editor.replaceInDocument", title: "本文内を置換", action: "findReplace" as const, keywords: ["replace", "find", "本文", "置換"] }
+] as const) {
+  commandRegistry.register({
+    id: action.id,
+    title: action.title,
+    description: "Use Monaco's native find widget for the active source document.",
+    category: "Editor",
+    keywords: action.keywords,
+    when: "editor.hasDocument && view.id == edit"
+  }, () => {
+    const opened = action.action === "find" ? controller.find() : controller.findReplace();
+    if (!opened) throw new Error("本文内検索は編集画面で利用できます。");
   });
 }
 const updateCommandContext = (): void => {
@@ -1414,6 +1499,12 @@ const updateCommandContext = (): void => {
     && project?.projectId === activeWorkdesk.workdesk.documentId;
   const parentFileId = current === null ? null : projectController?.getFileIdForSession(current.documentId) ?? null;
   const insertionSelectionIsSafe = previewController.getMode() !== "preview" || controller.getExternalSelection() !== null;
+  const repositoryState = repositoryController?.getState();
+  const repositoryHistoryState = repositoryController?.getHistoryState();
+  const repositoryBusy = repositoryState !== undefined
+    && ["creating", "opening", "activating"].includes(repositoryState.status);
+  const repositoryHistoryBusy = repositoryHistoryState !== undefined
+    && ["loading", "recording", "opening"].includes(repositoryHistoryState.status);
   const syncedBlockInsertable = current !== null && project !== null && project !== undefined
     && parentFileId !== null && pendingSyncedBlockInsert !== null
     && pendingSyncedBlockInsert.projectId === project.projectId
@@ -1441,7 +1532,22 @@ const updateCommandContext = (): void => {
     "renderer.orientation": previewController.getDirection(),
     "document.type": "markdown",
     "view.id": previewController.getMode(),
-    "project.active": projectController?.getState().project !== null,
+    "document.hasMainView": current !== null && controller.getDocumentViews().some((view) => view.documentId === current.documentId && view.region === "main"),
+    "project.creationActive": !projectCreateForm.hidden,
+    "mods.available": modHostAvailable,
+    "repository.available": repositoryController !== undefined,
+    "repository.idle": repositoryController !== undefined && !repositoryBusy,
+    "repository.activationAvailable": repositoryState?.repository !== null
+      && repositoryState?.repository !== undefined
+      && repositoryState.status !== "ready"
+      && !repositoryBusy,
+    "repository.historyAvailable": repositoryReadyForHistory && !repositoryBusy && !repositoryHistoryBusy,
+    "repository.historySelected": repositoryReadyForHistory
+      && repositoryHistoryState?.selectedHistoryId !== null
+      && repositoryHistoryState?.selectedHistoryId !== undefined
+      && !repositoryBusy
+      && !repositoryHistoryBusy,
+    "project.active": projectController?.getState().project != null,
     "workdesk.active": activeWorkdesk !== null,
     "workdesk.homeActive": workdeskHomeActive,
     "workdesk.homeAvailable": primaryWorkdeskAvailable
@@ -1484,6 +1590,7 @@ registerCoreCommands(commandRegistry, {
   setPreviewDirection: (direction) => {
     previewController.setDirection(direction);
     updateCommandContext();
+    settingsRegistry.refresh();
   },
   refreshReferences: () => referencesController?.refresh(),
   exportMarkdown: () => exportController?.exportMarkdown(),
@@ -1491,6 +1598,111 @@ registerCoreCommands(commandRegistry, {
   exportDocx: () => exportController?.exportDocx(),
   saveDocument: () => controller.save(),
   contextKeys: commandContext
+});
+
+settingsRegistry.register({
+  id: "maginalia.renderer.default-writing-direction",
+  title: "文字方向",
+  description: "ドキュメント表示に使う横書きまたは縦書きを選びます。",
+  category: "表示",
+  type: "enum",
+  options: ["horizontal", "vertical"] as const,
+  defaultValue: "horizontal",
+  scope: "user",
+  owner: "maginalia.core.renderer"
+}, {
+  getValue: () => rendererPreferences.load().defaultWritingDirection,
+  setValue: (value: string) => {
+    const direction: WritingDirection = value === "vertical" ? "vertical" : "horizontal";
+    previewController.setDirection(direction, true);
+    updateCommandContext();
+    settingsRegistry.refresh();
+  }
+});
+
+function updateExportPresentationSettings(patch: NonNullable<Parameters<typeof createExportPresentationSettings>[0]>): void {
+  const nextSettings = createExportPresentationSettings({
+    ...currentExportPresentationSettings,
+    ...patch,
+    header: { ...currentExportPresentationSettings.header, ...patch.header }
+  });
+  if (rendererPreferences.save({ ...rendererPreferences.load(), exportPresentationSettings: nextSettings }) === false) {
+    throw new Error("設定を保存できませんでした。保存先の空き容量とアクセス権を確認してください。");
+  }
+  currentExportPresentationSettings = nextSettings;
+  restoreExportSettingsControls();
+}
+
+settingsRegistry.register({
+  id: "maginalia.export.paper-size",
+  title: "用紙サイズ",
+  description: "書き出し時に使う用紙サイズを選びます。",
+  category: "書き出し",
+  type: "enum",
+  options: EXPORT_PAPER_SIZES,
+  defaultValue: DEFAULT_EXPORT_PRESENTATION_SETTINGS.paperSize,
+  scope: "user",
+  owner: "maginalia.core.export"
+}, {
+  getValue: () => currentExportPresentationSettings.paperSize,
+  setValue: (value: string) => updateExportPresentationSettings({ paperSize: value })
+});
+settingsRegistry.register({
+  id: "maginalia.export.orientation",
+  title: "ページの向き",
+  description: "書き出し時の縦向きまたは横向きを選びます。",
+  category: "書き出し",
+  type: "enum",
+  options: ["portrait", "landscape"] as const,
+  defaultValue: DEFAULT_EXPORT_PRESENTATION_SETTINGS.orientation,
+  scope: "user",
+  owner: "maginalia.core.export"
+}, {
+  getValue: () => currentExportPresentationSettings.orientation,
+  setValue: (value: string) => updateExportPresentationSettings({ orientation: value })
+});
+settingsRegistry.register({
+  id: "maginalia.export.paragraph-indent",
+  title: "段落の字下げ",
+  description: "書き出す段落の先頭を字下げします。",
+  category: "書き出し",
+  type: "boolean",
+  defaultValue: DEFAULT_EXPORT_PRESENTATION_SETTINGS.paragraphIndent,
+  scope: "user",
+  owner: "maginalia.core.export"
+}, {
+  getValue: () => currentExportPresentationSettings.paragraphIndent,
+  setValue: (value: boolean) => updateExportPresentationSettings({ paragraphIndent: value })
+});
+for (const side of ["left", "center", "right"] as const) {
+  settingsRegistry.register({
+    id: `maginalia.export.header-${side}`,
+    title: `ヘッダー ${side === "left" ? "左" : side === "right" ? "右" : "中央"}`,
+    description: `書き出しヘッダーの${side === "left" ? "左" : side === "right" ? "右" : "中央"}に表示する文字列です。`,
+    category: "書き出し",
+    type: "string",
+    defaultValue: DEFAULT_EXPORT_PRESENTATION_SETTINGS.header[side],
+    scope: "user",
+    owner: "maginalia.core.export"
+  }, {
+    getValue: () => currentExportPresentationSettings.header[side],
+    setValue: (value: string) => updateExportPresentationSettings({
+      header: { ...currentExportPresentationSettings.header, [side]: value }
+    })
+  });
+}
+settingsRegistry.register({
+  id: "maginalia.export.page-number",
+  title: "ページ番号",
+  description: "書き出しフッターの中央にページ番号を表示します。",
+  category: "書き出し",
+  type: "boolean",
+  defaultValue: DEFAULT_EXPORT_PRESENTATION_SETTINGS.pageNumber,
+  scope: "user",
+  owner: "maginalia.core.export"
+}, {
+  getValue: () => currentExportPresentationSettings.pageNumber,
+  setValue: (value: boolean) => updateExportPresentationSettings({ pageNumber: value })
 });
 commandRegistry.register({
   id: "maginalia.document.applyProperties",
@@ -1648,7 +1860,10 @@ commandRegistry.register({
   title: "Show Editable Preview",
   category: "Renderer",
   keywords: ["preview", "render", "edit"]
-}, () => previewController.setMode("preview"));
+}, () => {
+  previewController.setMode("preview");
+  updateCommandContext();
+});
 editModeButton.addEventListener("click", () => void executeCommand("maginalia.renderer.showEdit"));
 previewModeButton.addEventListener("click", () => void executeCommand("maginalia.renderer.showPreview"));
 propertiesForm.addEventListener("submit", (event) => {
@@ -1769,9 +1984,18 @@ let commandPalette: CommandPalette | undefined;
 commandRegistry.register({
   id: "maginalia.workbench.showCommandPalette",
   title: "Show Command Palette",
+  description: "Find and run registered commands.",
   category: "Workbench",
   keywords: ["commands", "actions", "more"]
-}, () => commandPalette?.isOpen() ? commandPalette.close() : commandPalette?.open());
+}, () => commandPalette?.isOpen() ? commandPalette.close() : commandPalette?.openCommandPicker());
+commandRegistry.register({
+  id: "maginalia.workbench.showQuickOpen",
+  title: "Quick Open document",
+  description: "Open a document by name from the active Project.",
+  category: "Workbench",
+  keywords: ["quick", "open", "file", "document", "Project"],
+  when: "project.active"
+}, () => commandPalette?.openQuickOpen());
 commandRegistry.register({
   id: "maginalia.help.openManual",
   title: "取扱説明書を開く",
@@ -1853,6 +2077,14 @@ commandRegistry.register({
   beginProjectCreation(true);
 });
 commandRegistry.register({
+  id: "maginalia.project.create",
+  title: "Create Project",
+  description: "Create the Project currently described by the open Project form.",
+  category: "Project",
+  keywords: ["create", "new", "project"],
+  when: "project.creationActive"
+}, () => submitProjectCreation());
+commandRegistry.register({
   id: "maginalia.workdesk.registerProject",
   title: "Add existing Project",
   category: "Workdesk",
@@ -1890,7 +2122,7 @@ commandRegistry.register({
   title: "Open registered Project",
   category: "Workdesk",
   keywords: ["project", "open", "registered"],
-  when: "workdesk.homeActive"
+  when: "workdesk.active"
 }, async () => {
   const desk = activeWorkdesk;
   const projectIdentityId = pendingWorkdeskProjectIdentityId;
@@ -1903,10 +2135,26 @@ commandRegistry.register({
     target.focus();
     return;
   }
-  await openWorkdeskProjectResult(await api.openWorkdeskProject({
-    workdeskIdentityId: desk.workdesk.workdeskIdentityId,
-    projectIdentityId
-  }));
+  const workdeskIdentityId = desk.workdesk.workdeskIdentityId;
+  const registeredProject = desk.projects.find((project) => project.projectIdentityId === projectIdentityId);
+  if (!registeredProject || !registeredProject.available) {
+    projectView.setProjectError("This registered Project is currently unavailable.");
+    return;
+  }
+  if (activeWorkdeskProjectIdentityId === projectIdentityId) return;
+  await loadAndActivateWorkdeskProject(async () => {
+    const currentDesk = activeWorkdesk;
+    if (!currentDesk || currentDesk.workdesk.workdeskIdentityId !== workdeskIdentityId) {
+      projectView.setProjectError("The active Workdesk changed before the Project could be opened.");
+      return null;
+    }
+    const currentRegistration = currentDesk.projects.find((project) => project.projectIdentityId === projectIdentityId);
+    if (!currentRegistration || !currentRegistration.available) {
+      projectView.setProjectError("This registered Project is currently unavailable.");
+      return null;
+    }
+    return api.openWorkdeskProject({ workdeskIdentityId, projectIdentityId });
+  });
 });
 commandRegistry.register({
   id: "maginalia.workdesk.copyToProject",
@@ -2027,9 +2275,139 @@ commandRegistry.register({
   keywords: ["image", "asset", "file"],
   when: "editor.hasDocument"
 }, () => chooseImageForImport());
+for (const action of [
+  { id: "maginalia.mods.openFolder", title: "Open Mods folder", keywords: ["mod", "folder", "open"] },
+  { id: "maginalia.mods.reload", title: "Reload Mods", keywords: ["mod", "reload", "refresh"] }
+] as const) {
+  commandRegistry.register({
+    id: action.id,
+    title: action.title,
+    category: "Mods",
+    keywords: action.keywords,
+    when: "mods.available"
+  }, async () => {
+    const mods = modController;
+    if (!mods) throw new Error("Mod host is unavailable.");
+    if (action.id === "maginalia.mods.openFolder") await mods.openFolder();
+    else await mods.reload();
+  });
+}
+let settingsCenter: SettingsCenter | null = null;
+for (const { id, title, description, keywords, tab } of [
+  {
+    id: "maginalia.settings.open",
+    title: "設定",
+    description: "表示と書き出しの設定を開きます。",
+    keywords: ["settings", "preferences", "configuration", "設定"],
+    tab: "settings" as const
+  },
+  {
+    id: "maginalia.settings.shortcuts",
+    title: "ショートカット設定",
+    description: "登録済みコマンドのショートカットを編集します。",
+    keywords: ["keyboard", "shortcut", "keybinding", "settings", "キーボード", "ショートカット"],
+    tab: "shortcuts" as const
+  },
+  {
+    id: "maginalia.help.cheatSheet",
+    title: "ショートカット一覧",
+    description: "現在利用できるコマンドとショートカットを表示します。",
+    keywords: ["help", "cheat sheet", "shortcut", "keyboard", "一覧", "ショートカット"],
+    tab: "cheatsheet" as const
+  }
+] as const) {
+  commandRegistry.register({ id, title, description, category: "設定", keywords }, () => settingsCenter?.open(tab));
+}
+const keybindingService = new KeybindingService(commandRegistry);
+const settingsCommandsAllowedWhileModal = new Set([
+  "maginalia.settings.open",
+  "maginalia.settings.shortcuts",
+  "maginalia.help.cheatSheet"
+]);
+settingsCenter = new SettingsCenter({
+  settings: settingsRegistry,
+  commands: commandRegistry,
+  keybindings: keybindingService,
+  getContext: () => commandContext.snapshot(),
+  onOpenStateChanged: () => refreshNativeApplicationMenu(),
+  onError: (message) => {
+    documentStatus.dataset.state = "error";
+    documentStatus.textContent = `ショートカットを更新できませんでした: ${message}`;
+  }
+});
+for (const [selector, commandId] of [
+  ["#open-settings", "maginalia.settings.open"],
+  ["#open-shortcut-settings", "maginalia.settings.shortcuts"],
+  ["#open-cheat-sheet", "maginalia.help.cheatSheet"]
+] as const) {
+  requiredElement<HTMLButtonElement>(selector).addEventListener("click", () => void executeCommand(commandId));
+}
+
+let nativeMenuRefreshPending = false;
+let lastNativeMenuSnapshot = "";
+const refreshNativeMenuSoon = (): void => {
+  if (nativeMenuRefreshPending) return;
+  nativeMenuRefreshPending = true;
+  queueMicrotask(() => {
+    nativeMenuRefreshPending = false;
+    const context = commandContext.snapshot();
+    const enabledCommands = new Set(commandRegistry.list(context).map((command) => command.id));
+    const modalOpen = settingsCenter?.isOpen() ?? false;
+    const snapshot: ApplicationMenuCommandState[] = APPLICATION_MENU_COMMAND_IDS.map((id) => {
+      const allowedDuringModal = !modalOpen || settingsCommandsAllowedWhileModal.has(id);
+      const keybinding = keybindingService.getBinding(id);
+      const shortcut = keybinding === null ? null : toPlatformKeybinding(keybinding);
+      return {
+        id,
+        enabled: enabledCommands.has(id) && allowedDuringModal,
+        ...(shortcut === null ? {} : { shortcut })
+      };
+    });
+    const serialized = JSON.stringify(snapshot);
+    if (serialized === lastNativeMenuSnapshot) return;
+    lastNativeMenuSnapshot = serialized;
+    void window.maginalia.updateApplicationMenu(snapshot).catch(() => undefined);
+  });
+};
+refreshNativeApplicationMenu = refreshNativeMenuSoon;
+commandRegistry.onDidChange(refreshNativeMenuSoon);
+keybindingService.onDidChange(refreshNativeMenuSoon);
+window.maginalia.onApplicationCommand((commandId) => {
+  if (settingsCenter?.isOpen() && !settingsCommandsAllowedWhileModal.has(commandId)) return;
+  void executeCommand(commandId);
+});
+refreshNativeMenuSoon();
+
 commandPalette = new CommandPalette({
   registry: commandRegistry,
   getContext: () => commandContext.snapshot(),
+  providers: {
+    project: (query) => searchRegisteredWorkdeskProjects(activeWorkdesk?.projects ?? [], query),
+    file: (query) => {
+      const state = projectController?.getState();
+      const project = state?.project;
+      if (!project) return [];
+      return searchCurrentProjectDocuments(project, state.files, query);
+    }
+  },
+  prepareProviderResult: (providerId, resultId) => {
+    if (providerId === "project") {
+      const desk = activeWorkdesk;
+      const project = desk?.projects.find((candidate) => candidate.projectIdentityId === resultId && candidate.available);
+      if (!desk || !project) return false;
+      pendingWorkdeskProjectIdentityId = project.projectIdentityId;
+      return true;
+    }
+    const navigation = projectController;
+    const state = navigation?.getState();
+    if (!state?.project || !state.files.some((file) => file.fileId === resultId)) return false;
+    pendingQuickOpenFile = { projectId: state.project.projectId, fileId: resultId };
+    return true;
+  },
+  getShortcut: (commandId) => {
+    const binding = keybindingService.getBinding(commandId);
+    return binding === null ? null : formatKeybinding(binding);
+  },
   onError: (message) => {
     documentStatus.dataset.state = "error";
     documentStatus.textContent = `Command failed: ${message}`;
@@ -2121,6 +2499,8 @@ bindWorkbenchContextMenu(previewContainer);
 commandContext.onDidChange(() => {
   utilityBar.refresh();
   contextMenuSurface.refresh();
+  settingsCenter?.refresh();
+  refreshNativeApplicationMenu();
 });
 updateCommandContext();
 
@@ -2273,6 +2653,13 @@ const modView: { setModState(state: ModControllerState): void } = {
 
 let draggedDocumentViewId: string | null = null;
 
+async function closeDocumentTabView(instanceId: string): Promise<boolean> {
+  return controller.closeDocumentView(instanceId, async (displayName) => decideDirtySwitch(
+    { currentDisplayName: displayName, target: { kind: "manuscript", displayName: "another document tab" } },
+    (message) => window.confirm(message)
+  ));
+}
+
 function renderDocumentTabs(change: DocumentSessionChange): void {
   documentTabs.replaceChildren();
   const mainViews = change.views.filter((view) => view.region === "main" && view.groupId === "editor-group-1");
@@ -2343,12 +2730,8 @@ function renderDocumentTabs(change: DocumentSessionChange): void {
     close.textContent = "×";
     close.addEventListener("click", (event) => {
       event.stopPropagation();
-      void controller.closeDocumentView(view.instanceId, async (displayName) => {
-        return decideDirtySwitch(
-          { currentDisplayName: displayName, target: { kind: "manuscript", displayName: "another document tab" } },
-          (message) => window.confirm(message)
-        );
-      });
+      pendingDocumentCloseViewId = view.instanceId;
+      void executeCommand("maginalia.document.closeView");
     });
     tab.append(activate, close);
     documentTabs.append(tab);
@@ -2412,6 +2795,8 @@ let selectedExplorerFolderId: string | null = null;
 let explorerDocumentId: string | null = null;
 let explorerEntries: readonly ExplorerEntry[] = [];
 let pendingWorkdeskProjectIdentityId: string | null = null;
+let pendingQuickOpenFile: { readonly projectId: string; readonly fileId: string } | null = null;
+let pendingDocumentCloseViewId: string | null = null;
 let projectCreationFromWorkdesk = false;
 
 // The document controller can be empty during module construction. Hydrate the
@@ -2448,7 +2833,7 @@ function renderWorkdeskProjectNodes(projects: readonly WorkdeskProjectExplorerSh
     button.title = project.available ? `Project: ${project.title}` : `Project: ${project.title} (unavailable on this PC)`;
     button.addEventListener("click", () => {
       pendingWorkdeskProjectIdentityId = project.projectIdentityId;
-      void commandRegistry.execute("maginalia.workdesk.openProject", commandContext.snapshot());
+      void executeCommand("maginalia.workdesk.openProject");
     });
     const actions = document.createElement("div");
     actions.className = "explorer-row-actions";
@@ -2760,6 +3145,7 @@ function cancelProjectCreation(restoreFocus = true): void {
   projectCreateForm.hidden = true;
   createProjectTitle.value = "";
   projectCreationFromWorkdesk = false;
+  updateCommandContext();
   if (restoreFocus) focusTarget.focus();
 }
 
@@ -2769,6 +3155,7 @@ function beginProjectCreation(fromWorkdesk: boolean): void {
   projectCreateForm.hidden = false;
   setProjectMenuOpen(projectNewMenu, projectNewButton, false);
   setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
+  updateCommandContext();
   createProjectTitle.focus();
 }
 
@@ -2946,7 +3333,7 @@ const projectView: ProjectNavigationView = {
             [...explorerTree.querySelectorAll<HTMLButtonElement>("button[data-explorer-file-id]")],
             fileId
           );
-          void projectController?.openFile(fileId);
+          requestProjectFileOpen(fileId);
         }
       });
     }
@@ -3024,8 +3411,6 @@ const repositoryKindLabels: Record<RepositoryKindOption, string> = {
   shelf: "Private Shelf"
 };
 
-let repositoryReadyForHistory = false;
-
 function formatHistoryTimestamp(timestampMs: number): string {
   const date = new Date(timestampMs);
   if (!Number.isFinite(timestampMs) || Number.isNaN(date.getTime())) return "Saved History";
@@ -3064,6 +3449,7 @@ function renderRepositoryState(state: RepositoryViewState): void {
   activateRepositoryButton.textContent = repository?.kind === "shelf"
     ? "Use Private Shelf"
     : "Open in Document";
+  updateCommandContext();
 }
 
 function renderRepositoryHistoryState(state: RepositoryHistoryViewState): void {
@@ -3106,6 +3492,7 @@ function renderRepositoryHistoryState(state: RepositoryHistoryViewState): void {
             : "Activate a repository to view History.";
   repositoryHistoryError.textContent = state.error ?? "";
   repositoryHistoryError.hidden = state.error === null;
+  updateCommandContext();
 }
 
 const repositoryView: RepositoryControllerView = {
@@ -3443,11 +3830,12 @@ function refreshActiveWorkdeskNode(node: { readonly projectIdentityId: string; r
   projectView.setProjectState(projectController?.getState() ?? { project: null, files: [], activeFileId: null });
 }
 
-async function openWorkdeskProjectResult(result: WorkdeskProjectResult): Promise<boolean> {
+async function openWorkdeskProjectResult(result: WorkdeskProjectResult, alreadyActivated = false): Promise<boolean> {
   if (result.kind === "cancelled") return false;
   if (result.kind === "opened-unregistered") {
     const navigation = projectController;
-    if (!navigation || !(await navigation.activateOpenedProject(result.project))) return false;
+    if (!navigation || (!alreadyActivated && !(await navigation.activateOpenedProject(result.project)))) return false;
+    activeWorkdeskProjectIdentityId = null;
     projectView.setProjectState(navigation.getState());
     await rememberActiveWorkdeskContext({ kind: "home" });
     updateCommandContext();
@@ -3472,11 +3860,35 @@ async function openWorkdeskProjectResult(result: WorkdeskProjectResult): Promise
     return false;
   }
   const navigation = projectController;
-  if (!navigation || !(await navigation.activateOpenedProject(result.project))) return false;
+  if (!navigation || (!alreadyActivated && !(await navigation.activateOpenedProject(result.project)))) return false;
+  activeWorkdeskProjectIdentityId = result.node.projectIdentityId;
   refreshActiveWorkdeskNode(result.node);
   await rememberActiveWorkdeskContext({ kind: "project", projectIdentityId: result.node.projectIdentityId });
   updateCommandContext();
   return true;
+}
+
+async function loadAndActivateWorkdeskProject(
+  load: () => Promise<WorkdeskProjectResult | null>
+): Promise<boolean> {
+  const navigation = projectController;
+  if (!navigation) return false;
+  const loaded: { result: WorkdeskProjectResult | null } = { result: null };
+  const activated = await navigation.activateProjectFromLoader(async () => {
+    const result = await load();
+    loaded.result = result;
+    return result?.kind === "opened" || result?.kind === "opened-unregistered" ? result.project : null;
+  });
+  const result = loaded.result;
+  if (result === null) return false;
+  if (result.kind === "opened" || result.kind === "opened-unregistered") {
+    if (!activated) {
+      projectView.setProjectError("The Workdesk Project could not be activated.");
+      return false;
+    }
+    return openWorkdeskProjectResult(result, true);
+  }
+  return openWorkdeskProjectResult(result);
 }
 
 async function activateWorkdesk(result: WorkdeskOpenResult): Promise<boolean> {
@@ -3487,6 +3899,7 @@ async function activateWorkdesk(result: WorkdeskOpenResult): Promise<boolean> {
     const activated = await navigation.activateOpenedProject({ kind: "opened", project: result.project, files: result.files });
     if (!activated) return false;
     activeWorkdesk = null;
+    activeWorkdeskProjectIdentityId = null;
     activeWorkdeskRecovery = result;
     primaryWorkdeskAvailable = true;
     setWorkspaceRecoveryNotice(workdeskIdentityRecoveryNotice(result.recovery.code));
@@ -3504,6 +3917,7 @@ async function activateWorkdesk(result: WorkdeskOpenResult): Promise<boolean> {
   const activated = await navigation.activateOpenedProject({ kind: "opened", project: result.project, files: result.files });
   if (!activated) return false;
   activeWorkdesk = result;
+  activeWorkdeskProjectIdentityId = null;
   activeWorkdeskRecovery = null;
   primaryWorkdeskAvailable = true;
   setWorkspaceRecoveryNotice(null);
@@ -3646,11 +4060,13 @@ const standaloneWorkbenchSmoke = new URLSearchParams(window.location.search).get
 const modApi = getModApi();
 if (modApi && !standaloneWorkbenchSmoke) {
   modController = new ModController({ api: modApi, writing: controller, view: modView });
+  modHostAvailable = true;
+  updateCommandContext();
   openModsFolderButton.addEventListener("click", () => {
-    void modController?.openFolder();
+    void executeCommand("maginalia.mods.openFolder");
   });
   reloadModsButton.addEventListener("click", () => {
-    void modController?.reload();
+    void executeCommand("maginalia.mods.reload");
   });
   void modController.load();
 } else {
@@ -4142,7 +4558,6 @@ if (exportApi) {
   exportStatus.textContent = "Markdown export is unavailable.";
 }
 
-let repositoryController: RepositoryController | undefined;
 if (!writingSmokeMode) {
   const repositoryApi = getRepositoryApi();
   const documentPort = workspaceController ?? projectController;
@@ -4165,46 +4580,95 @@ if (!writingSmokeMode) {
       view: repositoryView,
       writing: { hasUnsavedChanges: () => controller.hasUnsavedChanges() }
     });
+    commandRegistry.register({
+      id: "maginalia.repository.create",
+      title: "Create Repository",
+      description: "Create a local Project, Workdesk, or Private Shelf repository.",
+      category: "Repository",
+      keywords: ["repository", "new", "create", "project", "workdesk", "shelf"],
+      when: "repository.available && repository.idle"
+    }, () => repositoryController?.create(
+      repositoryKind.value as RepositoryKindOption,
+      repositoryTitle.value
+    ));
+    commandRegistry.register({
+      id: "maginalia.repository.open",
+      title: "Open Repository",
+      description: "Choose a local repository to inspect or activate.",
+      category: "Repository",
+      keywords: ["repository", "open", "folder", "project", "workdesk", "shelf"],
+      when: "repository.available && repository.idle"
+    }, () => repositoryController?.openRepository());
+    commandRegistry.register({
+      id: "maginalia.repository.activate",
+      title: "Activate Repository",
+      description: "Open the selected repository in its supported document or Shelf surface.",
+      category: "Repository",
+      keywords: ["repository", "activate", "use", "open", "shelf"],
+      when: "repository.activationAvailable"
+    }, () => repositoryController?.activateRepository());
+    commandRegistry.register({
+      id: "maginalia.repository.history.record",
+      title: "Record Repository History",
+      description: "Save the active local Repository state in History.",
+      category: "Repository History",
+      keywords: ["repository", "history", "snapshot", "save", "record"],
+      when: "repository.historyAvailable"
+    }, () => repositoryController?.recordHistory());
+    commandRegistry.register({
+      id: "maginalia.repository.history.refresh",
+      title: "Refresh Repository History",
+      description: "Reload saved History versions for the active Repository.",
+      category: "Repository History",
+      keywords: ["repository", "history", "refresh", "reload"],
+      when: "repository.historyAvailable"
+    }, () => repositoryController?.refreshHistory());
+    commandRegistry.register({
+      id: "maginalia.repository.history.openCopy",
+      title: "Open Repository History Copy",
+      description: "Open the selected saved History version as a copy.",
+      category: "Repository History",
+      keywords: ["repository", "history", "open", "copy", "restore"],
+      when: "repository.historySelected"
+    }, () => repositoryController?.openHistoryCopy());
+    updateCommandContext();
     createRepositoryButton.addEventListener("click", () => {
-      void repositoryController?.create(
-        repositoryKind.value as RepositoryKindOption,
-        repositoryTitle.value
-      );
+      void executeCommand("maginalia.repository.create");
     });
     openRepositoryButton.addEventListener("click", () => {
-      void repositoryController?.openRepository();
+      void executeCommand("maginalia.repository.open");
     });
     activateRepositoryButton.addEventListener("click", () => {
-      void repositoryController?.activateRepository();
+      void executeCommand("maginalia.repository.activate");
     });
     recordRepositoryHistoryButton.addEventListener("click", () => {
-      void repositoryController?.recordHistory();
+      void executeCommand("maginalia.repository.history.record");
     });
     refreshRepositoryHistoryButton.addEventListener("click", () => {
-      void repositoryController?.refreshHistory();
+      void executeCommand("maginalia.repository.history.refresh");
     });
     repositoryHistoryEntry.addEventListener("change", () => {
       repositoryController?.selectHistory(repositoryHistoryEntry.value || null);
     });
     openRepositoryHistoryButton.addEventListener("click", () => {
-      void repositoryController?.openHistoryCopy();
+      void executeCommand("maginalia.repository.history.openCopy");
     });
   }
 }
 
 if (writingSmokeMode) {
-  openButton.addEventListener("click", () => {
-    void controller.open().then(() => updateSmokeTextForSmoke?.());
-  });
+  openMarkdownAction = async () => {
+    await controller.open();
+    updateSmokeTextForSmoke?.();
+  };
 } else if (workspaceController) {
-  openButton.addEventListener("click", () => {
-    void workspaceController?.openDocument();
-  });
+  openMarkdownAction = () => workspaceController?.openDocument();
 } else if (projectController) {
   const clearWorkdeskAfterProjectReplacement = (previousProjectId: string | undefined): void => {
     const project = projectController?.getState().project;
     if (!project || project.projectId === previousProjectId) return;
     activeWorkdesk = null;
+    activeWorkdeskProjectIdentityId = null;
     activeWorkdeskRecovery = null;
     projectView.setProjectError(null);
     projectView.setProjectState(projectController.getState());
@@ -4228,9 +4692,7 @@ if (writingSmokeMode) {
     setProjectMenuOpen(projectOverflowMenu, projectOverflowButton, false);
     openStandaloneProject();
   });
-  openButton.addEventListener("click", () => {
-    void commandRegistry.execute("maginalia.project.open", commandContext.snapshot());
-  });
+  openMarkdownAction = () => executeCommand("maginalia.project.open");
   openProjectButton.addEventListener("click", () => {
     void commandRegistry.execute("maginalia.project.open", commandContext.snapshot());
   });
@@ -4261,6 +4723,8 @@ if (writingSmokeMode) {
   });
 }
 
+openButton.addEventListener("click", () => void executeCommand("maginalia.document.open"));
+
 newFileTitle.addEventListener("input", () => {
   if (!selectedProjectDocumentType) return;
   const names = projectController?.getState().files.map((file) => file.displayName) ?? [];
@@ -4273,9 +4737,9 @@ newFileTitle.addEventListener("keydown", (event) => {
   newFileForm.requestSubmit();
 });
 
-projectCreateForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  if (!projectController) return;
+async function submitProjectCreation(): Promise<void> {
+  const navigation = projectController;
+  if (!navigation) return;
   if (projectCreationFromWorkdesk) {
     const desk = activeWorkdesk;
     const api = getWorkdeskApi();
@@ -4283,28 +4747,34 @@ projectCreateForm.addEventListener("submit", (event) => {
       projectView.setProjectError("Open a Workdesk before creating a Project.");
       return;
     }
-    void api.createWorkdeskProject({
-      workdeskIdentityId: desk.workdesk.workdeskIdentityId,
-      title: createProjectTitle.value,
-    }).then(async (result) => {
-      if (await openWorkdeskProjectResult(result)) cancelProjectCreation(false);
-    }).catch((error: unknown) => {
-      projectView.setProjectError(error instanceof Error ? error.message : "The Workdesk Project could not be created.");
+    const workdeskIdentityId = desk.workdesk.workdeskIdentityId;
+    const opened = await loadAndActivateWorkdeskProject(async () => {
+      if (activeWorkdesk?.workdesk.workdeskIdentityId !== workdeskIdentityId) {
+        projectView.setProjectError("The active Workdesk changed before the Project could be created.");
+        return null;
+      }
+      return api.createWorkdeskProject({ workdeskIdentityId, title: createProjectTitle.value });
     });
+    if (opened) cancelProjectCreation(false);
     return;
   }
-  const previousProjectId = projectController.getState().project?.projectId;
-  void projectController.createProject(createProjectTitle.value).then(() => {
-    const project = projectController?.getState().project;
-    if (project && project.projectId !== previousProjectId) {
-      activeWorkdesk = null;
-      activeWorkdeskRecovery = null;
-      projectView.setProjectError(null);
-      projectView.setProjectState(projectController.getState());
-      updateCommandContext();
-      cancelProjectCreation(false);
-    }
-  });
+  const previousProjectId = navigation.getState().project?.projectId;
+  await navigation.createProject(createProjectTitle.value);
+  const project = navigation.getState().project;
+  if (project && project.projectId !== previousProjectId) {
+    activeWorkdesk = null;
+    activeWorkdeskProjectIdentityId = null;
+    activeWorkdeskRecovery = null;
+    projectView.setProjectError(null);
+    projectView.setProjectState(navigation.getState());
+    updateCommandContext();
+    cancelProjectCreation(false);
+  }
+}
+
+projectCreateForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void executeCommand("maginalia.project.create");
 });
 
 newFileForm.addEventListener("submit", (event) => {
@@ -4315,46 +4785,72 @@ newFileForm.addEventListener("submit", (event) => {
 saveButton.addEventListener("click", () => void executeCommand("maginalia.document.save"));
 
 window.addEventListener("keydown", (event) => {
-  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "b"
-    && previewController.getMode() === "preview") {
+  if (event.defaultPrevented || event.isComposing) return;
+  const target = event.target instanceof Element ? event.target : null;
+  if (target !== null && target.closest("dialog, .command-palette") !== null) return;
+  const inMonaco = target !== null && target.closest(".monaco-editor") !== null;
+  const inPreview = target !== null && previewContainer.contains(target);
+  const inEditorSurface = inMonaco || inPreview;
+  const inNativeInput = !inEditorSurface && target !== null
+    && target.closest("input, textarea, select, [contenteditable='true']") !== null;
+
+  if (!inNativeInput && event.key === "Escape" && workbench.isEditorOnly()) {
     event.preventDefault();
-    void executeCommand("maginalia.editor.toggleBold");
-    return;
-  }
-  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "p") {
-    event.preventDefault();
-    void executeCommand("maginalia.workbench.showCommandPalette");
-    return;
-  }
-  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && /^[0-6]$/u.test(event.key)) {
-    event.preventDefault();
-    const id = event.key === "0"
-      ? "maginalia.editor.setParagraph"
-      : `maginalia.editor.setHeading${event.key}`;
-    void executeCommand(id);
-    return;
-  }
-  if ((event.ctrlKey || event.metaKey) && event.shiftKey) {
-    const commandByKey: Record<string, Parameters<WorkbenchCore["execute"]>[0]> = {
-      a: "maginalia.view.toggleActivityBar",
-      p: "maginalia.view.togglePrimarySidebar",
-      s: "maginalia.view.toggleSecondarySidebar",
-      e: "maginalia.view.toggleEditorOnly"
-    };
-    const command = commandByKey[event.key.toLowerCase()];
-    if (command) {
-      event.preventDefault();
-      void executeCommand(command);
-      return;
-    }
-  }
-  if (event.key === "Escape" && workbench.isEditorOnly()) {
-    event.preventDefault();
+    event.stopImmediatePropagation();
     void executeCommand("maginalia.view.toggleEditorOnly");
     return;
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+
+  const binding = parseKeyboardEvent(event);
+  if (binding === null) return;
+  const context = commandContext.snapshot();
+  const entry = keybindingService.listBindings(context, true).find((candidate) => candidate.keybinding === binding);
+  const quickOpenDefault = keybindingService.getDefaultBinding("maginalia.workbench.showQuickOpen");
+  const shadowedQuickOpenDefault = binding === quickOpenDefault
+    && keybindingService.getShadowedDefaultBindings().includes(binding);
+  if (inNativeInput) {
+    const saveDefault = keybindingService.getDefaultBinding("maginalia.document.save");
+    const shadowedSaveDefault = binding === saveDefault && keybindingService.getShadowedDefaultBindings().includes(binding);
+    const nativeUndoRedoChord = [
+      keybindingService.getDefaultBinding("maginalia.editor.undo"),
+      keybindingService.getDefaultBinding("maginalia.editor.redo"),
+      "Mod+Shift+Z"
+    ].includes(binding);
+    const decision = decideNativeInputKeybinding({
+      commandId: entry?.commandId ?? null,
+      enabled: entry?.enabled ?? false,
+      shadowedSaveDefault,
+      nativeUndoRedoChord,
+      shadowedQuickOpenDefault
+    });
+    if (decision === "block") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (decision === "native") return;
+  }
+  if (entry !== undefined) {
+    if (!entry.enabled) {
+      if (inEditorSurface || entry.commandId === "maginalia.workbench.showQuickOpen" || shadowedQuickOpenDefault) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+      return;
+    }
+    const command = keybindingService.getCommandForKeybinding(binding, context);
     event.preventDefault();
-    void executeCommand("maginalia.document.save");
+    event.stopImmediatePropagation();
+    if (command !== null) void executeCommand(command.id);
+    return;
+  }
+  if (shadowedQuickOpenDefault) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return;
+  }
+  if (inEditorSurface && keybindingService.getShadowedDefaultBindings().includes(binding)) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
   }
 }, { capture: true });

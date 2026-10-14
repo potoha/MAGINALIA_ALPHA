@@ -25,6 +25,7 @@
     "test": "vitest run --config vitest.config.mts",
     "smoke": "npm run build && node test/electron-smoke.mjs",
     "smoke:writing": "npm run build && node test/writing-smoke.mjs",
+    "smoke:settings": "npm run build && node test/settings-smoke.mjs",
     "smoke:workspace": "npm run build && node test/workspace-smoke.mjs",
     "smoke:project": "npm run build && node test/project-smoke.mjs",
     "smoke:quotation": "npm run build && node test/quotation-smoke.mjs",

@@ -14,6 +14,7 @@
     "test": "npm run test --workspaces --if-present",
     "smoke": "npm run smoke --workspace @maginalia/desktop",
     "smoke:writing": "npm run smoke:writing --workspace @maginalia/desktop",
+    "smoke:settings": "npm run smoke:settings --workspace @maginalia/desktop",
     "smoke:workspace": "npm run smoke:workspace --workspace @maginalia/desktop",
     "smoke:quotation": "npm run smoke:quotation --workspace @maginalia/desktop",
     "smoke:repository": "npm run smoke:repository --workspace @maginalia/desktop",
