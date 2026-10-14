@@ -4805,6 +4805,9 @@ window.addEventListener("keydown", (event) => {
   if (binding === null) return;
   const context = commandContext.snapshot();
   const entry = keybindingService.listBindings(context, true).find((candidate) => candidate.keybinding === binding);
+  const quickOpenDefault = keybindingService.getDefaultBinding("maginalia.workbench.showQuickOpen");
+  const shadowedQuickOpenDefault = binding === quickOpenDefault
+    && keybindingService.getShadowedDefaultBindings().includes(binding);
   if (inNativeInput) {
     const saveDefault = keybindingService.getDefaultBinding("maginalia.document.save");
     const shadowedSaveDefault = binding === saveDefault && keybindingService.getShadowedDefaultBindings().includes(binding);
@@ -4813,12 +4816,13 @@ window.addEventListener("keydown", (event) => {
       keybindingService.getDefaultBinding("maginalia.editor.redo"),
       "Mod+Shift+Z"
     ].includes(binding);
-    const decision = decideNativeInputKeybinding(
-      entry?.commandId ?? null,
-      entry?.enabled ?? false,
+    const decision = decideNativeInputKeybinding({
+      commandId: entry?.commandId ?? null,
+      enabled: entry?.enabled ?? false,
       shadowedSaveDefault,
-      nativeUndoRedoChord
-    );
+      nativeUndoRedoChord,
+      shadowedQuickOpenDefault
+    });
     if (decision === "block") {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -4828,7 +4832,7 @@ window.addEventListener("keydown", (event) => {
   }
   if (entry !== undefined) {
     if (!entry.enabled) {
-      if (inEditorSurface) {
+      if (inEditorSurface || entry.commandId === "maginalia.workbench.showQuickOpen" || shadowedQuickOpenDefault) {
         event.preventDefault();
         event.stopImmediatePropagation();
       }
@@ -4838,6 +4842,11 @@ window.addEventListener("keydown", (event) => {
     event.preventDefault();
     event.stopImmediatePropagation();
     if (command !== null) void executeCommand(command.id);
+    return;
+  }
+  if (shadowedQuickOpenDefault) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
     return;
   }
   if (inEditorSurface && keybindingService.getShadowedDefaultBindings().includes(binding)) {

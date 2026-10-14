@@ -3,27 +3,47 @@ import { decideNativeInputKeybinding } from "./native-input-keybinding";
 
 describe("decideNativeInputKeybinding", () => {
   it("routes enabled global commands from ordinary native fields", () => {
-    expect(decideNativeInputKeybinding("maginalia.workbench.showCommandPalette", true, false)).toBe("dispatch");
-    expect(decideNativeInputKeybinding("maginalia.view.togglePrimarySidebar", true, false)).toBe("dispatch");
-    expect(decideNativeInputKeybinding("maginalia.document.save", true, false)).toBe("dispatch");
+    expect(decideNativeInputKeybinding({ commandId: "maginalia.workbench.showCommandPalette", enabled: true, shadowedSaveDefault: false })).toBe("dispatch");
+    expect(decideNativeInputKeybinding({ commandId: "maginalia.view.togglePrimarySidebar", enabled: true, shadowedSaveDefault: false })).toBe("dispatch");
+    expect(decideNativeInputKeybinding({ commandId: "maginalia.document.save", enabled: true, shadowedSaveDefault: false })).toBe("dispatch");
   });
 
   it("leaves editor mutations and property submission to the focused field", () => {
-    expect(decideNativeInputKeybinding("maginalia.editor.undo", true, false)).toBe("native");
-    expect(decideNativeInputKeybinding("maginalia.editor.toggleBold", true, false)).toBe("native");
-    expect(decideNativeInputKeybinding("maginalia.document.applyProperties", true, false)).toBe("native");
+    expect(decideNativeInputKeybinding({ commandId: "maginalia.editor.undo", enabled: true, shadowedSaveDefault: false })).toBe("native");
+    expect(decideNativeInputKeybinding({ commandId: "maginalia.editor.toggleBold", enabled: true, shadowedSaveDefault: false })).toBe("native");
+    expect(decideNativeInputKeybinding({ commandId: "maginalia.document.applyProperties", enabled: true, shadowedSaveDefault: false })).toBe("native");
   });
 
   it("preserves native undo and redo even if their old chord is assigned globally", () => {
-    expect(decideNativeInputKeybinding("maginalia.settings.open", true, false, true)).toBe("native");
+    expect(decideNativeInputKeybinding({
+      commandId: "maginalia.settings.open", enabled: true, shadowedSaveDefault: false, nativeUndoRedoChord: true
+    })).toBe("native");
   });
 
   it("blocks disabled Save and a shadowed Save default without swallowing unrelated native chords", () => {
-    expect(decideNativeInputKeybinding("maginalia.document.save", false, false)).toBe("block");
-    expect(decideNativeInputKeybinding(null, false, true)).toBe("block");
-    expect(decideNativeInputKeybinding("maginalia.editor.undo", true, true)).toBe("block");
-    expect(decideNativeInputKeybinding("maginalia.workbench.showCommandPalette", true, true)).toBe("dispatch");
-    expect(decideNativeInputKeybinding("maginalia.view.togglePrimarySidebar", false, false)).toBe("native");
-    expect(decideNativeInputKeybinding(null, false, false)).toBe("native");
+    expect(decideNativeInputKeybinding({ commandId: "maginalia.document.save", enabled: false, shadowedSaveDefault: false })).toBe("block");
+    expect(decideNativeInputKeybinding({ commandId: null, enabled: false, shadowedSaveDefault: true })).toBe("block");
+    expect(decideNativeInputKeybinding({ commandId: "maginalia.editor.undo", enabled: true, shadowedSaveDefault: true })).toBe("block");
+    expect(decideNativeInputKeybinding({ commandId: "maginalia.workbench.showCommandPalette", enabled: true, shadowedSaveDefault: true })).toBe("dispatch");
+    expect(decideNativeInputKeybinding({ commandId: "maginalia.view.togglePrimarySidebar", enabled: false, shadowedSaveDefault: false })).toBe("native");
+    expect(decideNativeInputKeybinding({ commandId: null, enabled: false, shadowedSaveDefault: false })).toBe("native");
+  });
+
+  it("blocks disabled Quick Open and its remapped or unbound default without swallowing text editing", () => {
+    expect(decideNativeInputKeybinding({
+      commandId: "maginalia.workbench.showQuickOpen", enabled: true, shadowedSaveDefault: false
+    })).toBe("dispatch");
+    expect(decideNativeInputKeybinding({
+      commandId: "maginalia.workbench.showQuickOpen", enabled: false, shadowedSaveDefault: false
+    })).toBe("block");
+    expect(decideNativeInputKeybinding({
+      commandId: null, enabled: false, shadowedSaveDefault: false, shadowedQuickOpenDefault: true
+    })).toBe("block");
+    expect(decideNativeInputKeybinding({
+      commandId: "maginalia.view.togglePrimarySidebar", enabled: true, shadowedSaveDefault: false, shadowedQuickOpenDefault: true
+    })).toBe("dispatch");
+    expect(decideNativeInputKeybinding({
+      commandId: null, enabled: false, shadowedSaveDefault: false
+    })).toBe("native");
   });
 });

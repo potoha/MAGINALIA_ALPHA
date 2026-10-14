@@ -97,6 +97,107 @@ async function reload(window) {
   await waitFor(window, "Boolean(document.querySelector('#workbench'))", "the reloaded workbench");
 }
 
+async function sendRealPrimaryShortcut(window, selector, key) {
+  const setup = await window.webContents.executeJavaScript(`(() => {
+    const target = document.querySelector(${JSON.stringify(selector)});
+    if (!(target instanceof HTMLElement)) return false;
+    target.focus();
+    window.__maginaliaSmokeExpectedKey = ${JSON.stringify(key.toLowerCase())};
+    window.__maginaliaSmokeKeyEvents = [];
+    if (!window.__maginaliaSmokeKeyProbeInstalled) {
+      const originalPreventDefault = Event.prototype.preventDefault;
+      Event.prototype.preventDefault = function(...args) {
+        const result = originalPreventDefault.apply(this, args);
+        if (this instanceof KeyboardEvent
+          && this.key.toLowerCase() === window.__maginaliaSmokeExpectedKey
+          && (this.ctrlKey || this.metaKey)) {
+          window.__maginaliaSmokeKeyEvents.push({
+            key: this.key,
+            defaultPrevented: this.defaultPrevented,
+            targetId: this.target instanceof HTMLElement
+              ? (this.target.id || this.target.getAttribute('data-secondary-view-tab'))
+              : null,
+            via: 'preventDefault'
+          });
+        }
+        return result;
+      };
+      window.addEventListener('keydown', (event) => {
+        if (event instanceof KeyboardEvent
+          && event.key.toLowerCase() === window.__maginaliaSmokeExpectedKey
+          && (event.ctrlKey || event.metaKey)) {
+          window.__maginaliaSmokeKeyEvents.push({
+            key: event.key,
+            defaultPrevented: event.defaultPrevented,
+            targetId: event.target instanceof HTMLElement
+              ? (event.target.id || event.target.getAttribute('data-secondary-view-tab'))
+              : null,
+            via: 'window-capture'
+          });
+        }
+      }, true);
+      window.__maginaliaSmokeKeyProbeInstalled = true;
+    }
+    return document.activeElement === target;
+  })()`, true);
+  assertTrue(setup, `Could not focus ${selector} for a real Electron keyboard event.`);
+
+  window.show();
+  window.focus();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const retainedFocus = await window.webContents.executeJavaScript(
+    `(() => {
+      const target = document.querySelector(${JSON.stringify(selector)});
+      target?.focus();
+      return document.activeElement === target;
+    })()`, true);
+  assertTrue(retainedFocus, `Electron focus left ${selector} before the real keyboard event.`);
+  const modifiers = process.platform === "darwin" ? ["meta"] : ["control"];
+  window.webContents.sendInputEvent({ type: "keyDown", keyCode: key.toUpperCase(), modifiers });
+  window.webContents.sendInputEvent({ type: "keyUp", keyCode: key.toUpperCase(), modifiers });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  return await window.webContents.executeJavaScript("window.__maginaliaSmokeKeyEvents ?? []", true);
+}
+
+async function checkQuickOpenNativeFallback(window) {
+  const disabledQuickOpen = await sendRealPrimaryShortcut(window, "#library-query", "p");
+  assertTrue(disabledQuickOpen.some((event) => event.targetId === "library-query" && event.defaultPrevented),
+    `No-Project Quick Open from the Shelf search input must consume Ctrl/Cmd+P: ${JSON.stringify(disabledQuickOpen)}.`);
+  const textEditing = await sendRealPrimaryShortcut(window, "#library-query", "a");
+  assertTrue(textEditing.some((event) => event.targetId === "library-query" && !event.defaultPrevented),
+    `Ctrl/Cmd+A must remain native in the Shelf search input: ${JSON.stringify(textEditing)}.`);
+
+  await window.webContents.executeJavaScript(`localStorage.setItem('maginalia.keybindings.v1', JSON.stringify({
+    version: 1,
+    overrides: { 'maginalia.workbench.showQuickOpen': 'Mod+Alt+P' }
+  }))`, true);
+  await reload(window);
+  await waitFor(window, "Boolean(document.querySelector('#library-query'))", "the remapped Quick Open search field");
+  const remappedDefault = await sendRealPrimaryShortcut(window, "#secondary-view-tabs [data-secondary-view-tab='menu']", "p");
+  assertTrue(remappedDefault.some((event) => event.targetId === "secondary-tab-menu" && event.defaultPrevented),
+    `Remapped Quick Open must consume its old Ctrl/Cmd+P default on a non-editor surface: ${JSON.stringify(remappedDefault)}.`);
+  const remappedUnavailable = await sendRealPrimaryShortcut(window, "#library-query", "p");
+  assertTrue(remappedUnavailable.some((event) => event.targetId === "library-query" && event.defaultPrevented),
+    `Unavailable remapped Quick Open must not leak its active shortcut from a search field: ${JSON.stringify(remappedUnavailable)}.`);
+
+  await window.webContents.executeJavaScript(`localStorage.setItem('maginalia.keybindings.v1', JSON.stringify({
+    version: 1,
+    overrides: { 'maginalia.workbench.showQuickOpen': null }
+  }))`, true);
+  await reload(window);
+  await waitFor(window, "Boolean(document.querySelector('#library-query'))", "the unbound Quick Open search field");
+  const unboundDefault = await sendRealPrimaryShortcut(window, "#library-query", "p");
+  assertTrue(unboundDefault.some((event) => event.targetId === "library-query" && event.defaultPrevented),
+    `Unbound Quick Open must consume its old Ctrl/Cmd+P default from a search field: ${JSON.stringify(unboundDefault)}.`);
+  const paletteStayedClosed = await window.webContents.executeJavaScript(
+    "document.querySelector('.command-palette')?.hidden === true", true);
+  assertTrue(paletteStayedClosed, "Quick Open's disabled or shadowed shortcut must not open the Command Palette.");
+
+  await window.webContents.executeJavaScript("localStorage.removeItem('maginalia.keybindings.v1')", true);
+  await reload(window);
+  await waitFor(window, "Boolean(document.querySelector('#library-query'))", "default Quick Open bindings after the regression test");
+}
+
 async function readState(window) {
   return await window.webContents.executeJavaScript(`(() => {
     const region = (selector) => document.querySelector(selector);
@@ -468,6 +569,7 @@ async function runChild(userDataPath) {
     await waitFor(window, "Boolean(document.querySelector('#workbench'))", "the workbench");
     await waitFor(window, "Boolean(document.querySelector('.command-palette'))", "Workbench command registration");
     await checkCommandPalette(window);
+    await checkQuickOpenNativeFallback(window);
 
     let state = await readState(window);
     assertTrue(state?.preloadBridge, "Workbench did not receive the existing preload bridge.");
