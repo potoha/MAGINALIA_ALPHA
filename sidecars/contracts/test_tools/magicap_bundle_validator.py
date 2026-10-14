@@ -49,6 +49,7 @@ class BundleLimits:
 
 DEFAULT_LIMITS = BundleLimits()
 CHUNK_BYTES = 64 * 1024
+ALLOWED_ZIP_COMPRESSION_METHODS = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
 _CAPTURE_ID = MAGICAP_SAFE_ID
 _WINDOWS_DEVICE = re.compile(
     r"^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)",
@@ -161,6 +162,11 @@ def _check_utf8_member_name(info: zipfile.ZipInfo) -> None:
 
 def _validate_member_metadata(info: zipfile.ZipInfo, limits: BundleLimits) -> None:
     _check_utf8_member_name(info)
+    if info.compress_type not in ALLOWED_ZIP_COMPRESSION_METHODS:
+        _fail(
+            f"unsupported ZIP compression method {info.compress_type} for {info.filename!r}; "
+            "only STORED and DEFLATED are allowed"
+        )
     if info.is_dir():
         _fail(f"directory ZIP entries are not allowed: {info.filename!r}")
     if info.flag_bits & 0x1:
@@ -235,7 +241,7 @@ def _read_bounded(
                     output.write(chunk)
     except BundleContractValidationError:
         raise
-    except (OSError, RuntimeError, zipfile.BadZipFile, EOFError) as exc:
+    except (OSError, RuntimeError, zipfile.BadZipFile, EOFError, NotImplementedError) as exc:
         raise BundleContractValidationError(f"could not safely read ZIP entry {info.filename!r}") from exc
     if total != info.file_size:
         _fail(f"actual ZIP entry size differs from central-directory metadata: {info.filename!r}")
@@ -299,7 +305,7 @@ def _validate_child(
             )
     except BundleContractValidationError:
         raise
-    except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+    except (OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError) as exc:
         raise BundleContractValidationError(f"could not stage child package {package['path']!r}") from exc
     if digest.hexdigest() != package["sha256"]:
         _fail(f"SHA-256 mismatch for child package: {package['path']}")
@@ -383,8 +389,8 @@ def validate_bundle(path: Path, *, source_name: str | None = None, limits: Bundl
     """Validate a complete bundle and every nested v3 ZIP without persistence."""
     name = source_name or path.name
     lower_name = name.casefold()
-    if not (lower_name.endswith(".magicap.bundle") or lower_name.endswith(".magicap.bundle.zip")):
-        _fail("Capture Bundles must use .magicap.bundle or .magicap.bundle.zip")
+    if not (lower_name.endswith(".magicap") or lower_name.endswith(".magicap.zip")):
+        _fail("Capture Bundles must use .magicap or .magicap.zip")
     if path.stat().st_size > limits.max_outer_zip_bytes:
         _fail("outer ZIP exceeds the compressed-size limit")
     try:

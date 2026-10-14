@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://maginalia.app/spec/magicap-bundle-v3.1-manifest.schema.json",
   "title": "MAGINALIA Capture Bundle manifest v3.1",
+  "$comment": "Outer ZIPs use the .magicap or .magicap.zip filename suffix. Suffixes do not identify a version: inspect this root manifest's exact format and version. This shared contract follows Desktop PR #69; Capture PR #33 Draft fields are not aliases.",
   "type": "object",
   "additionalProperties": false,
   "required": ["format", "version", "bundleId", "createdAt", "packages"],

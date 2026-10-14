@@ -2,17 +2,34 @@
 
 Status: contract-only definition; no current import support
 
-Inner package authority: [`.magicap` v3 contract in MAGINALIA_IDE](../../MAGINALIA_IDE/docs/magicap-contract-v3.md), governed by [ADR 0013](../../MAGINALIA_IDE/docs/decisions/0013-handwritten-canonical-source-assets.md) and amended by [ADR 0018](../../MAGINALIA_IDE/docs/decisions/0018-bookwithoutisbn-canonical-image-provenance.md)
+Inner package authority: [`.magicap` v3 contract in MAGINALIA_IDE](https://github.com/potoha/MAGINALIA_IDE/blob/main/docs/magicap-contract-v3.md), governed by [ADR 0013](https://github.com/potoha/MAGINALIA_IDE/blob/main/docs/decisions/0013-handwritten-canonical-source-assets.md) and amended by [ADR 0018](https://github.com/potoha/MAGINALIA_IDE/blob/main/docs/decisions/0018-bookwithoutisbn-canonical-image-provenance.md).
 
-This contract defines a new outer ZIP that groups existing, independent `.magicap` v3 ZIPs. It does not revise the v1, v2, or v3 standalone package schemas, their bytes, or their importer behavior.
+This contract defines a new outer ZIP that groups existing, independent `.magicap` v3 ZIPs. It does not revise the v1, v2, or v3 standalone package schemas, their bytes, or their importer behavior. The shared outer-manifest shape follows Desktop PR [#69](https://github.com/potoha/MAGINALIA_desktop/pull/69); the Capture-side proposal in [PR #33](https://github.com/potoha/MAGINALIA_Capture/pull/33) remains a Draft and is not compatible until it adopts the agreed fields and validation profile.
 
 ## Identity and filenames
 
-The outer format identifier is `maginalia-capture-bundle` and its version is the string `"3.1"`. A conforming filename is `.magicap.bundle`; `.magicap.bundle.zip` is an optional ZIP-suffixed alias. Both are ZIP archives with media type `application/zip`. The new suffix is distinct from the existing standalone `.magicap` and `.magicap.zip` suffixes. Filename alone never establishes the format: consumers validate the root manifest and every declared child.
+The outer format identifier is `maginalia-capture-bundle` and its version is the string `"3.1"`. The permitted filename suffixes are `.magicap` and `.magicap.zip`, the same suffixes used by standalone Capture packages. Both contain a ZIP archive with media type `application/zip`. `.magicap.bundle`, `.magicap.bundle.zip`, generic `.zip`, and `m.magicap` are not alternate v3.1 extensions. Filename alone never establishes the format: consumers inspect and validate the root `manifest.json`, including its exact `format` and `version` values.
+
+### Version identification and import routing
+
+The suffix identifies an accepted ZIP container name; it does not identify a MAGICAP version. Every MAGICAP reader first opens the ZIP and validates the root `manifest.json`. The current standalone package versions share one `format` value and are distinguished by an integer `version`; the outer Bundle has a different `format` and a string version:
+
+| Payload | Root `format` | Root `version` | Manifest/schema path |
+|---|---|---:|---|
+| Standalone v1 package | `maginalia-capture-package` | JSON integer `1` | Existing `magicap-v1-manifest.schema.json` and v1 import behavior |
+| Standalone v2 package | `maginalia-capture-package` | JSON integer `2` | Existing `magicap-v2-manifest.schema.json` and v2 import behavior |
+| Standalone v3 package | `maginalia-capture-package` | JSON integer `3` | Existing `magicap-v3-manifest.schema.json` and v3 import behavior |
+| Outer v3.1 Bundle | `maginalia-capture-bundle` | JSON string `"3.1"` | This document and `magicap-bundle-v3.1-manifest.schema.json` |
+
+The v1, v2, and v3 values are JSON integers, not strings or booleans. The outer v3.1 value is the exact JSON string `"3.1"`, not the number `3.1`. The `format`/`version` pair selects the schema and handler; a filename must never choose or override that pair.
+
+A future importer dispatcher MUST validate the root manifest before choosing an importer. It routes `maginalia-capture-package` plus integer version 1, 2, or 3 to the existing standalone package path. It routes `maginalia-capture-bundle` plus string version `"3.1"` to a dedicated Bundle validator/importer. It MUST NOT pass the outer v3.1 ZIP to `MagicapImporter.import_magicap` or treat its `packages/` members as a standalone v3 package. The Bundle path validates the complete outer contract first, then validates each declared child as an unchanged standalone v3 package. Unknown, malformed, or mismatched discriminator pairs are rejected without suffix-based fallback.
+
+This PR defines that routing contract only. It does not add a production dispatcher, Bundle importer, picker support, or persistence behavior. The existing v1/v2/v3 schemas and `MagicapImporter` remain unchanged.
 
 The root member is `manifest.json`. Child package members are direct children of `packages/`, each ending in `.magicap`. The archive contains exactly the root manifest and the declared child packages. It contains no directory entries, extra files, nested bundles, or unreferenced data.
 
-The root manifest has this shape:
+The common outer manifest uses the structure established in Desktop PR #69. Capture PR #33 currently differs as documented in [Capture Draft alignment](#capture-pr-33-draft-alignment). Its normative shape is:
 
 ```json
 {
@@ -35,6 +52,24 @@ The root manifest has this shape:
 ```
 
 The normative root schema is [`magicap-bundle-v3.1-manifest.schema.json`](../sidecars/contracts/magicap-bundle-v3.1-manifest.schema.json). Archive-level, cross-record, and nested-package rules below supplement JSON Schema.
+
+The schema requires `format`, string `version`, `bundleId`, `createdAt`, and `packages`. Each package record uses `sizeBytes`; `size` is not an alias. `contractStatus` is not part of the shared manifest and is rejected by the closed schema.
+
+### Capture PR #33 Draft alignment
+
+Capture PR #33 is useful evidence for the producer flow and grouping behavior, but it labels its envelope as Draft and does not implement this shared contract. This PR uses the common manifest structure from Desktop PR #69 and records the remaining differences here so they can be reviewed before either product claims interoperability:
+
+| Contract point | Capture PR #33 Draft | Shared v3.1 contract in Desktop PR #69 | Resolution in this PR |
+|---|---|---|---|
+| `format` | `maginalia-capture-bundle-draft` | `maginalia-capture-bundle` | Use the Desktop value. |
+| `version` | String `"3.1"` | String `"3.1"` | Same exact value and JSON type. |
+| Draft marker | Requires `contractStatus: "draft"` | No `contractStatus` member | Omit it from the shared manifest; the closed schema rejects it. Draft/activation state belongs outside the wire contract. |
+| Child byte length | `packages[].size` | `packages[].sizeBytes` | Use `sizeBytes`; `size` is not accepted. |
+| Child paths | Sequential names such as `packages/package-001.magicap` | Safe direct children of `packages/` ending in `.magicap` | The sequential Capture path shape is valid when it satisfies the shared path and uniqueness checks. |
+| Download name | `MAGICAP-v3.1-DRAFT-….zip` | PR #69 originally proposed `.magicap.bundle` / `.magicap.bundle.zip` | The 2026-10-14 Product Owner decision supersedes both proposals: use `.magicap` or `.magicap.zip`; the manifest determines the format. |
+| ZIP limits and JSON parsing | Per-inner limits; no shared outer-plus-inner entry count; duplicate JSON keys are not rejected by the Draft parser | Shared entry/expanded-byte budgets and strict JSON with duplicate-key rejection | A producer may impose lower limits, but every emitted Bundle must satisfy this consumer contract. Capture alignment and shared-fixture proof remain required before activation. |
+
+The Capture PR's smaller producer-side byte caps are compatible as additional restrictions. Its other Draft fields, filename, or parser behavior must not be inferred as accepted alternatives. This contract update does not change Capture PR #33, enable Capture Bundle export, or establish real Capture-to-Reviewer compatibility.
 
 ## Grouping and inner package identity
 
@@ -63,7 +98,7 @@ The initial resource limits are:
 | Compression ratio at each ZIP layer | 200:1 |
 | Each JSON manifest or capture record | 1 MiB |
 
-Budgets are shared across the bundle; they do not reset for each child. Consumers check central-directory metadata before extraction and still bound actual streamed reads, verify actual sizes and ZIP CRCs, and hash exact child bytes. Archive depth is exactly outer bundle → standalone v3 package; nested bundles are rejected.
+ZIP entries may use only the interoperable `STORED` (method 0) or `DEFLATED` (method 8) compression methods at both the outer and child layers. Other methods are rejected during central-directory preflight with a contract validation error, before an entry is read. Budgets are shared across the bundle; they do not reset for each child. Consumers check central-directory metadata before extraction and still bound actual streamed reads, verify actual sizes and ZIP CRCs, and hash exact child bytes. Archive depth is exactly outer bundle → standalone v3 package; nested bundles are rejected.
 
 ZIP entries must be regular files, unencrypted, and named with safe relative paths. Reject symbolic links and special files; duplicate names and aliases under case folding or Unicode normalization; absolute, drive, UNC, backslash, NUL, control-character, empty, `.` or `..` components; Windows-illegal `<`, `>`, `"`, `|`, `?`, or `*` characters; ADS colons; components ending in dot or space; and Windows reserved device components. Unicode filenames are allowed when they satisfy these checks and are encoded as UTF-8 in ZIP metadata. Directory entries are not allowed. The outer archive's member set must exactly equal `manifest.json` plus the child paths declared by the schema-valid manifest. These bundle eligibility checks are stricter than some legacy standalone v3 importer checks; they do not change or retroactively reject standalone packages.
 
@@ -83,7 +118,7 @@ For duplicate-import safety, a future importer must preflight the bundle ID and 
 
 - Standalone `.magicap` v1 and v2 retain their existing legacy-readable behavior.
 - Standalone `.magicap` v3 retains its existing manifest, schema, ZIP members, and importer semantics.
-- An outer bundle has its own format ID, string version, bundle ID, extension, and manifest schema. It is not a standalone `.magicap` package and must not be routed to the legacy generic-ZIP path.
+- An outer bundle has its own format ID, string version, bundle ID, and manifest schema, while sharing the `.magicap` / `.magicap.zip` suffixes with standalone packages. It is not a standalone `.magicap` package and must not be routed to the existing v1/v2/v3 importer or the legacy generic-ZIP path.
 - The current Reviewer importer and Desktop picker do not import this outer format. This contract and its tests provide no runtime-import or Electron-smoke evidence.
 - The currently checked-in `.magicap` v3 schema has not yet adopted the D069 file-backed `bookwithoutisbn` alternative. The sample package uses a URL-backed `bookwithoutisbn` with canonical image evidence so it validates against that unchanged schema. Applying the D069 alternative to v3 schema/importer validation remains a separate consumer-alignment task; this bundle contract does not revise v3.
-- `17_CAPTURE_REVIEW_UX_SPEC.md` continues to describe the current picker, which accepts `.magicap` / `.magicap.zip`. Bundle suffix routing and UI support require a separate implementation slice.
+- `17_CAPTURE_REVIEW_UX_SPEC.md` continues to describe the current picker, which accepts `.magicap` / `.magicap.zip` for current standalone packages. Manifest-based Bundle dispatch and UI support require a separate implementation slice.
