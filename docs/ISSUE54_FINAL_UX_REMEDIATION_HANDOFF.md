@@ -28,7 +28,7 @@
 - Real Electron screenshots are checked in: [selected result](issue54-evidence/command-palette-selected.png) and [empty state](issue54-evidence/command-palette-empty.png).
 - npm run typecheck --workspace @maginalia/desktop.
 - npm run build --workspace @maginalia/desktop.
-- Focused Vitest run: 9 files, 119 tests passed, covering palette, registry/context, keybindings, Project/document navigation, controller behavior, and menu contracts.
+- Focused Vitest run: 9 files, 119 tests passed. Quick Open tests exercised Japanese/English queries, fuzzy ranking, and unavailable Projects; command-context tests cover disabled actions; the remaining tests cover palette, keybindings, Project/document navigation, controller behavior, and menu contracts.
 - node apps/desktop/test/project-smoke.mjs: passed both smoke launches.
 - node apps/desktop/test/h-smoke.mjs: passed both smoke launches, including registered Project selection, name-based Quick Open, duplicate-tab protection, native Monaco Find/Replace widget behavior, Preview gating, and source preservation.
 - Workbench UI Electron smoke, with MAGINALIA_COMMAND_PALETTE_EVIDENCE_DIR set to the absolute repository path C:\Users\PolarBear\.codex\worktrees\desktop-work\MAGINALIA_ALPHA\docs\issue54-evidence: passed interaction, keyboard/focus/IME checks, screenshots, and contrast assertions.
